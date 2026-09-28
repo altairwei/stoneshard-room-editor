@@ -1,0 +1,243 @@
+// Draw a room the way the game draws it.
+//
+// What decides the picture, and where the editor gets it from:
+//   position/scale/frame/tint  the room JSON
+//   sprite, origin, trim       sprites.json (texture-page rects, straight from data.win)
+//   draw order                 depth, highest first. An instance starts at its layer's
+//                              depth; if its Create chain assigns depth (o_barrier's
+//                              `-y + 18` and friends) that wins -- create.json.
+//   drawn at all               object `visible` (or a Create override) AND layer
+//                              is_visible. Hidden things are still shown, faded, when
+//                              the "hidden" overlay is on -- they are half the room
+//                              (collision stamps, markers, controllers).
+//
+// Not modelled (flagged in the inspector instead of faked): custom Draw events, runtime
+// spawns, depth changed outside Create.
+import { Container, Graphics, Sprite, Text } from "pixi.js";
+import type { AssetDb, Frame } from "./assets";
+import { CELL, LayerType, gmColor, type Room, type RoomInstance, type RoomLayer } from "./room";
+
+export type NodeKind = "drawn" | "hidden" | "collision" | "marker";
+
+export interface InstanceNode {
+  kind: NodeKind;
+  layerIndex: number;
+  instIndex: number;
+  layer: RoomLayer;
+  inst: RoomInstance;
+  depth: number;
+  depthWhy: string;
+  visibleWhy: string;
+  customDraw: boolean;
+  view: Container;
+}
+
+export interface RoomScene {
+  root: Container;
+  nodes: InstanceNode[];
+  gridLayer: Graphics;
+  boundsLayer: Graphics;
+}
+
+const COLLISION_SPRITES = new Set(["s_handmadeCollision"]);
+
+function resolveDepth(db: AssetDb, obj: string, inst: RoomInstance, layer: RoomLayer): [number, string] {
+  const d = db.create[obj]?.depth;
+  if (d && !d.conditional) {
+    if (d.mode === "y") {
+      const off = d.offset ?? 0;
+      return [-inst.y + off, `-y ${off >= 0 ? "+" : "-"} ${Math.abs(off)}（${d.from} 的 Create）`];
+    }
+    if (d.mode === "const") return [d.value!, `${d.value}（${d.from} 的 Create）`];
+    return [layer.layer_depth, `图层深度；${d.from} 的 Create 设为 ${d.expr}（未求值）`];
+  }
+  if (d?.conditional) return [layer.layer_depth, `图层深度；${d.from} 的 Create 有条件地改 depth`];
+  return [layer.layer_depth, `图层深度（${layer.layer_name}）`];
+}
+
+function resolveVisible(db: AssetDb, obj: string, layer: RoomLayer): [boolean, string] {
+  const def = db.objects[obj];
+  const v = db.create[obj]?.visible;
+  let vis = def?.visible ?? true;
+  let why = `对象标志 visible=${vis}`;
+  if (v && !v.conditional) {
+    vis = v.value;
+    why = `${v.from} 的 Create 设 visible=${v.value}`;
+  }
+  const draw = db.create[obj]?.draw;
+  if (vis && draw && (draw.mode === "hl" || draw.mode === "none")) {
+    // doors, ladders, the furnace: their picture is baked into the walls; at rest they
+    // draw nothing, only a hover highlight
+    vis = false;
+    why += draw.mode === "hl" ? `；${draw.from} 的 Draw 只画悬停高亮` : `；${draw.from} 的 Draw 什么也不画`;
+  }
+  if (!layer.is_visible) return [false, `${why}；图层 ${layer.layer_name} 游戏内隐藏`];
+  return [vis, why];
+}
+
+async function spriteView(db: AssetDb, spriteName: string, imageIndex: number): Promise<Container | null> {
+  const def = db.sprites[spriteName];
+  const ft = await db.frameTexture(spriteName, imageIndex);
+  if (!def || !ft) return null;
+  const f = ft.frame as number[];
+  const s = new Sprite(ft.tex);
+  // frame is stored trimmed: it sits at (tgtX, tgtY) inside the full w x h box whose
+  // origin is (ox, oy). tgt size can differ from src size on scaled pages.
+  s.position.set(f[5] - def.ox, f[6] - def.oy);
+  s.width = f[7];
+  s.height = f[8];
+  const c = new Container();
+  c.addChild(s);
+  return c;
+}
+
+function markerView(label: string): Container {
+  const view = new Container();
+  view.addChild(
+    new Graphics()
+      .poly([0, -5, 5, 0, 0, 5, -5, 0])
+      .fill({ color: 0x40c0ff, alpha: 0.8 })
+      .stroke({ color: 0x0a2030, width: 1, pixelLine: true }),
+  );
+  const t = new Text({ text: label, style: { fontSize: 9, fill: 0xbfe6ff, fontFamily: "Consolas, monospace" } });
+  t.position.set(7, -6);
+  t.resolution = 4;
+  view.addChild(t);
+  return view;
+}
+
+export async function buildScene(db: AssetDb, room: Room): Promise<RoomScene> {
+  const root = new Container();
+  root.sortableChildren = true;
+  const nodes: InstanceNode[] = [];
+
+  // preload every page the room touches, so the scene appears in one go
+  const frames: Frame[] = [];
+  for (const L of room.layers)
+    for (const inst of (L.layer_type === LayerType.Instances ? L.layer_data.instances : []) as RoomInstance[]) {
+      const spr = inst.object_definition && db.objects[inst.object_definition]?.sprite;
+      if (spr && db.sprites[spr]) frames.push(...db.sprites[spr].frames);
+    }
+  await db.preload(frames);
+
+  for (let li = 0; li < room.layers.length; li++) {
+    const layer = room.layers[li];
+
+    if (layer.layer_type === LayerType.Background) {
+      const d = layer.layer_data;
+      if (layer.is_visible && d.visible) {
+        const { rgb, alpha } = gmColor(d.color);
+        if (d.sprite) {
+          const v = await spriteView(db, d.sprite, d.first_frame);
+          if (v) {
+            v.position.set(layer.x_offset, layer.y_offset);
+            v.zIndex = -layer.layer_depth;
+            root.addChild(v);
+          }
+        } else {
+          // a sprite-less background layer is a flat fill of its colour
+          const g = new Graphics().rect(0, 0, room.width, room.height).fill({ color: rgb, alpha });
+          g.zIndex = -layer.layer_depth;
+          root.addChild(g);
+        }
+      }
+      continue;
+    }
+
+    if (layer.layer_type === LayerType.Assets) {
+      for (const a of layer.layer_data.sprites ?? []) {
+        if (!a.sprite) continue;
+        const v = await spriteView(db, a.sprite, a.frame_index);
+        if (!v) continue;
+        v.position.set(a.x, a.y);
+        v.scale.set(a.scale_x, a.scale_y);
+        v.rotation = (-a.rotation * Math.PI) / 180;
+        const { rgb, alpha } = gmColor(a.color);
+        (v.children[0] as Sprite).tint = rgb;
+        v.alpha = alpha;
+        v.zIndex = -layer.layer_depth;
+        v.visible = layer.is_visible;
+        root.addChild(v);
+      }
+      continue;
+    }
+
+    if (layer.layer_type !== LayerType.Instances) continue;
+
+    const insts = layer.layer_data.instances as RoomInstance[];
+    for (let ii = 0; ii < insts.length; ii++) {
+      const inst = insts[ii];
+      const obj = inst.object_definition ?? "";
+      const def = db.objects[obj];
+      let [depth, depthWhy] = resolveDepth(db, obj, inst, layer);
+      const [vis, visibleWhy] = resolveVisible(db, obj, layer);
+      const draw = db.create[obj]?.draw;
+      if (draw?.mode === "baked") {
+        depth = draw.depth!;
+        depthWhy = `${draw.depth}（scr_bgRenderAdd 烙进背景 surface，${draw.from}）`;
+      }
+      const spriteName = def?.sprite;
+
+      let kind: NodeKind = "marker";
+      let view: Container | null = null;
+      if (spriteName && COLLISION_SPRITES.has(spriteName)) {
+        kind = "collision";
+        view = new Container();
+        view.addChild(
+          new Graphics()
+            .rect(0, 0, CELL, CELL)
+            .fill({ color: 0xff3040, alpha: 0.38 })
+            .stroke({ color: 0xff5060, width: 1, alpha: 0.9, pixelLine: true }),
+        );
+      } else if (spriteName) {
+        view = await spriteView(db, spriteName, inst.image_index);
+        if (view) kind = vis ? "drawn" : "hidden";
+      }
+      if (!view) {
+        kind = "marker";
+        view = markerView(obj.replace(/^o_/, ""));
+      }
+
+      view.position.set(inst.x, inst.y);
+      if (kind !== "marker") {
+        view.scale.set(inst.scale_x, inst.scale_y);
+        view.rotation = (-inst.rotation * Math.PI) / 180;
+      }
+      if (kind === "drawn" || kind === "hidden") {
+        const { rgb, alpha } = gmColor(inst.color);
+        (view.children[0] as Sprite).tint = rgb;
+        view.alpha = alpha;
+      }
+      // overlays sit above the game picture, in a fixed order
+      view.zIndex = kind === "drawn" ? -depth : 1e8 + (kind === "hidden" ? 0 : kind === "collision" ? 1 : 2);
+
+      const node: InstanceNode = {
+        kind, layerIndex: li, instIndex: ii, layer, inst, depth, depthWhy, visibleWhy,
+        customDraw: draw?.mode === "custom" || !!draw?.extra, view,
+      };
+      nodes.push(node);
+      root.addChild(view);
+    }
+  }
+
+  const gridLayer = new Graphics();
+  gridLayer.zIndex = 2e8;
+  root.addChild(gridLayer);
+  const boundsLayer = new Graphics();
+  boundsLayer.zIndex = 2e8 + 1;
+  root.addChild(boundsLayer);
+
+  return { root, nodes, gridLayer, boundsLayer };
+}
+
+export function drawGrid(g: Graphics, room: Room, zoom: number) {
+  g.clear();
+  for (let x = 0; x <= room.width; x += CELL) g.moveTo(x, 0).lineTo(x, room.height);
+  for (let y = 0; y <= room.height; y += CELL) g.moveTo(0, y).lineTo(room.width, y);
+  g.stroke({ color: 0xffffff, width: 1 / zoom, alpha: 0.12 });
+}
+
+export function drawBounds(g: Graphics, room: Room, zoom: number) {
+  g.clear();
+  g.rect(0, 0, room.width, room.height).stroke({ color: 0xffd479, width: 1.5 / zoom, alpha: 0.7 });
+}

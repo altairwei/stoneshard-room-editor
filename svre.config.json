@@ -1,0 +1,7 @@
+{
+  "modDir": "D:/Program Files/ModShardLauncher/ModSources/StoneValley",
+  "assetsDir": "E:/StoneShard_Mod_Data/tools/sv-room-editor/cache/assets",
+  "sourceDir": "E:/StoneShard_Mod_Data/source_codes/vallina_v0.9.4.25",
+  "vanillaWin": "E:/SteamLibrary/steamapps/common/Stoneshard/vallina.win",
+  "utmtCli": "D:/Program Files/UTMT_CLI/UndertaleModCli.exe"
+}

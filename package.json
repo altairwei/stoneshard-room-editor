@@ -1,0 +1,21 @@
+{
+  "name": "sv-room-editor",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "extract": "node extract/run.mjs",
+    "extract:scan": "node extract/run.mjs scan"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.3",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.1"
+  },
+  "dependencies": {
+    "pixi.js": "^8.21.0"
+  }
+}

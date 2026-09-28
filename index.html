@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SV Room Editor</title>
+  </head>
+  <body>
+    <header id="topbar">
+      <span class="brand">SV Room Editor</span>
+      <select id="room-select" title="房间"></select>
+      <div class="sep"></div>
+      <label class="toggle"><input type="checkbox" id="t-hidden" checked /> 隐形对象</label>
+      <label class="toggle"><input type="checkbox" id="t-collision" checked /> 碰撞格</label>
+      <label class="toggle"><input type="checkbox" id="t-markers" /> 标记点</label>
+      <label class="toggle"><input type="checkbox" id="t-grid" /> 26px 网格</label>
+      <div class="sep"></div>
+      <button id="b-fit" title="适配窗口 (F)">适配</button>
+      <button id="b-1x" title="1:1 (1)">1:1</button>
+      <span class="spacer"></span>
+      <span id="load-state"></span>
+    </header>
+    <main>
+      <aside id="layers" class="panel"><h2>图层</h2><ul id="layer-list"></ul></aside>
+      <section id="stage"></section>
+      <aside id="inspector" class="panel"><h2>检查器</h2><div id="inspect-body" class="muted">点选一个实例</div></aside>
+    </main>
+    <footer id="status">
+      <span id="s-pos">—</span>
+      <span id="s-cell">—</span>
+      <span id="s-zoom">—</span>
+      <span id="s-hover" class="grow">—</span>
+    </footer>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
