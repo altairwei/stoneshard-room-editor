@@ -25,6 +25,8 @@
 // cover >95% of the game: `-y [+-] N`, `N`, `-N`. Anything else is reported as unknown --
 // the editor falls back to layer depth and says so instead of guessing.
 //
+//   Step_0 is scanned the same way: a per-frame `depth = ...` there overrides Create.
+//
 //   node scan-create.mjs <source_codes dir> <assets dir>   -> <assets dir>/create.json
 import fs from "node:fs";
 import path from "node:path";
@@ -49,21 +51,28 @@ function effectiveOwner(name, has = hasCreate) {
 
 // ---- Create_0 ----
 
-// statements of one Create body, in order: {kind:'inherit'} | {kind:'depth'|'visible', ...}
+// statements of one event body, in order:
+//   {kind:'inherit'} | {kind:'depth'|'visible', ...} | {kind:'var', name, value}
+// `var` records `start_depth = N`-style constants, which a Step's `depth = -y - start_depth`
+// reads back (the door family, o_preset_transition).
+const DEPTH_VARS = ["start_depth", "startdepth", "depthAdd"];
 const bodyCache = new Map();
-function body(name) {
-  if (bodyCache.has(name)) return bodyCache.get(name);
+function body(name, ev) {
+  const key = `${name}#${ev}`;
+  if (bodyCache.has(key)) return bodyCache.get(key);
   const out = [];
-  for (const line of lines(path.join(srcDir, `gml_Object_${name}_Create_0.gml`)) ?? []) {
+  for (const line of lines(path.join(srcDir, `gml_Object_${name}_${ev}.gml`)) ?? []) {
     const top = !/^\s/.test(line);
     const t = line.trim();
     if (t.startsWith("event_inherited()")) { if (top) out.push({ kind: "inherit" }); continue; }
     let m = /^depth\s*=\s*([^;]+);?$/.exec(t);
     if (m) { out.push({ kind: "depth", conditional: !top, ...parseDepth(m[1].trim()) }); continue; }
     m = /^visible\s*=\s*(true|false|0|1);?$/.exec(t);
-    if (m) out.push({ kind: "visible", conditional: !top, value: m[1] === "true" || m[1] === "1" });
+    if (m) { out.push({ kind: "visible", conditional: !top, value: m[1] === "true" || m[1] === "1" }); continue; }
+    m = /^(\w+)\s*=\s*(-?\d+(?:\.\d+)?);?$/.exec(t);
+    if (m && top && DEPTH_VARS.includes(m[1])) out.push({ kind: "var", name: m[1], value: Number(m[2]) });
   }
-  bodyCache.set(name, out);
+  bodyCache.set(key, out);
   return out;
 }
 
@@ -71,6 +80,8 @@ function parseDepth(expr) {
   const e = expr.replace(/\s+/g, "");
   let m = /^-y(?:([+-])(\d+(?:\.\d+)?))?$/.exec(e);
   if (m) return { mode: "y", offset: m[1] ? (m[1] === "-" ? -1 : 1) * Number(m[2]) : 0 };
+  m = /^-y([+-])([A-Za-z_]\w*)$/.exec(e);
+  if (m && DEPTH_VARS.includes(m[2])) return { mode: "y", offsetVar: m[2], sign: m[1] === "-" ? -1 : 1 };
   m = /^\(-y([+-]\d+)\)([+-]\d+)$/.exec(e) || /^-y([+-]\d+)([+-]\d+)$/.exec(e);
   if (m) return { mode: "y", offset: Number(m[1]) + Number(m[2]) };
   m = /^(-?\d+(?:\.\d+)?)$/.exec(e);
@@ -78,13 +89,15 @@ function parseDepth(expr) {
   return { mode: "unknown", expr };
 }
 
-// replay the chain; returns the flattened statement list
-function replay(owner, guard = new Set()) {
+const hasStep = (name) => hasEv(name, 3, 0);
+
+// replay the chain of one event; returns the flattened statement list
+function replay(owner, ev = "Create_0", has = hasCreate, guard = new Set()) {
   if (!owner || guard.has(owner)) return [];
   guard.add(owner);
   const out = [];
-  for (const st of body(owner)) {
-    if (st.kind === "inherit") out.push(...replay(effectiveOwner(objects[owner]?.parent), guard));
+  for (const st of body(owner, ev)) {
+    if (st.kind === "inherit") out.push(...replay(effectiveOwner(objects[owner]?.parent, has), ev, has, guard));
     else out.push({ ...st, from: owner });
   }
   return out;
@@ -136,7 +149,16 @@ const result = {};
 let known = 0, unknown = 0;
 for (const name of Object.keys(objects)) {
   const sts = replay(effectiveOwner(name));
-  const depth = sts.filter((s) => s.kind === "depth").pop();
+  // a Step that assigns depth rewrites it every frame, so it beats anything in Create
+  // (and anything a room creation code writes to `depth` -- only the vars survive)
+  const stepSts = replay(effectiveOwner(name, hasStep), "Step_0", hasStep).filter((s) => s.kind === "depth" && !s.conditional);
+  const stepDepth = stepSts.pop();
+  let depth = stepDepth ? { ...stepDepth, perFrame: true } : sts.filter((s) => s.kind === "depth").pop();
+  if (depth?.offsetVar) {
+    // the var's default comes from Create; a room creation code can override it (P3)
+    const v = sts.filter((s) => s.kind === "var" && s.name === depth.offsetVar).pop();
+    depth = { ...depth, offset: depth.sign * (v?.value ?? 0) };
+  }
   const visible = sts.filter((s) => s.kind === "visible").pop();
   const draw = drawMode(name);
   if (!depth && !visible && !draw) continue;
@@ -145,6 +167,8 @@ for (const name of Object.keys(objects)) {
   if (depth) {
     r.depth = { mode: depth.mode, from: depth.from };
     if (depth.mode === "y") r.depth.offset = depth.offset;
+    if (depth.offsetVar) r.depth.offsetVar = depth.offsetVar;
+    if (depth.perFrame) r.depth.perFrame = true;
     if (depth.mode === "const") r.depth.value = depth.value;
     if (depth.mode === "unknown") r.depth.expr = depth.expr;
     if (depth.conditional) r.depth.conditional = true;

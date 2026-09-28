@@ -46,7 +46,9 @@ function resolveDepth(db: AssetDb, obj: string, inst: RoomInstance, layer: RoomL
   if (d && !d.conditional) {
     if (d.mode === "y") {
       const off = d.offset ?? 0;
-      return [-inst.y + off, `-y ${off >= 0 ? "+" : "-"} ${Math.abs(off)}（${d.from} 的 Create）`];
+      const src = d.perFrame ? `${d.from} 的 Step 每帧重写` : `${d.from} 的 Create`;
+      const via = d.offsetVar ? `，偏移来自 ${d.offsetVar} 的缺省值，房间 CC 可改` : "";
+      return [-inst.y + off, `-y ${off >= 0 ? "+" : "-"} ${Math.abs(off)}（${src}${via}）`];
     }
     if (d.mode === "const") return [d.value!, `${d.value}（${d.from} 的 Create）`];
     return [layer.layer_depth, `图层深度；${d.from} 的 Create 设为 ${d.expr}（未求值）`];
@@ -75,7 +77,7 @@ function resolveVisible(db: AssetDb, obj: string, layer: RoomLayer): [boolean, s
   return [vis, why];
 }
 
-async function spriteView(db: AssetDb, spriteName: string, imageIndex: number): Promise<Container | null> {
+export async function spriteView(db: AssetDb, spriteName: string, imageIndex: number): Promise<Container | null> {
   const def = db.sprites[spriteName];
   const ft = await db.frameTexture(spriteName, imageIndex);
   if (!def || !ft) return null;
@@ -91,7 +93,7 @@ async function spriteView(db: AssetDb, spriteName: string, imageIndex: number): 
   return c;
 }
 
-function markerView(label: string): Container {
+export function markerView(label: string): Container {
   const view = new Container();
   view.addChild(
     new Graphics()

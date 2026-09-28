@@ -9,27 +9,44 @@
     <header id="topbar">
       <span class="brand">SV Room Editor</span>
       <select id="room-select" title="房间"></select>
+      <button id="b-save" title="保存 (Ctrl+S)" disabled>保存</button>
+      <button id="b-undo" title="撤销 (Ctrl+Z)" disabled>↶</button>
+      <button id="b-redo" title="重做 (Ctrl+Y)" disabled>↷</button>
       <div class="sep"></div>
+      <label class="toggle" title="拖动与放置按 26px 格吸附；按住 Alt 临时自由"><input type="checkbox" id="t-snap" checked /> 吸附</label>
       <label class="toggle"><input type="checkbox" id="t-hidden" checked /> 隐形对象</label>
       <label class="toggle"><input type="checkbox" id="t-collision" checked /> 碰撞格</label>
       <label class="toggle"><input type="checkbox" id="t-markers" /> 标记点</label>
-      <label class="toggle"><input type="checkbox" id="t-grid" /> 26px 网格</label>
+      <label class="toggle"><input type="checkbox" id="t-grid" /> 网格</label>
       <div class="sep"></div>
       <button id="b-fit" title="适配窗口 (F)">适配</button>
       <button id="b-1x" title="1:1 (1)">1:1</button>
       <span class="spacer"></span>
       <span id="load-state"></span>
     </header>
+    <div id="banner" hidden></div>
     <main>
-      <aside id="layers" class="panel"><h2>图层</h2><ul id="layer-list"></ul></aside>
+      <aside id="left" class="panel">
+        <nav class="tabs"><button data-tab="layers" class="on">图层</button><button data-tab="palette">对象</button></nav>
+        <section id="tab-layers"><ul id="layer-list"></ul></section>
+        <section id="tab-palette" hidden>
+          <div class="palette-head">
+            <input id="palette-q" type="search" placeholder="搜索对象名…  (Ctrl+K)" autocomplete="off" />
+            <div id="palette-families"></div>
+          </div>
+          <ul id="palette-list"></ul>
+        </section>
+      </aside>
       <section id="stage"></section>
       <aside id="inspector" class="panel"><h2>检查器</h2><div id="inspect-body" class="muted">点选一个实例</div></aside>
     </main>
     <footer id="status">
+      <span id="s-tool">选择</span>
       <span id="s-pos">—</span>
       <span id="s-cell">—</span>
       <span id="s-zoom">—</span>
       <span id="s-hover" class="grow">—</span>
+      <span id="s-hint">拖动=移动/框选 · 中键/右键/空格拖=平移 · Del 删除 · Ctrl+D 复制 · Ctrl+Z 撤销</span>
     </footer>
     <script type="module" src="/src/main.ts"></script>
   </body>

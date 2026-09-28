@@ -25,7 +25,10 @@ export interface SpriteDef {
 }
 
 export interface CreateFacts {
-  depth?: { mode: "y" | "const" | "unknown"; from: string; offset?: number; value?: number; expr?: string; conditional?: boolean };
+  depth?: {
+    mode: "y" | "const" | "unknown"; from: string; offset?: number; value?: number; expr?: string;
+    conditional?: boolean; perFrame?: boolean; offsetVar?: string;
+  };
   visible?: { value: boolean; from: string; conditional?: boolean };
   // absent = default draw (draw_self); see extract/scan-create.mjs for the modes
   draw?: { mode: "self" | "hl" | "custom" | "baked" | "unit" | "none"; from: string; extra?: boolean; call?: string; depth?: number };
