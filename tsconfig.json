@@ -9,6 +9,7 @@
     "noUnusedParameters": true,
     "skipLibCheck": true,
     "isolatedModules": true,
+    "allowImportingTsExtensions": true,
     "types": ["node", "vite/client"]
   },
   "include": ["src", "server", "vite.config.ts"]

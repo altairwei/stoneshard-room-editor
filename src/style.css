@@ -134,3 +134,32 @@ button.primary { background: #1f4f7a; border-color: #2c6aa3; color: #fff; }
 #status > span { white-space: nowrap; flex: none; }
 #status > span.grow { flex: 1; min-width: 0; }
 #s-hint { color: #5d6575; flex: 0 1 auto !important; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+/* ---- shared document: history, notes, authors ---- */
+#history-badge:not(:empty) { margin-left: 5px; padding: 0 6px; border-radius: 8px; background: #7a4a1f; color: #ffd9a8; font-size: 10px; }
+#history-list { list-style: none; margin: 0; padding: 0; }
+#history-list li { padding: 6px 10px; border-bottom: 1px solid #22262f; cursor: pointer; }
+#history-list li:hover { background: var(--panel-2); }
+#history-list li.undo { opacity: .6; }
+#history-list .h-top { display: flex; gap: 6px; align-items: center; }
+#history-list .h-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#history-list .h-meta { color: var(--muted); font-size: 11px; }
+#history-list .h-note { color: #c8cdd8; font-size: 12px; margin-top: 3px; }
+.who { display: inline-block; padding: 0 6px; border-radius: 8px; font-size: 10px; font-weight: 600; background: #22406b; color: #bfe0ff; }
+.who.agent { background: #6b3f16; color: #ffd9a8; }
+.who.external, .who.import { background: #3d3d3d; color: #ddd; }
+#notes-list { padding: 8px 10px; border-bottom: 1px solid var(--line); }
+#notes-list:empty { display: none; }
+.note-item { display: flex; gap: 6px; align-items: flex-start; margin-bottom: 6px; font-size: 12px; }
+.note-item .txt { flex: 1; }
+.note-item button { padding: 0 6px; font-size: 11px; }
+#banner button { margin-left: 10px; padding: 2px 10px; }
+#banner.info { background: #17293a; color: var(--accent); border-bottom-color: #22405a; }
+#toasts { position: fixed; right: 340px; bottom: 40px; display: flex; flex-direction: column; gap: 6px; z-index: 10; }
+.toast { background: #2a2118; border: 1px solid #6b3f16; color: #ffd9a8; padding: 7px 12px; border-radius: 6px; font-size: 12px; box-shadow: 0 4px 14px #0008; max-width: 420px; }
+dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 10px; padding: 16px; width: 480px; }
+dialog::backdrop { background: #0009; }
+dialog select[size] { height: 170px; }
+
+/* render mode (svre render): the canvas alone */
+body.render #topbar, body.render #banner, body.render #left, body.render #inspector, body.render #status, body.render #toasts { display: none !important; }

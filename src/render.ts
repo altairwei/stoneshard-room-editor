@@ -15,7 +15,7 @@
 // spawns, depth changed outside Create.
 import { Container, Graphics, Sprite, Text } from "pixi.js";
 import type { AssetDb, Frame } from "./assets";
-import { CELL, LayerType, gmColor, type Room, type RoomInstance, type RoomLayer } from "./room";
+import { CELL, LayerType, gmColor, type Room, type RoomInstance, type RoomLayer } from "./core/room.ts";
 
 export type NodeKind = "drawn" | "hidden" | "collision" | "marker";
 
@@ -232,11 +232,28 @@ export async function buildScene(db: AssetDb, room: Room): Promise<RoomScene> {
   return { root, nodes, gridLayer, boundsLayer };
 }
 
-export function drawGrid(g: Graphics, room: Room, zoom: number) {
+export function drawGrid(g: Graphics, room: Room, zoom: number, labels = false) {
   g.clear();
+  g.removeChildren().forEach((c) => c.destroy());
   for (let x = 0; x <= room.width; x += CELL) g.moveTo(x, 0).lineTo(x, room.height);
   for (let y = 0; y <= room.height; y += CELL) g.moveTo(0, y).lineTo(room.width, y);
   g.stroke({ color: 0xffffff, width: 1 / zoom, alpha: 0.12 });
+  if (!labels) return;
+  // cell numbers every 5 cells, the same numbering `svre grid` prints
+  const style = { fontSize: 10, fill: 0xffe08a, fontFamily: "Consolas, monospace", stroke: { color: 0x000000, width: 3 } };
+  const cells = (n: number) => Math.ceil(n / CELL);
+  for (let gx = 0; gx < cells(room.width); gx += 5)
+    for (let gy = 0; gy < cells(room.height); gy += 5) {
+      const t = new Text({ text: `${gx},${gy}`, style });
+      t.resolution = 3;
+      t.scale.set(1 / zoom);
+      t.position.set(gx * CELL + 2 / zoom, gy * CELL + 1 / zoom);
+      t.alpha = 0.85;
+      g.addChild(t);
+    }
+  for (let gx = 0; gx < cells(room.width); gx += 5) g.moveTo(gx * CELL, 0).lineTo(gx * CELL, room.height);
+  for (let gy = 0; gy < cells(room.height); gy += 5) g.moveTo(0, gy * CELL).lineTo(room.width, gy * CELL);
+  g.stroke({ color: 0xffe08a, width: 1 / zoom, alpha: 0.35 });
 }
 
 export function drawBounds(g: Graphics, room: Room, zoom: number) {

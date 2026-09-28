@@ -1,30 +1,82 @@
+// The browser half of the shared document. The dev server (server/store.ts) owns every
+// room project; this client renders its state and turns gestures into ops posted to
+// /api/doc/<name>/apply. The same ops, rules and undo history serve the human here and
+// agents over the `svre` CLI.
+//
+// Sync protocol:
+//   own edits   POST apply -> replay the normalized ops the server returns onto the local
+//               room copy (so allocated ids match) -> rebuild the scene. Serialized through
+//               a queue so local replay order == server log order.
+//   others'     "svre:event" over the Vite websocket (change/undo/notes/reloaded by anyone
+//               else, selection by anyone else) -> refetch the snapshot, rebuild, toast.
+//   conflicts   a 409 from apply means the room moved under us: refetch, toast, drop the edit.
 import "./style.css";
-import { Application, Container, Graphics } from "pixi.js";
+import { Application, Container, Graphics, Text } from "pixi.js";
 import { AssetDb } from "./assets";
-import { CELL, LayerType, type RoomInstance } from "./room";
+import { CELL, LayerType, findInstance, type Room, type RoomInstance } from "./core/room.ts";
+import { applyAll, type Op } from "./core/ops.ts";
+import type { Note, ReplayProblem } from "./core/project.ts";
 import { buildScene, drawBounds, drawGrid, markerView, spriteView, type InstanceNode, type RoomScene } from "./render";
-import { RoomDoc, addCmd, cloneInstance, deleteCmd, moveCmd, newInstance, patchCmd, relayerCmd, type InstPatch } from "./doc";
 import { FAMILIES, searchObjects, thumbHtml, type Family } from "./palette";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const esc = (s: unknown) => String(s).replace(/[&<>"]/g, (c) => `&${{ "&": "amp", "<": "lt", ">": "gt", '"': "quot" }[c]};`);
 
+const BY = "human"; // this client's author identity in the log
+
+// ---------------- server shapes ----------------
+
+interface RoomEntry { name: string; hasProject: boolean; hasCompiled: boolean; dirty: boolean; drift: boolean; generatedBy: string[] }
+interface LogSummary { rev: number; by: string; at: string; label: string; note?: string; undoOf?: number; ops: number; ids: number[] }
+interface Finding { level: string; message: string }
+interface DocSnapshot {
+  name: string; rev: number; compiledRev: number | null; dirty: boolean; drift: boolean;
+  base: unknown; baseChanged: boolean; problems: ReplayProblem[]; notes: Note[];
+  log: LogSummary[]; selection: Record<string, { ids: number[]; at: string }>;
+  undoable: string[]; redoable: string[]; room: Room;
+}
+
+class ApiError extends Error {
+  status: number;
+  detail: unknown;
+  constructor(status: number, message: string, detail?: unknown) {
+    super(message);
+    this.status = status;
+    this.detail = detail;
+  }
+}
+
+async function api(path: string, method = "GET", body?: unknown): Promise<any> {
+  const res = await fetch(path, {
+    method,
+    headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+  const text = await res.text();
+  let data: any = null;
+  try { data = text ? JSON.parse(text) : null; } catch { /* grid is text */ }
+  if (!res.ok) throw new ApiError(res.status, data?.error ?? text ?? res.statusText, data?.detail);
+  return data ?? text;
+}
+
+// ---------------- client state ----------------
+
 const db = new AssetDb();
 const app = new Application();
 const world = new Container(); // pan/zoom lives here
 const ghostLayer = new Container(); // placement preview, in world space
+const notesLayer = new Container(); // note pins, in world space
 const overlay = new Graphics(); // screen-space outlines and marquee
 
-interface RoomEntry { file: string; bytes: number; generatedBy: string[] }
-
 let rooms: RoomEntry[] = [];
-let file = "";
-let doc: RoomDoc | null = null;
+let doc: DocSnapshot | null = null;
 let scene: RoomScene | null = null;
-let nodeOf = new Map<RoomInstance, InstanceNode>();
+let nodeById = new Map<number, InstanceNode>();
 let zoom = 1;
-let hovered: InstanceNode | null = null;
-const selection = new Set<RoomInstance>();
+let hovered: number | null = null; // instance id
+const selection = new Set<number>(); // instance ids
+const remoteSel = new Map<string, number[]>(); // other authors' selections
+let flash = new Map<number, number>(); // id -> highlight-until timestamp (history click)
 let activeLayer = -1;
 const layerOff = new Set<number>();
 let tool: { kind: "select" } | { kind: "place"; object: string } = { kind: "select" };
@@ -33,6 +85,9 @@ let cursorWorld = { x: 0, y: 0 };
 let spaceHeld = false;
 let altHeld = false;
 let family: Family = FAMILIES[0];
+let lintFindings: Finding[] = [];
+let lastSeenRev = 0; // history badge counts entries past this
+let renderMode = false;
 
 const toggles = {
   snap: $<HTMLInputElement>("t-snap"),
@@ -40,82 +95,141 @@ const toggles = {
   collision: $<HTMLInputElement>("t-collision"),
   markers: $<HTMLInputElement>("t-markers"),
   grid: $<HTMLInputElement>("t-grid"),
+  notes: $<HTMLInputElement>("t-notes"),
 };
 
 const room = () => doc!.room;
 const snapOn = () => toggles.snap.checked && !altHeld;
 const snapDelta = (d: number) => (snapOn() ? Math.round(d / CELL) * CELL : Math.round(d));
 const snapPoint = (v: number) => (snapOn() ? Math.floor(v / CELL) * CELL : Math.round(v));
+const instsOf = (ids: Iterable<number>) =>
+  [...ids].map((id) => findInstance(room(), id)).filter((a): a is NonNullable<typeof a> => !!a);
+
+// ---------------- toasts ----------------
+
+function toast(text: string, ms = 4200) {
+  if (renderMode) return;
+  const el = document.createElement("div");
+  el.className = "toast";
+  el.textContent = text;
+  $("toasts").appendChild(el);
+  setTimeout(() => el.remove(), ms);
+}
 
 // ================= boot =================
 
 async function init() {
+  const params = new URLSearchParams(location.search);
+  renderMode = params.get("render") === "1";
+  if (renderMode) document.body.classList.add("render");
+
   const host = $("stage");
   await app.init({ resizeTo: host, background: 0x0d0e11, antialias: false, roundPixels: true, autoDensity: true, resolution: devicePixelRatio });
   host.appendChild(app.canvas);
   ghostLayer.alpha = 0.65;
-  app.stage.addChild(world, overlay);
+  app.stage.addChild(world, notesLayer, overlay);
 
   $("load-state").textContent = "加载资产…";
   await db.load();
+  await refreshRooms();
 
-  rooms = await fetch("/api/rooms").then((r) => r.json());
-  const sel = $<HTMLSelectElement>("room-select");
-  sel.innerHTML = rooms.map((r) => `<option value="${esc(r.file)}">${esc(r.file.replace(/\.gml$/, ""))}</option>`).join("");
-  sel.onchange = async () => {
-    if (!(await confirmDiscard())) { sel.value = file; return; }
-    await openRoom(sel.value);
-  };
-
-  for (const t of Object.values(toggles)) t.onchange = applyVisibility;
+  for (const t of Object.values(toggles)) t.onchange = () => { applyVisibility(); };
   $("b-fit").onclick = fit;
   $("b-1x").onclick = () => zoomAt(1, host.clientWidth / 2, host.clientHeight / 2);
-  $("b-save").onclick = save;
-  $("b-undo").onclick = () => doc?.undo();
-  $("b-redo").onclick = () => doc?.redo();
+  $("b-compile").onclick = compileDoc;
+  $("b-undo").onclick = () => undoRedo("undo");
+  $("b-redo").onclick = () => undoRedo("redo");
+  $("b-new").onclick = openNewDialog;
   wireTabs();
   wirePalette();
   wireViewport(host);
   wireKeys(host);
-  window.addEventListener("beforeunload", (e) => { if (doc?.dirty) e.preventDefault(); });
+  wireWs();
 
-  const initial = new URLSearchParams(location.search).get("room") ?? rooms[0]?.file;
-  if (initial) {
-    sel.value = initial;
-    await openRoom(initial);
+  const initial = params.get("room");
+  if (renderMode) {
+    // svre render: bare canvas, overlays from the URL, ready flag for the screenshotter
+    for (const k of ["grid", "collision", "hidden", "markers", "notes"] as const)
+      toggles[k].checked = params.get(k) === "1";
+    if (initial) await openRoom(initial, { silent: true });
+    const focus = params.get("focus")?.split(",").map(Number);
+    const z = Number(params.get("zoom"));
+    if (focus && focus.length === 2 && focus.every(Number.isFinite)) focusOn(focus[0], focus[1], Number.isFinite(z) && z > 0 ? z : zoom);
+    else fit();
+    (window as any).svreReady = true;
+    return;
   }
+  if (initial ?? rooms[0]?.name) await openRoom(initial ?? rooms[0].name);
 }
 
-async function confirmDiscard(): Promise<boolean> {
-  return !doc?.dirty || confirm("当前房间有未保存的修改，确定放弃？");
+async function refreshRooms(selectAfter?: string) {
+  rooms = await api("/api/rooms");
+  const sel = $<HTMLSelectElement>("room-select");
+  sel.innerHTML = rooms
+    .map((r) => {
+      const marks = `${r.hasProject ? "" : " · 未导入"}${r.dirty ? " ●" : ""}${r.drift ? " ⚠漂移" : ""}`;
+      return `<option value="${esc(r.name)}">${esc(r.name)}${marks}</option>`;
+    })
+    .join("");
+  sel.onchange = () => openRoom(sel.value);
+  if (selectAfter) sel.value = selectAfter;
+  else if (doc) sel.value = doc.name;
 }
 
-async function openRoom(f: string) {
-  $("load-state").textContent = `打开 ${f}…`;
-  const res = await fetch(`/api/room/${encodeURIComponent(f)}`);
-  const text = await res.text();
-  file = f;
-  doc = new RoomDoc(text, res.headers.get("X-Svre-Hash") ?? "");
-  doc.onChange = () => { refreshScene().then(updateChrome); };
+// ---------------- open / sync ----------------
+
+async function openRoom(name: string, opts: { silent?: boolean } = {}) {
+  const entry = rooms.find((r) => r.name === name);
+  if (entry && !entry.hasProject) {
+    // a compiled room with no project yet: offer to adopt it into a project
+    if (opts.silent || !confirm(`${name} 还没有工程。从 Codes/${name}.gml 导入（基底自动推断）？`)) {
+      $<HTMLSelectElement>("room-select").value = doc?.name ?? "";
+      return;
+    }
+    try {
+      const r = await api("/api/import", "POST", { name, by: BY });
+      toast(`已导入 ${name}：基底 ${r.base}，${r.ops} 个操作`);
+    } catch (e) {
+      alert(`导入失败：${(e as Error).message}`);
+      $<HTMLSelectElement>("room-select").value = doc?.name ?? "";
+      return;
+    }
+    await refreshRooms(name);
+  }
+  $("load-state").textContent = `打开 ${name}…`;
+  let snap: DocSnapshot;
+  try {
+    snap = await api(`/api/doc/${name}`);
+  } catch (e) {
+    $("load-state").textContent = `打开失败：${(e as Error).message}`;
+    return;
+  }
+  doc = snap;
   selection.clear();
   hovered = null;
   layerOff.clear();
+  remoteSel.clear();
+  flash.clear();
   activeLayer = guessActiveLayer();
+  lastSeenRev = snap.rev;
   setTool({ kind: "select" });
   await refreshScene();
   fit();
   updateChrome();
-  history.replaceState(null, "", `?room=${encodeURIComponent(f)}`);
-
-  const gen = rooms.find((r) => r.file === f)?.generatedBy ?? [];
-  const banner = $("banner");
-  banner.hidden = gen.length === 0;
-  banner.textContent = gen.length
-    ? `⚠ 这个文件由 ${gen.join("、")} 生成。重新运行生成器会覆盖在这里保存的修改——要么把改动搬进生成器，要么从此改由编辑器维护、别再跑生成器。`
-    : "";
+  refreshLint();
+  history.replaceState(null, "", `?room=${encodeURIComponent(name)}`);
 }
 
-// the layer new things go to: the one holding most visible drawn instances, else the first instance layer
+// pull the server's state wholesale (someone else edited, undo/redo, adopt, 409 recovery)
+async function syncDoc() {
+  if (!doc) return;
+  doc = await api(`/api/doc/${doc.name}`);
+  for (const id of [...selection]) if (!findInstance(room(), id)) selection.delete(id);
+  await refreshScene();
+  updateChrome();
+}
+
+// the layer new things go to: a well-known one, else the first instance layer
 function guessActiveLayer(): number {
   const r = room();
   const prefer = ["ForegroundInstances", "Entity", "StuffInstances", "Instances"];
@@ -126,7 +240,93 @@ function guessActiveLayer(): number {
   return r.layers.findIndex((L) => L.layer_type === LayerType.Instances);
 }
 
-// ================= scene =================
+// ---------------- edits ----------------
+
+// Serialize commits so local replay order matches the server log.
+let commitQueue: Promise<unknown> = Promise.resolve();
+
+function commit(label: string, ops: Op[]): Promise<boolean> {
+  const run = commitQueue.then(() => commitNow(label, ops));
+  commitQueue = run.catch(() => {});
+  return run;
+}
+
+async function commitNow(label: string, ops: Op[]): Promise<boolean> {
+  if (!doc || !ops.length) return false;
+  const name = doc.name;
+  try {
+    const r = await api(`/api/doc/${name}/apply`, "POST", { by: BY, label, ops });
+    if (!doc || doc.name !== name) return true; // the user switched rooms mid-flight; the server still logged it
+    applyAll(room(), r.ops); // replay the server's normalized ops (ids, expects) locally
+    doc.rev = r.rev;
+    doc.log.push({ rev: r.rev, by: BY, at: new Date().toISOString(), label, ops: r.ops.length, ids: r.ids ?? [] });
+    lintFindings = r.findings ?? lintFindings;
+    await refreshScene();
+    updateChrome();
+    return true;
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 409) {
+      toast(`冲突：${e.message} — 已刷新到最新状态`);
+      await syncDoc();
+      return false;
+    }
+    toast(`编辑失败：${(e as Error).message}`);
+    return false;
+  }
+}
+
+async function undoRedo(which: "undo" | "redo") {
+  if (!doc) return;
+  try {
+    await api(`/api/doc/${doc.name}/${which}`, "POST", { by: BY });
+    await syncDoc();
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 409) toast(which === "undo" ? "没有可撤销的修改" : "没有可重做的修改");
+    else toast((e as Error).message);
+    updateChrome();
+  }
+}
+
+async function compileDoc() {
+  if (!doc) return;
+  try {
+    const r = await api(`/api/doc/${doc.name}/compile`, "POST", {});
+    lintFindings = r.findings ?? [];
+    toast(`已编译 ${r.file}（rev ${r.rev}）${lintFindings.length ? ` · ⚠ ${lintFindings.length} 条规则提示` : ""}`);
+    await syncDoc();
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 409) {
+      if (Array.isArray(e.detail)) {
+        alert(`日志在基底上重放不通过，先修这些问题：\n\n${(e.detail as ReplayProblem[]).map((p) => `rev ${p.rev}: ${p.message}`).join("\n")}`);
+      } else if (confirm(`${e.message}\n\n确定 = 采纳磁盘上的外部改动（记成一条 external 日志）\n取消 = 不动`)) {
+        await adoptDoc();
+        await compileDoc();
+      }
+    } else alert(`编译失败：${(e as Error).message}`);
+  }
+}
+
+async function adoptDoc() {
+  if (!doc) return;
+  try {
+    const r = await api(`/api/doc/${doc.name}/adopt`, "POST", { by: "external" });
+    toast(r.ops ? `已采纳外部改动：${r.ops} 个操作记入日志` : "磁盘文件与当前状态一致");
+    await syncDoc();
+    await refreshRooms(doc.name);
+  } catch (e) {
+    alert(`采纳失败：${(e as Error).message}`);
+  }
+}
+
+async function refreshLint() {
+  if (!doc || renderMode) return;
+  try {
+    lintFindings = await api(`/api/doc/${doc.name}/lint`);
+    updateChrome();
+  } catch { /* lint is advisory */ }
+}
+
+// ---------------- scene ----------------
 
 async function refreshScene() {
   if (!doc) return;
@@ -138,14 +338,14 @@ async function refreshScene() {
   scene = next;
   world.addChild(scene.root);
   world.addChild(ghostLayer); // keep the ghost on top
-  nodeOf = new Map(scene.nodes.map((n) => [n.inst, n]));
-  // drop selected instances that no longer exist (deleted / undone add)
-  for (const i of [...selection]) if (!nodeOf.has(i)) selection.delete(i);
-  if (hovered && !nodeOf.has(hovered.inst)) hovered = null;
-  else if (hovered) hovered = nodeOf.get(hovered.inst)!;
+  nodeById = new Map(scene.nodes.map((n) => [n.inst.instance_id, n]));
+  if (hovered !== null && !nodeById.has(hovered)) hovered = null;
   applyVisibility();
   renderLayerList();
+  renderHistory();
+  drawNotes();
   inspect();
+  postSelection();
 }
 
 function applyVisibility() {
@@ -159,36 +359,45 @@ function applyVisibility() {
     if (n.kind === "hidden") n.view.alpha = 0.45;
   }
   scene.gridLayer.visible = toggles.grid.checked;
+  notesLayer.visible = toggles.notes.checked;
   redrawZoomDependent();
 }
 
 function updateChrome() {
   if (!doc) return;
   const dirty = doc.dirty;
-  $<HTMLButtonElement>("b-save").disabled = !dirty;
-  $<HTMLButtonElement>("b-save").classList.toggle("primary", dirty);
-  $<HTMLButtonElement>("b-undo").disabled = !doc.canUndo;
-  $<HTMLButtonElement>("b-redo").disabled = !doc.canRedo;
-  $("b-undo").title = doc.canUndo ? `撤销：${doc.undoLabel} (Ctrl+Z)` : "撤销 (Ctrl+Z)";
-  $("b-redo").title = doc.canRedo ? `重做：${doc.redoLabel} (Ctrl+Y)` : "重做 (Ctrl+Y)";
+  $<HTMLButtonElement>("b-compile").classList.toggle("primary", dirty);
+  $<HTMLButtonElement>("b-compile").textContent = dirty ? "编译 ●" : "编译";
+  const canUndo = doc.undoable.includes(BY);
+  const canRedo = doc.redoable.includes(BY);
+  $<HTMLButtonElement>("b-undo").disabled = !canUndo;
+  $<HTMLButtonElement>("b-redo").disabled = !canRedo;
   document.title = `${dirty ? "● " : ""}${room().name} — SV Room Editor`;
   const counts = scene!.nodes.reduce<Record<string, number>>((a, n) => ((a[n.kind] = (a[n.kind] ?? 0) + 1), a), {});
-  $("load-state").innerHTML = `${esc(room().name)} · ${room().width}×${room().height} · 可见 ${counts.drawn ?? 0} · 隐形 ${counts.hidden ?? 0} · 碰撞 ${counts.collision ?? 0} · 标记 ${counts.marker ?? 0}${dirty ? '<span class="dirty-dot">● 未保存</span>' : ""}`;
-}
+  $("load-state").innerHTML =
+    `${esc(room().name)} · rev ${doc.rev}${doc.compiledRev !== null ? ` → 编译于 ${doc.compiledRev}` : " · 从未编译"}` +
+    ` · ${room().width}×${room().height} · 可见 ${counts.drawn ?? 0} · 隐形 ${counts.hidden ?? 0} · 碰撞 ${counts.collision ?? 0} · 标记 ${counts.marker ?? 0}` +
+    (lintFindings.length ? ` · <span style="color:var(--warn)" title="${esc(lintFindings.map((f) => f.message).join("\n"))}">⚠ ${lintFindings.length} 条规则提示</span>` : "");
 
-async function save() {
-  if (!doc || !doc.dirty) return;
-  const body = doc.serialize();
-  const res = await fetch(`/api/room/${encodeURIComponent(file)}`, { method: "PUT", headers: { "X-Svre-Base": doc.baseHash }, body });
-  if (res.status === 409) {
-    const reload = confirm("磁盘上的文件在你打开之后被改过了（另一个会话，或者生成器又跑了一次），这次没有保存。\n\n确定 = 放弃编辑器里的修改，重新加载磁盘版本\n取消 = 留在编辑器里，什么都不写");
-    if (reload) { doc.markSaved(doc.baseHash); await openRoom(file); }
-    return;
-  }
-  if (!res.ok) { alert(`保存失败：${await res.text()}`); return; }
-  const { hash } = await res.json();
-  doc.markSaved(hash);
-  updateChrome();
+  // badge = entries arrived since the history tab was last open
+  const unseen = doc.log.filter((e) => e.rev > lastSeenRev).length;
+  $("history-badge").textContent = unseen ? String(unseen) : "";
+
+  // banner: drift and a changed base are the two states that need a decision
+  const entry = rooms.find((r) => r.name === doc!.name);
+  const banner = $("banner");
+  let html = "";
+  if (doc.drift)
+    html = `⚠ 磁盘上的 Codes/${esc(doc.name)}.gml 在上次编译后被外部改过（生成器？手工？）。编译前要么采纳它，要么强制覆盖。<button data-act="adopt">采纳外部改动</button>`;
+  else if (doc.baseChanged)
+    html = `⚠ 基底房间变了（游戏更新？）。日志仍照常重放${doc.problems.length ? `，但有 ${doc.problems.length} 个操作对不上` : ""}。`;
+  else if (doc.problems.length)
+    html = `⚠ ${doc.problems.length} 个日志条目在基底上重放失败，编译会被拒绝。`;
+  else if (entry?.generatedBy.length)
+    html = `这个房间曾被 ${esc(entry.generatedBy.join("、"))} 生成。工程已接管内容——别再跑生成器，它会盖掉编译产物。`;
+  banner.hidden = !html;
+  banner.innerHTML = html;
+  banner.querySelector('button[data-act="adopt"]')?.addEventListener("click", adoptDoc);
 }
 
 // ================= layers panel =================
@@ -231,10 +440,103 @@ function showTab(tab: string) {
   document.querySelectorAll<HTMLButtonElement>(".tabs button").forEach((x) => x.classList.toggle("on", x.dataset.tab === tab));
   $("tab-layers").hidden = tab !== "layers";
   $("tab-palette").hidden = tab !== "palette";
+  $("tab-history").hidden = tab !== "history";
   if (tab === "palette") $<HTMLInputElement>("palette-q").focus();
+  if (tab === "history" && doc) {
+    lastSeenRev = doc.rev;
+    $("history-badge").textContent = "";
+    renderHistory();
+  }
 }
 
-// ================= palette & placement =================
+// ================= history & notes =================
+
+const WHO: Record<string, string> = { human: "人类", import: "导入", external: "外部" };
+const whoBadge = (by: string) => {
+  const cls = by === "import" || by === "external" ? by : by === "human" ? "" : "agent";
+  return `<span class="who ${cls}">${esc(WHO[by] ?? by)}</span>`;
+};
+
+function renderHistory() {
+  if (!doc || $("tab-history").hidden) return;
+  const list = $("history-list");
+  list.innerHTML = doc.log
+    .slice()
+    .reverse()
+    .map((e) => {
+      const time = e.at.slice(11, 19);
+      return `<li data-rev="${e.rev}" class="${e.undoOf !== undefined ? "undo" : ""}" title="点击高亮这次改动碰到的实例">
+        <div class="h-top">${whoBadge(e.by)}<span class="h-label">${esc(e.label || "(未命名)")}</span><span class="h-meta">r${e.rev} · ${time}</span></div>
+        <div class="h-meta">${e.ops} 个操作${e.ids.length ? ` · id ${e.ids.slice(0, 8).join(",")}${e.ids.length > 8 ? "…" : ""}` : ""}</div>
+        ${e.note ? `<div class="h-note">${esc(e.note)}</div>` : ""}</li>`;
+    })
+    .join("");
+  list.querySelectorAll<HTMLElement>("li[data-rev]").forEach((li) => {
+    li.onclick = () => {
+      const e = doc!.log.find((x) => x.rev === Number(li.dataset.rev));
+      if (!e) return;
+      flashIds(e.ids);
+    };
+  });
+
+  const nl = $("notes-list");
+  nl.innerHTML = doc.notes
+    .map(
+      (n) => `<div class="note-item">${whoBadge(n.by)}<span class="txt">${esc(n.text)} <span class="h-meta">@${n.x},${n.y}</span></span>
+        <button data-note="${n.id}" title="删除便签">×</button></div>`,
+    )
+    .join("");
+  nl.querySelectorAll<HTMLButtonElement>("button[data-note]").forEach((b) => {
+    b.onclick = async () => {
+      await api(`/api/doc/${doc!.name}/notes`, "POST", { remove: b.dataset.note });
+      doc = await api(`/api/doc/${doc!.name}`);
+      renderHistory();
+      drawNotes();
+    };
+  });
+}
+
+function flashIds(ids: number[]) {
+  flash = new Map(ids.map((id) => [id, Date.now() + 1500]));
+  drawOverlay();
+  setTimeout(drawOverlay, 1600);
+}
+
+// note pins on the canvas: a diamond + text, world space
+function drawNotes() {
+  notesLayer.removeChildren().forEach((c) => c.destroy({ children: true }));
+  if (!doc) return;
+  for (const n of doc.notes) {
+    const pin = new Container();
+    pin.position.set(n.x, n.y);
+    pin.addChild(
+      new Graphics().poly([0, -6, 6, 0, 0, 6, -6, 0]).fill({ color: 0xffc060, alpha: 0.9 }).stroke({ color: 0x402800, width: 1, pixelLine: true }),
+    );
+    const t = new Text({ text: n.text, style: { fontSize: 10, fill: 0xffe0b0, fontFamily: "Segoe UI, sans-serif", stroke: { color: 0x000000, width: 3 } } });
+    t.position.set(9, -7);
+    t.resolution = 4;
+    pin.addChild(t);
+    notesLayer.addChild(pin);
+  }
+  notesLayer.visible = toggles.notes.checked;
+}
+
+// keep note pins readable at any zoom: counter-scale them
+function rescaleNotes() {
+  for (const pin of notesLayer.children) pin.scale.set(1 / zoom);
+}
+
+async function addNoteAt(wx: number, wy: number) {
+  if (!doc) return;
+  const text = prompt(`便签 @ ${Math.round(wx)},${Math.round(wy)}（人类和 agent 都会看到）`, "");
+  if (!text?.trim()) return;
+  await api(`/api/doc/${doc.name}/notes`, "POST", { by: BY, x: Math.round(wx), y: Math.round(wy), text: text.trim() });
+  doc = await api(`/api/doc/${doc.name}`);
+  renderHistory();
+  drawNotes();
+}
+
+// ---------------- palette & placement ----------------
 
 function wirePalette() {
   const q = $<HTMLInputElement>("palette-q");
@@ -300,22 +602,31 @@ function moveGhost() {
 
 function placeAt(wx: number, wy: number) {
   if (!doc || tool.kind !== "place") return;
-  if (room().layers[activeLayer]?.layer_type !== LayerType.Instances) {
+  const L = room().layers[activeLayer];
+  if (L?.layer_type !== LayerType.Instances) {
     alert("先在图层面板里选一个实例图层");
     return;
   }
-  const inst = newInstance(doc, tool.object, snapPoint(wx), snapPoint(wy));
-  doc.run(addCmd([{ layer: activeLayer, inst }], `放置 ${tool.object}`));
-  selection.clear();
-  selection.add(inst);
+  const object = tool.object;
+  commit(`放置 ${object}`, [{ op: "add", layer: L.layer_name!, inst: { object_definition: object, x: snapPoint(wx), y: snapPoint(wy) } as RoomInstance }]).then(
+    (ok) => {
+      if (!ok || !doc) return;
+      // select what we just placed (the id came back in the logged ops)
+      selection.clear();
+      for (const id of doc.log[doc.log.length - 1]?.ids ?? []) selection.add(id);
+      inspect();
+      drawOverlay();
+    },
+  );
 }
 
 // ================= viewport & pointer =================
 
 function redrawZoomDependent() {
   if (!scene || !doc) return;
-  if (toggles.grid.checked) drawGrid(scene.gridLayer, room(), zoom);
+  if (toggles.grid.checked) drawGrid(scene.gridLayer, room(), zoom, true);
   drawBounds(scene.boundsLayer, room(), zoom);
+  rescaleNotes();
   drawOverlay();
   $("s-zoom").textContent = `${Math.round(zoom * 100)}%`;
 }
@@ -326,6 +637,14 @@ function zoomAt(z: number, sx: number, sy: number) {
   zoom = z;
   world.scale.set(zoom);
   world.position.set(Math.round(sx - wx * zoom), Math.round(sy - wy * zoom));
+  redrawZoomDependent();
+}
+
+function focusOn(wx: number, wy: number, z: number) {
+  const host = $("stage");
+  zoom = z;
+  world.scale.set(z);
+  world.position.set(Math.round(host.clientWidth / 2 - wx * z), Math.round(host.clientHeight / 2 - wy * z));
   redrawZoomDependent();
 }
 
@@ -340,8 +659,8 @@ function fit() {
 }
 
 type Drag =
-  | { mode: "pan"; sx: number; sy: number; wx: number; wy: number }
-  | { mode: "move"; sx: number; sy: number; insts: RoomInstance[]; orig: { x: number; y: number }[]; dx: number; dy: number; moved: boolean }
+  | { mode: "pan"; sx: number; sy: number; wx: number; wy: number; button: number; moved: boolean }
+  | { mode: "move"; sx: number; sy: number; ids: number[]; orig: { id: number; x: number; y: number }[]; dx: number; dy: number; moved: boolean }
   | { mode: "marquee"; sx: number; sy: number; ex: number; ey: number; additive: boolean; moved: boolean };
 let drag: Drag | null = null;
 
@@ -364,7 +683,7 @@ function wireViewport(host: HTMLElement) {
     const { sx, sy } = local(e);
     altHeld = e.altKey;
     if (e.button === 1 || e.button === 2 || (e.button === 0 && spaceHeld)) {
-      drag = { mode: "pan", sx: e.clientX, sy: e.clientY, wx: world.x, wy: world.y };
+      drag = { mode: "pan", sx: e.clientX, sy: e.clientY, wx: world.x, wy: world.y, button: e.button, moved: false };
       host.classList.add("panning");
       return;
     }
@@ -376,18 +695,21 @@ function wireViewport(host: HTMLElement) {
     }
     const hit = pick(sx, sy);
     if (hit) {
+      const id = hit.inst.instance_id;
       if (e.shiftKey || e.ctrlKey) {
-        selection.has(hit.inst) ? selection.delete(hit.inst) : selection.add(hit.inst);
+        selection.has(id) ? selection.delete(id) : selection.add(id);
         inspect();
         drawOverlay();
+        postSelection();
         return;
       }
-      if (!selection.has(hit.inst)) { selection.clear(); selection.add(hit.inst); }
+      if (!selection.has(id)) { selection.clear(); selection.add(id); }
       activeLayer = hit.layerIndex;
       renderLayerList();
       inspect();
-      const insts = [...selection];
-      drag = { mode: "move", sx, sy, insts, orig: insts.map((i) => ({ x: i.x, y: i.y })), dx: 0, dy: 0, moved: false };
+      const orig = instsOf(selection).map((a) => ({ id: a.inst.instance_id, x: a.inst.x, y: a.inst.y }));
+      drag = { mode: "move", sx, sy, ids: orig.map((o) => o.id), orig, dx: 0, dy: 0, moved: false };
+      postSelection();
     } else {
       drag = { mode: "marquee", sx, sy, ex: sx, ey: sy, additive: e.shiftKey || e.ctrlKey, moved: false };
     }
@@ -403,6 +725,7 @@ function wireViewport(host: HTMLElement) {
     if (tool.kind === "place") moveGhost();
 
     if (drag?.mode === "pan") {
+      if (Math.abs(e.clientX - drag.sx) + Math.abs(e.clientY - drag.sy) > 4) drag.moved = true;
       world.position.set(drag.wx + e.clientX - drag.sx, drag.wy + e.clientY - drag.sy);
       drawOverlay();
       return;
@@ -414,11 +737,11 @@ function wireViewport(host: HTMLElement) {
       d.moved = true;
       d.dx = snapDelta(rdx);
       d.dy = snapDelta(rdy);
-      // live preview: move the views, not the data (the command does that on release)
-      d.insts.forEach((inst, k) => {
-        const n = nodeOf.get(inst);
-        if (n) n.view.position.set(d.orig[k].x + d.dx, d.orig[k].y + d.dy);
-      });
+      // live preview: move the views, not the data (the ops are sent on release)
+      for (const o of d.orig) {
+        const n = nodeById.get(o.id);
+        if (n) n.view.position.set(o.x + d.dx, o.y + d.dy);
+      }
       $("s-hover").textContent = `移动 Δ${d.dx}, ${d.dy}${snapOn() ? "（吸附 26px，按住 Alt 自由）" : ""}`;
       drawOverlay();
       return;
@@ -430,20 +753,36 @@ function wireViewport(host: HTMLElement) {
       return;
     }
     const h = pick(sx, sy);
-    if (h !== hovered) {
-      hovered = h;
-      $("s-hover").textContent = h ? `${h.inst.object_definition}  @${h.inst.x},${h.inst.y}  depth ${h.depth}  [${h.layer.layer_name}]` : "—";
+    if (h?.inst.instance_id !== hovered) {
+      hovered = h?.inst.instance_id ?? null;
+      $("s-hover").textContent = h ? `${h.inst.object_definition}  #${h.inst.instance_id}  @${h.inst.x},${h.inst.y}  depth ${h.depth}  [${h.layer.layer_name}]` : "—";
       drawOverlay();
     }
   });
 
-  host.addEventListener("pointerup", () => {
+  host.addEventListener("pointerup", (e) => {
     host.classList.remove("panning");
     const d = drag;
     drag = null;
     if (!d || !doc) return;
+    if (d.mode === "pan") {
+      // a right-click that didn't drag = place a note there
+      if (d.button === 2 && !d.moved && !renderMode) {
+        const r = host.getBoundingClientRect();
+        const w = toWorld(e.clientX - r.left, e.clientY - r.top);
+        addNoteAt(w.x, w.y);
+      }
+      return;
+    }
     if (d.mode === "move" && d.moved && (d.dx || d.dy)) {
-      doc.run(moveCmd(d.insts, d.dx, d.dy));
+      const ops: Op[] = d.orig.map((o) => ({
+        op: "set",
+        id: o.id,
+        set: { x: o.x + d.dx, y: o.y + d.dy },
+        expect: { x: o.x, y: o.y },
+      }));
+      const what = d.orig.length === 1 ? String(findInstance(room(), d.orig[0].id)?.inst.object_definition ?? "") : `${d.orig.length} 个实例`;
+      commit(`移动 ${what}`, ops).then((ok) => { if (!ok) refreshScene(); });
     } else if (d.mode === "move" && d.moved) {
       refreshScene(); // snapped back to zero: restore the previewed views
     } else if (d.mode === "marquee") {
@@ -453,11 +792,12 @@ function wireViewport(host: HTMLElement) {
         for (const n of scene!.nodes) {
           if (!n.view.visible) continue;
           const b = n.view.getBounds();
-          if (b.x < x1 && b.x + b.width > x0 && b.y < y1 && b.y + b.height > y0) selection.add(n.inst);
+          if (b.x < x1 && b.x + b.width > x0 && b.y < y1 && b.y + b.height > y0) selection.add(n.inst.instance_id);
         }
       }
       inspect();
       drawOverlay();
+      postSelection();
     }
   });
 }
@@ -482,16 +822,42 @@ function drawOverlay() {
     const b = n.view.getBounds();
     overlay.rect(Math.round(b.x) + 0.5, Math.round(b.y) + 0.5, Math.round(b.width), Math.round(b.height)).stroke({ color, width: w });
   };
-  if (hovered && !selection.has(hovered.inst)) box(hovered, 0xffffff, 1);
-  for (const inst of selection) {
-    const n = nodeOf.get(inst);
+  if (hovered !== null && !selection.has(hovered)) {
+    const n = nodeById.get(hovered);
+    if (n) box(n, 0xffffff, 1);
+  }
+  for (const id of selection) {
+    const n = nodeById.get(id);
     if (n) box(n, 0x6cb6ff, 2);
+  }
+  // other authors' selections (thinner, warm)
+  for (const ids of remoteSel.values()) {
+    for (const id of ids) {
+      const n = nodeById.get(id);
+      if (n) box(n, 0xffb454, 1);
+    }
+  }
+  const nowTs = Date.now();
+  for (const [id, until] of flash) {
+    if (until < nowTs) continue;
+    const n = nodeById.get(id);
+    if (n) box(n, 0xff7a30, 3);
   }
   if (drag?.mode === "marquee" && drag.moved) {
     const x = Math.min(drag.sx, drag.ex), y = Math.min(drag.sy, drag.ey);
     overlay.rect(x, y, Math.abs(drag.ex - drag.sx), Math.abs(drag.ey - drag.sy))
       .fill({ color: 0x6cb6ff, alpha: 0.08 }).stroke({ color: 0x6cb6ff, width: 1 });
   }
+}
+
+// tell the world what we have selected (agents see it in the snapshot / over WS)
+let selTimer = 0;
+function postSelection() {
+  if (!doc || renderMode) return;
+  clearTimeout(selTimer);
+  selTimer = window.setTimeout(() => {
+    api(`/api/doc/${doc!.name}/selection`, "POST", { by: BY, ids: [...selection] }).catch(() => {});
+  }, 300);
 }
 
 // ================= keyboard =================
@@ -506,27 +872,35 @@ function wireKeys(host: HTMLElement) {
     const ctrl = e.ctrlKey || e.metaKey;
     const k = e.key.toLowerCase();
 
-    if (ctrl && k === "s") { e.preventDefault(); save(); return; }
+    if (ctrl && k === "s") { e.preventDefault(); compileDoc(); return; }
     if (ctrl && k === "k") { e.preventDefault(); showTab("palette"); return; }
     if (inField) return;
     if (!doc) return;
 
     if (e.key === "Alt") { e.preventDefault(); altHeld = true; moveGhost(); return; }
     if (e.key === " ") { e.preventDefault(); spaceHeld = true; host.style.cursor = "grab"; return; }
-    if (ctrl && k === "z" && !e.shiftKey) { e.preventDefault(); doc.undo(); return; }
-    if ((ctrl && k === "y") || (ctrl && e.shiftKey && k === "z")) { e.preventDefault(); doc.redo(); return; }
+    if (ctrl && k === "z" && !e.shiftKey) { e.preventDefault(); undoRedo("undo"); return; }
+    if ((ctrl && k === "y") || (ctrl && e.shiftKey && k === "z")) { e.preventDefault(); undoRedo("redo"); return; }
     if (ctrl && k === "a") {
       e.preventDefault();
       selection.clear();
-      for (const n of scene!.nodes) if (n.view.visible && n.layerIndex === activeLayer) selection.add(n.inst);
-      inspect(); drawOverlay();
+      for (const n of scene!.nodes) if (n.view.visible && n.layerIndex === activeLayer) selection.add(n.inst.instance_id);
+      inspect(); drawOverlay(); postSelection();
       return;
     }
     if (ctrl && k === "c") { copySelection(); return; }
     if (ctrl && k === "v") { e.preventDefault(); paste(); return; }
     if (ctrl && k === "d") { e.preventDefault(); duplicate(); return; }
     if (e.key === "Delete" || e.key === "Backspace") {
-      if (selection.size) { e.preventDefault(); doc.run(deleteCmd([...selection])); }
+      if (selection.size) {
+        e.preventDefault();
+        const ops: Op[] = instsOf(selection).map((a) => ({
+          op: "delete",
+          id: a.inst.instance_id,
+          expect: { object_definition: a.inst.object_definition, x: a.inst.x, y: a.inst.y },
+        }));
+        commit(`删除 ${ops.length} 个实例`, ops).then((ok) => { if (ok) selection.clear(); });
+      }
       return;
     }
     if (e.key.startsWith("Arrow") && selection.size) {
@@ -534,12 +908,18 @@ function wireKeys(host: HTMLElement) {
       const step = e.shiftKey ? CELL : 1;
       const dx = e.key === "ArrowLeft" ? -step : e.key === "ArrowRight" ? step : 0;
       const dy = e.key === "ArrowUp" ? -step : e.key === "ArrowDown" ? step : 0;
-      doc.run(moveCmd([...selection], dx, dy, "微调"));
+      const ops: Op[] = instsOf(selection).map((a) => ({
+        op: "set",
+        id: a.inst.instance_id,
+        set: { x: a.inst.x + dx, y: a.inst.y + dy },
+        expect: { x: a.inst.x, y: a.inst.y },
+      }));
+      commit("微调", ops);
       return;
     }
     if (e.key === "Escape") {
       if (tool.kind === "place") setTool({ kind: "select" });
-      else { selection.clear(); inspect(); drawOverlay(); }
+      else { selection.clear(); inspect(); drawOverlay(); postSelection(); }
       return;
     }
     if (k === "f") fit();
@@ -552,34 +932,46 @@ function wireKeys(host: HTMLElement) {
 
 function copySelection() {
   if (!doc || !selection.size) return;
-  clipboard = [...selection].map((inst) => {
-    const at = doc!.locate(inst);
-    return { layerName: at ? room().layers[at.layer].layer_name : null, inst: JSON.parse(JSON.stringify(inst)) };
-  });
+  clipboard = instsOf(selection).map((a) => ({
+    layerName: room().layers[a.layer].layer_name,
+    inst: JSON.parse(JSON.stringify(a.inst)),
+  }));
   $("s-hover").textContent = `已复制 ${clipboard.length} 个实例`;
 }
 
-// paste so the clipboard's top-left instance lands on the cursor cell; each copy goes back
-// to a layer of the same name if this room has one, else the active layer
+// paste so the clipboard's top-left instance lands on the cursor cell; ids are stripped,
+// the server hands out fresh ones from the high-water mark
 function paste() {
   if (!doc || !clipboard.length) return;
   const minX = Math.min(...clipboard.map((c) => c.inst.x)), minY = Math.min(...clipboard.map((c) => c.inst.y));
   const dx = snapPoint(cursorWorld.x) - minX, dy = snapPoint(cursorWorld.y) - minY;
-  const entries = clipboard.map((c) => {
+  const ops: Op[] = clipboard.map((c) => {
     const li = room().layers.findIndex((L) => L.layer_name === c.layerName && L.layer_type === LayerType.Instances);
-    return { layer: li >= 0 ? li : activeLayer, inst: cloneInstance(doc!, c.inst, dx, dy) };
+    const inst = { ...c.inst, x: c.inst.x + dx, y: c.inst.y + dy } as any;
+    delete inst.instance_id;
+    return { op: "add", layer: room().layers[li >= 0 ? li : activeLayer].layer_name!, inst };
   });
-  doc.run(addCmd(entries, "粘贴"));
-  selection.clear();
-  entries.forEach((en) => selection.add(en.inst));
+  commit("粘贴", ops).then((ok) => {
+    if (!ok || !doc) return;
+    selection.clear();
+    for (const id of doc.log[doc.log.length - 1]?.ids ?? []) selection.add(id);
+    inspect(); drawOverlay();
+  });
 }
 
 function duplicate() {
   if (!doc || !selection.size) return;
-  const entries = [...selection].map((inst) => ({ layer: doc!.locate(inst)!.layer, inst: cloneInstance(doc!, inst, CELL, CELL) }));
-  doc.run(addCmd(entries, "复制"));
-  selection.clear();
-  entries.forEach((en) => selection.add(en.inst));
+  const ops: Op[] = instsOf(selection).map((a) => {
+    const inst = { ...a.inst, x: a.inst.x + CELL, y: a.inst.y + CELL } as any;
+    delete inst.instance_id;
+    return { op: "add", layer: room().layers[a.layer].layer_name!, inst };
+  });
+  commit("复制", ops).then((ok) => {
+    if (!ok || !doc) return;
+    selection.clear();
+    for (const id of doc.log[doc.log.length - 1]?.ids ?? []) selection.add(id);
+    inspect(); drawOverlay();
+  });
 }
 
 // ================= inspector =================
@@ -616,15 +1008,16 @@ function parseField(kind: FieldKind, s: string): { ok: true; v: unknown } | { ok
 
 function inspect() {
   const body = $("inspect-body");
-  if (!doc || selection.size === 0) {
-    body.innerHTML = `<span class="muted">点选一个实例；Shift 加选，空白处拖动框选。<br><br>从「对象」页签挑一个对象即可放置。</span>`;
+  const at = doc ? instsOf(selection) : [];
+  if (!doc || at.length === 0) {
+    body.innerHTML = `<span class="muted">点选一个实例；Shift 加选，空白处拖动框选。<br><br>从「对象」页签挑一个对象即可放置。<br><br>右键单击 = 在那个位置留便签。</span>`;
     return;
   }
-  const insts = [...selection];
+  const insts = at.map((a) => a.inst);
   const first = insts[0];
-  const n = nodeOf.get(first);
+  const n = nodeById.get(first.instance_id);
   const same = (k: keyof RoomInstance) => insts.every((i) => i[k] === first[k]);
-  const layerIdx = insts.map((i) => doc!.locate(i)?.layer ?? -1);
+  const layerIdx = at.map((a) => a.layer);
   const sameLayer = layerIdx.every((l) => l === layerIdx[0]);
 
   const inputs = FIELDS.map((f) => {
@@ -636,7 +1029,7 @@ function inspect() {
     .join("");
 
   const head = insts.length === 1
-    ? `<div class="insp-title">${esc(first.object_definition)}</div>`
+    ? `<div class="insp-title">${esc(first.object_definition)} <span class="h-meta">#${first.instance_id}</span></div>`
     : `<div class="insp-title">${insts.length} 个实例${same("object_definition") ? " · " + esc(first.object_definition) : ""}</div>`;
 
   let facts = "";
@@ -647,7 +1040,7 @@ function inspect() {
     if (n.customDraw) flags.push(`<span class="flag">自定义 Draw：编辑器按默认绘制</span>`);
     if (n.kind === "hidden") flags.push(`<span class="flag info">游戏内不可见</span>`);
     if (n.kind === "collision") flags.push(`<span class="flag info">碰撞戳 ${first.scale_x}×${first.scale_y} 格</span>`);
-    if (!db.objects[obj]) flags.push(`<span class="flag">原版里没有这个对象：AddRoomJson 会静默丢弃这个实例</span>`);
+    if (!db.objects[obj]) flags.push(`<span class="flag">原版里没有这个对象：确认 mod 已 AddObject 且先于 AddRoomJson</span>`);
     facts = `<div class="insp-section kv">
         <div class="k">sprite</div><div class="v">${esc(db.objects[obj]?.sprite ?? "—")}</div>
         <div class="k">格</div><div class="v">${Math.floor(first.x / CELL)}, ${Math.floor(first.y / CELL)}</div>
@@ -668,45 +1061,132 @@ function inspect() {
     ${facts}`;
 
   body.querySelectorAll<HTMLInputElement>("input[data-k]").forEach((inp) => {
-    const commit = () => {
+    const commitField = () => {
       const key = inp.dataset.k as keyof RoomInstance;
       const kind = inp.dataset.kind as FieldKind;
       if (inp.classList.contains("mixed") && inp.value === "") return;
       const p = parseField(kind, inp.value);
       if (!p.ok) { inp.style.borderColor = "var(--bad)"; return; }
       if (insts.every((i) => i[key] === p.v)) return;
-      doc!.run(patchCmd(insts, { [key]: p.v } as InstPatch, `修改 ${key}`));
+      const ops: Op[] = insts.map((i) => ({ op: "set", id: i.instance_id, set: { [key]: p.v } as any, expect: { [key]: i[key] } as any }));
+      commit(`修改 ${key}`, ops);
     };
     inp.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") { commit(); inp.blur(); }
+      if (e.key === "Enter") { commitField(); inp.blur(); }
       if (e.key === "Escape") { inspect(); }
     });
-    inp.addEventListener("change", commit);
+    inp.addEventListener("change", commitField);
   });
   body.querySelector<HTMLSelectElement>("select[data-layer]")!.onchange = (e) => {
     const to = Number((e.target as HTMLSelectElement).value);
-    doc!.run(relayerCmd(insts, to));
+    const layerName = room().layers[to].layer_name!;
+    const ops: Op[] = at.map((a) => ({
+      op: "relayer",
+      id: a.inst.instance_id,
+      layer: layerName,
+      expect: { layer: room().layers[a.layer].layer_name! },
+    }));
+    commit(`换图层 → ${layerName}`, ops);
     activeLayer = to;
   };
 }
 
-// scripting hook for headless checks (Playwright)
+// ================= new-room dialog =================
+
+async function openNewDialog() {
+  const dlg = $("new-dialog") as HTMLDialogElement;
+  const q = $<HTMLInputElement>("nd-q");
+  const baseSel = $<HTMLSelectElement>("nd-base");
+  const nameInp = $<HTMLInputElement>("nd-name");
+  const fill = async () => {
+    const list = await api(`/api/vanilla?q=${encodeURIComponent(q.value)}`);
+    baseSel.innerHTML = list
+      .map((r: any) => `<option value="${esc(r.name)}">${esc(r.name)} · ${r.w}×${r.h} · ${r.instances} 实例</option>`)
+      .join("");
+  };
+  q.oninput = fill;
+  await fill();
+  dlg.showModal();
+  $("nd-ok").onclick = async (e) => {
+    e.preventDefault();
+    const name = nameInp.value.trim();
+    if (!/^r_[A-Za-z0-9_]+$/.test(name)) { alert("房间名形如 r_sv_something"); return; }
+    if (!baseSel.value) { alert("选一个原版房间做基底"); return; }
+    try {
+      await api("/api/create", "POST", { name, base: baseSel.value, keep: $<HTMLSelectElement>("nd-keep").value, by: BY });
+    } catch (err) {
+      alert(`创建失败：${(err as Error).message}`);
+      return;
+    }
+    dlg.close();
+    await refreshRooms(name);
+    await openRoom(name);
+  };
+}
+
+// ================= websocket =================
+
+function wireWs() {
+  const hot = (import.meta as any).hot;
+  if (!hot) return;
+  hot.on("svre:event", async (e: any) => {
+    if (e?.type === "created") { await refreshRooms(); return; }
+    if (!doc || e?.room !== doc.name) return;
+    switch (e.type) {
+      case "change":
+        if (e.entry?.by === BY) break; // our own commit already replayed it
+        toast(`${whoText(e.entry?.by)}：${e.entry?.label ?? "改了房间"}（r${e.entry?.rev}）`);
+        await syncDoc();
+        break;
+      case "undo":
+        if (e.by === BY) break;
+        toast(`${whoText(e.by)} 撤销了 r${e.undone}`);
+        await syncDoc();
+        break;
+      case "compiled":
+        doc.compiledRev = e.rev;
+        doc.dirty = false;
+        updateChrome();
+        break;
+      case "notes":
+        if (e.by === BY) break;
+        toast(`${whoText(e.by)} 改了便签`);
+        doc = await api(`/api/doc/${doc.name}`);
+        renderHistory();
+        drawNotes();
+        break;
+      case "selection":
+        if (e.by === BY) break;
+        remoteSel.set(e.by, e.ids ?? []);
+        drawOverlay();
+        break;
+      case "reloaded":
+        toast("工程文件在磁盘上变了（git？另一个服务？），已重新加载");
+        await syncDoc();
+        break;
+    }
+  });
+}
+
+const whoText = (by?: string) => (by === BY ? "你" : by ? `${by}` : "有人");
+
+// scripting hook for headless checks (Playwright / svre render)
 (window as any).svre = {
-  focus(wx: number, wy: number, z: number) {
-    const host = $("stage");
-    zoom = z;
-    world.scale.set(z);
-    world.position.set(Math.round(host.clientWidth / 2 - wx * z), Math.round(host.clientHeight / 2 - wy * z));
-    redrawZoomDependent();
-  },
+  focus: focusOn,
   set(name: keyof typeof toggles, on: boolean) {
     toggles[name].checked = on;
     applyVisibility();
   },
   get doc() { return doc; },
   get selection() { return [...selection]; },
-  serialize: () => doc?.serialize(),
   screen(wx: number, wy: number) { return { x: world.x + wx * zoom, y: world.y + wy * zoom }; },
+  // a reliable click target for tests: screen center of the first visible drawn instance
+  pickTarget() {
+    const n = scene?.nodes.find((n) => n.kind === "drawn" && n.view.visible);
+    if (!n) return null;
+    const b = n.view.getBounds();
+    return { id: n.inst.instance_id, object: n.inst.object_definition, x: b.x + b.width / 2, y: b.y + b.height / 2 };
+  },
 };
 
 init().catch((e) => {

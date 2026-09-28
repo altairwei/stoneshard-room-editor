@@ -1,14 +1,16 @@
-"""End-to-end check of the P1 editing core, against a scratch copy of the mod.
+"""End-to-end check of the server-owned room document, against a scratch copy of the mod.
 
     python test/e2e_edit.py
 
 Starts its own dev server on :5179 with SVRE_MOD_DIR pointing at a temp copy of the
-StoneValley room files, so nothing here can touch the real mod. Checks:
+StoneValley room files, so nothing here can touch the real mod. Two halves:
 
-  * an unedited room serializes byte-identically (in the browser, through RoomDoc)
-  * drag-move snaps to 26 px, undo/redo restore exactly, undo-all is byte-identical again
-  * delete + undo, palette placement onto the active layer, game_objects mirror kept in sync
-  * Ctrl+S writes exactly what serialize() says; an external change makes the save refuse (409)
+  A. pure HTTP (the agent path): import a compiled room into a project, byte-identical
+     compile, apply/undo/redo with per-author history, stale-expect 409, notes,
+     selection, changes, drift -> adopt -> compile.
+  B. browser (the human path): drag-move lands in the server log, Ctrl+Z undoes it,
+     an agent edit over HTTP shows up in the open page (websocket), palette placement,
+     Ctrl+S compiles.
 """
 import json
 import os
@@ -18,6 +20,7 @@ import sys
 import tempfile
 import time
 import urllib.request
+import urllib.error
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
@@ -25,8 +28,9 @@ from playwright.sync_api import sync_playwright
 ROOT = Path(__file__).resolve().parent.parent
 CFG = json.loads((ROOT / "svre.config.json").read_text(encoding="utf-8"))
 SRC_CODES = Path(CFG["modDir"]) / "Codes"
-ROOM = "r_sv_hut_inside2.gml"
+ROOM = "r_sv_hut_inside2"
 PORT = 5179
+BASE = f"http://localhost:{PORT}"
 
 failures = []
 
@@ -37,8 +41,31 @@ def check(cond, what):
         failures.append(what)
 
 
-def layer_ids(room):
-    return sorted(i["instance_id"] for L in room["layers"] for i in L["layer_data"].get("instances", []))
+def call(method, path, body=None, expect=200):
+    req = urllib.request.Request(
+        BASE + path,
+        method=method,
+        data=json.dumps(body).encode() if body is not None else None,
+        headers={"Content-Type": "application/json"} if body is not None else {},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            raw = r.read().decode("utf-8")
+            return r.status, json.loads(raw) if raw and r.headers.get("Content-Type", "").startswith("application/json") else raw
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode("utf-8")
+        try:
+            return e.code, json.loads(raw)
+        except json.JSONDecodeError:
+            return e.code, raw
+
+
+def find_inst(doc, iid):
+    for L in doc["room"]["layers"]:
+        for i in L["layer_data"].get("instances", []):
+            if i["instance_id"] == iid:
+                return i
+    return None
 
 
 def mirror_ok(room):
@@ -53,7 +80,7 @@ def main():
     for f in SRC_CODES.iterdir():
         if f.name.startswith("r_") and f.suffix == ".gml":
             shutil.copy2(f, scratch / "Codes" / f.name)
-    target = scratch / "Codes" / ROOM
+    target = scratch / "Codes" / f"{ROOM}.gml"
     original = target.read_bytes()
 
     env = {**os.environ, "SVRE_MOD_DIR": str(scratch)}
@@ -62,109 +89,176 @@ def main():
     try:
         for _ in range(120):
             try:
-                urllib.request.urlopen(f"http://localhost:{PORT}/api/rooms", timeout=1)
+                urllib.request.urlopen(f"{BASE}/api/rooms", timeout=1)
                 break
             except Exception:
                 time.sleep(0.5)
 
+        print("A. HTTP / agent path")
+        st, roomlist = call("GET", "/api/rooms")
+        entry = next((r for r in roomlist if r["name"] == ROOM), None)
+        check(st == 200 and entry is not None and not entry["hasProject"], f"{ROOM} listed, no project yet")
+
+        st, r = call("POST", "/api/import", {"name": ROOM, "by": "test"})
+        check(st == 200 and r.get("base"), f"import guessed the base room ({r})")
+
+        st, doc = call("GET", f"/api/doc/{ROOM}")
+        check(st == 200 and doc["rev"] == 1, "project opens at rev 1")
+        check(mirror_ok(doc["room"]), "game_objects mirror matches layer instances")
+
+        st, r = call("POST", f"/api/doc/{ROOM}/compile", {})
+        check(st == 200 and target.read_bytes() == original, "compile of an untouched import is byte-identical")
+
+        # two instances to move, one per author
+        insts = [i for L in doc["room"]["layers"] for i in L["layer_data"].get("instances", [])]
+        a, b = insts[0], insts[1]
+        ax, ay, bx, by = a["x"], a["y"], b["x"], b["y"]
+
+        st, r = call("POST", f"/api/doc/{ROOM}/apply", {
+            "by": "agent-test", "label": "移动 A",
+            "ops": [{"op": "set", "id": a["instance_id"], "set": {"x": ax + 26, "y": ay}, "expect": {"x": ax, "y": ay}}]})
+        check(st == 200 and r["ids"] == [a["instance_id"]], "agent apply moves A (rev %s)" % r.get("rev"))
+
+        st, r = call("POST", f"/api/doc/{ROOM}/apply", {
+            "by": "agent-test",
+            "ops": [{"op": "set", "id": a["instance_id"], "set": {"x": ax}, "expect": {"x": ax + 999}}]})
+        check(st == 409 and r.get("detail", {}).get("code") == "expect", "stale expect refused with 409")
+
+        st, r = call("POST", f"/api/doc/{ROOM}/apply", {
+            "by": "human", "label": "移动 B",
+            "ops": [{"op": "set", "id": b["instance_id"], "set": {"x": bx, "y": by + 26}, "expect": {"x": bx, "y": by}}]})
+        check(st == 200, "human apply moves B")
+
+        st, r = call("POST", f"/api/doc/{ROOM}/undo", {"by": "agent-test"})
+        st2, doc2 = call("GET", f"/api/doc/{ROOM}")
+        ia, ib = find_inst(doc2, a["instance_id"]), find_inst(doc2, b["instance_id"])
+        check(st == 200 and ia["x"] == ax and ib["y"] == by + 26, "undo is per-author: A reverted, B untouched")
+
+        st, r = call("POST", f"/api/doc/{ROOM}/redo", {"by": "agent-test"})
+        st2, doc2 = call("GET", f"/api/doc/{ROOM}")
+        check(find_inst(doc2, a["instance_id"])["x"] == ax + 26, "redo re-applies the agent's move")
+
+        st, ch = call("GET", f"/api/doc/{ROOM}/changes?since=1")
+        check(st == 200 and len(ch["entries"]) >= 3 and ch["head"] == ch["entries"][-1]["rev"], "changes since rev 1 lists the log")
+
+        st, note = call("POST", f"/api/doc/{ROOM}/notes", {"by": "agent-test", "x": 100, "y": 130, "text": "这里要放箱子"})
+        st2, doc2 = call("GET", f"/api/doc/{ROOM}")
+        check(st == 200 and any(n["text"] == "这里要放箱子" for n in doc2["notes"]), "note lands in the project")
+        st, r = call("POST", f"/api/doc/{ROOM}/notes", {"remove": note["id"]})
+        check(st == 200, "note removed")
+
+        st, r = call("POST", f"/api/doc/{ROOM}/selection", {"by": "agent-test", "ids": [a["instance_id"]]})
+        st2, sel = call("GET", f"/api/doc/{ROOM}/selection")
+        check(a["instance_id"] in sel.get("agent-test", {}).get("ids", []), "selection round-trips")
+
+        st, grid = call("GET", f"/api/doc/{ROOM}/grid")
+        check(st == 200 and isinstance(grid, str) and len(grid) > 10, "grid returns the ASCII cell map")
+        st, qr = call("GET", f"/api/doc/{ROOM}/query?id={a['instance_id']}")
+        check(st == 200 and len(qr) == 1 and qr[0]["cell"] == [(ax + 26) // 26, ay // 26], "query by id returns the instance (at its moved cell)")
+        st, lint = call("GET", f"/api/doc/{ROOM}/lint")
+        check(st == 200 and isinstance(lint, list), f"lint returns findings ({len(lint)})")
+
+        print("A. drift / adopt")
+        clean = target.read_bytes()
+        target.write_bytes(clean + b" ")  # someone touches the compiled file
+        st, doc3 = call("GET", f"/api/doc/{ROOM}")
+        check(doc3["drift"] is True, "drift detected")
+        st, r = call("POST", f"/api/doc/{ROOM}/compile", {})
+        check(st == 409, "compile refuses while drifted")
+        st, r = call("POST", f"/api/doc/{ROOM}/adopt", {})
+        check(st == 200, f"adopt ok ({r})")
+        st, r = call("POST", f"/api/doc/{ROOM}/compile", {})
+        check(st == 200 and target.read_bytes() == clean, "compile after adopt writes exactly the adopted bytes")
+
+        # adopt already reverted both moves (they conflicted with the adopted bytes), so
+        # the room is back to the original and a compile proves it byte for byte
+        st, r = call("POST", f"/api/doc/{ROOM}/compile", {})
+        check(st == 200 and target.read_bytes() == original, "post-adopt compile restores the original bytes")
+
+        print("B. browser / human path")
         with sync_playwright() as p:
-            b = p.chromium.launch()
-            pg = b.new_page(viewport={"width": 1600, "height": 1000})
+            browser = p.chromium.launch()
+            pg = browser.new_page(viewport={"width": 1600, "height": 1000})
             errors = []
             pg.on("pageerror", lambda e: errors.append(str(e)))
             pg.on("dialog", lambda d: d.dismiss())
-            pg.goto(f"http://localhost:{PORT}/?room={ROOM}")
+            pg.goto(f"{BASE}/?room={ROOM}")
             pg.wait_for_function("document.getElementById('load-state').textContent.includes('可见')", timeout=60000)
 
-            print("round trip")
-            text = pg.evaluate("svre.serialize()")
-            check(text.encode("utf-8") == original, "unedited room serializes byte-identically")
-
-            print("drag-move with snap")
-            pg.evaluate("svre.set('hidden', true); svre.set('collision', false); svre.focus(400, 330, 2)")
+            print("drag-move goes through the server")
+            pg.evaluate("svre.set('collision', false)")
+            t0 = pg.evaluate("svre.pickTarget()")
+            check(t0 is not None, "pickTarget found a drawn instance")
+            # center the target at a known zoom so 30 screen px == 15 world px -> snaps to 26
+            wp = pg.evaluate(f"(() => {{ const r = svre.doc.room; for (const L of r.layers) for (const i of (L.layer_data.instances ?? [])) if (i.instance_id === {t0['id']}) return {{x: i.x, y: i.y}}; }})()")
+            pg.evaluate(f"svre.focus({wp['x']}, {wp['y']}, 2)")
+            pg.wait_for_timeout(150)
+            t = pg.evaluate("svre.pickTarget()")
             box = pg.locator("#stage").bounding_box()
-            s = pg.evaluate("svre.screen(300, 300)")
-            sx, sy = box["x"] + s["x"], box["y"] + s["y"]
+            sx, sy = box["x"] + t["x"], box["y"] + t["y"]
             pg.mouse.click(sx, sy)
             pg.wait_for_timeout(200)
-            picked = pg.evaluate("svre.selection.map(i => ({x: i.x, y: i.y, o: i.object_definition}))")
-            check(len(picked) == 1, f"click selects one instance ({picked})")
-            target_inst = picked[0]
-            before = json.loads(text)
+            sel = pg.evaluate("svre.selection")
+            check(len(sel) == 1, f"click selects one instance ({sel})")
+            tid = sel[0]
+            src = next(i for L in json.loads(original)["layers"] for i in L["layer_data"].get("instances", []) if i["instance_id"] == tid)
             pg.mouse.move(sx, sy)
             pg.mouse.down()
-            pg.mouse.move(sx + 30, sy + 5, steps=4)   # 15 world px right: rounds to 26 with snap
-            pg.mouse.move(sx + 60, sy + 6, steps=4)   # 30 world px -> 26
+            pg.mouse.move(sx + 30, sy + 6, steps=4)
+            pg.mouse.move(sx + 60, sy + 6, steps=4)
             pg.mouse.up()
-            pg.wait_for_timeout(300)
-            sel = pg.evaluate("svre.selection.map(i => ({x: i.x, y: i.y, o: i.object_definition}))")
-            check(len(sel) == 1, f"one instance selected after drag ({sel})")
-            if sel:
-                check(sel[0]["x"] - target_inst["x"] == 26 and sel[0]["y"] == target_inst["y"], f"moved by exactly (+26, 0): now {sel[0]['x']},{sel[0]['y']}")
-            moved = json.loads(pg.evaluate("svre.serialize()"))
-            check(mirror_ok(moved), "game_objects mirror still matches layer instances after move")
+            pg.wait_for_timeout(500)
+            st, doc4 = call("GET", f"/api/doc/{ROOM}")
+            last = doc4["log"][-1]
+            mi = find_inst(doc4, tid)
+            check(last["by"] == "human" and "移动" in last["label"], f"drag logged as a human entry ({last['label']})")
+            check(mi["x"] - src["x"] == 26 and mi["y"] == src["y"], f"server state moved by (+26, 0): now {mi['x']},{mi['y']}")
+            check(pg.evaluate("svre.selection") == [tid], "the moved instance stays selected")
 
             pg.keyboard.press("Control+z")
-            pg.wait_for_timeout(200)
-            check(pg.evaluate("svre.serialize()").encode("utf-8") == original, "undo restores byte-identical file")
-            pg.keyboard.press("Control+y")
-            pg.wait_for_timeout(200)
-            check(json.loads(pg.evaluate("svre.serialize()")) == moved, "redo reapplies the move")
-            pg.keyboard.press("Control+z")
-            pg.wait_for_timeout(200)
+            pg.wait_for_timeout(500)
+            st, doc5 = call("GET", f"/api/doc/{ROOM}")
+            check(find_inst(doc5, tid)["x"] == src["x"], "Ctrl+Z undid the drag on the server")
 
-            print("delete + undo")
-            pg.mouse.click(sx, sy)
-            n_before = len(layer_ids(before))
-            pg.keyboard.press("Delete")
-            pg.wait_for_timeout(200)
-            after_del = json.loads(pg.evaluate("svre.serialize()"))
-            check(len(layer_ids(after_del)) == n_before - 1 and mirror_ok(after_del), "delete removes one instance from layer and mirror")
-            pg.keyboard.press("Control+z")
-            pg.wait_for_timeout(200)
-            check(pg.evaluate("svre.serialize()").encode("utf-8") == original, "undo delete is byte-identical")
-            check(pg.evaluate("svre.doc.dirty") is False, "document is clean after undoing everything")
+            print("agent edit reaches the open page")
+            call("POST", f"/api/doc/{ROOM}/apply", {
+                "by": "agent-test", "label": "从 HTTP 挪一下",
+                "ops": [{"op": "set", "id": tid, "set": {"y": src["y"] + 52}, "expect": {"y": src["y"]}}]})
+            pg.wait_for_timeout(800)
+            got = pg.evaluate(f"(() => {{ const r = svre.doc.room; for (const L of r.layers) for (const i of (L.layer_data.instances ?? [])) if (i.instance_id === {tid}) return i.y; }})()")
+            check(got == src["y"] + 52, f"websocket change refetched the doc (y={got})")
 
             print("palette placement")
             pg.click(".tabs button[data-tab=palette]")
             pg.fill("#palette-q", "o_chest")
-            pg.wait_for_timeout(300)
+            pg.wait_for_timeout(400)
             first = pg.locator("#palette-list li[data-o]").first
             obj = first.get_attribute("data-o")
             first.click()
-            active = pg.evaluate("svre.doc.room.layers.findIndex(L => document.querySelector('#layer-list li.active') && L.layer_name === document.querySelector('#layer-list li.active .name').textContent.trim())")
             ps = pg.evaluate("svre.screen(390, 400)")
             pg.mouse.click(box["x"] + ps["x"], box["y"] + ps["y"])
             pg.keyboard.press("Escape")
-            pg.wait_for_timeout(300)
-            placed = json.loads(pg.evaluate("svre.serialize()"))
-            new = [i for L in placed["layers"] for i in L["layer_data"].get("instances", []) if i["object_definition"] == obj]
-            check(len(new) >= 1, f"{obj} placed")
+            pg.wait_for_timeout(500)
+            st, doc6 = call("GET", f"/api/doc/{ROOM}")
+            new = [i for L in doc6["room"]["layers"] for i in L["layer_data"].get("instances", []) if i["object_definition"] == obj]
+            check(len(new) >= 1, f"{obj} placed via the palette")
             if new:
-                i = new[-1]
+                i = max(new, key=lambda x: x["instance_id"])
                 check(i["x"] % 26 == 0 and i["y"] % 26 == 0, f"placed on a cell corner ({i['x']},{i['y']})")
-                check(list(i.keys()) == list(before["layers"][0]["layer_data"].get("instances", [{}])[0].keys()) or list(i.keys()) == list(before["game_objects"][0].keys()),
-                      "new instance has the exporter's key order")
-            check(mirror_ok(placed), "placement mirrored into game_objects")
+                check(list(i.keys()) == list(insts[0].keys()), "new instance has the exporter's key order")
+            check(doc6["log"][-1]["by"] == "human", "placement logged as human")
+            check(mirror_ok(doc6["room"]), "placement mirrored into game_objects")
 
-            print("save")
+            print("compile from the page")
             pg.keyboard.press("Control+s")
-            pg.wait_for_timeout(600)
-            on_disk = target.read_bytes()
-            check(on_disk.decode("utf-8") == pg.evaluate("svre.serialize()"), "Ctrl+S wrote exactly serialize()")
-            check(pg.evaluate("svre.doc.dirty") is False, "clean after save")
-
-            print("conflict guard")
-            target.write_bytes(on_disk + b" ")  # someone else touches the file
-            pg.keyboard.press("Delete")  # the placed chest is still selected
-            pg.wait_for_timeout(200)
-            pg.keyboard.press("Control+s")
-            pg.wait_for_timeout(600)
-            check(target.read_bytes() == on_disk + b" ", "save refused when the file changed on disk (409)")
-            check(pg.evaluate("svre.doc.dirty") is True, "edits kept in the editor after a refused save")
+            pg.wait_for_timeout(800)
+            st, doc7 = call("GET", f"/api/doc/{ROOM}")
+            disk = target.read_bytes().decode("utf-8")
+            check(doc7["dirty"] is False, "compiled: no longer dirty")
+            check(obj in disk, f"compiled file contains {obj}")
 
             check(not errors, f"no page errors {errors}")
-            b.close()
+            browser.close()
     finally:
         subprocess.run(f"taskkill /PID {server.pid} /T /F", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         shutil.rmtree(scratch, ignore_errors=True)

@@ -9,7 +9,8 @@
     <header id="topbar">
       <span class="brand">SV Room Editor</span>
       <select id="room-select" title="房间"></select>
-      <button id="b-save" title="保存 (Ctrl+S)" disabled>保存</button>
+      <button id="b-new" title="基于一个原版房间新建">新建…</button>
+      <button id="b-compile" title="把工程编译成 Codes/&lt;房间&gt;.gml（Ctrl+S）" disabled>编译</button>
       <button id="b-undo" title="撤销 (Ctrl+Z)" disabled>↶</button>
       <button id="b-redo" title="重做 (Ctrl+Y)" disabled>↷</button>
       <div class="sep"></div>
@@ -18,6 +19,7 @@
       <label class="toggle"><input type="checkbox" id="t-collision" checked /> 碰撞格</label>
       <label class="toggle"><input type="checkbox" id="t-markers" /> 标记点</label>
       <label class="toggle"><input type="checkbox" id="t-grid" /> 网格</label>
+      <label class="toggle"><input type="checkbox" id="t-notes" checked /> 便签</label>
       <div class="sep"></div>
       <button id="b-fit" title="适配窗口 (F)">适配</button>
       <button id="b-1x" title="1:1 (1)">1:1</button>
@@ -27,7 +29,11 @@
     <div id="banner" hidden></div>
     <main>
       <aside id="left" class="panel">
-        <nav class="tabs"><button data-tab="layers" class="on">图层</button><button data-tab="palette">对象</button></nav>
+        <nav class="tabs">
+          <button data-tab="layers" class="on">图层</button>
+          <button data-tab="palette">对象</button>
+          <button data-tab="history">历史<span id="history-badge"></span></button>
+        </nav>
         <section id="tab-layers"><ul id="layer-list"></ul></section>
         <section id="tab-palette" hidden>
           <div class="palette-head">
@@ -35,6 +41,10 @@
             <div id="palette-families"></div>
           </div>
           <ul id="palette-list"></ul>
+        </section>
+        <section id="tab-history" hidden>
+          <div id="notes-list"></div>
+          <ul id="history-list"></ul>
         </section>
       </aside>
       <section id="stage"></section>
@@ -46,8 +56,23 @@
       <span id="s-cell">—</span>
       <span id="s-zoom">—</span>
       <span id="s-hover" class="grow">—</span>
-      <span id="s-hint">拖动=移动/框选 · 中键/右键/空格拖=平移 · Del 删除 · Ctrl+D 复制 · Ctrl+Z 撤销</span>
+      <span id="s-hint">拖动=移动/框选 · 中键/右键/空格拖=平移 · 右键单击=便签 · Del 删除 · Ctrl+D 复制 · Ctrl+Z 撤销</span>
     </footer>
+    <div id="toasts"></div>
+    <dialog id="new-dialog">
+      <form method="dialog" class="form">
+        <div class="insp-title" style="grid-column: 1 / -1">新建房间</div>
+        <label>房间名</label><input id="nd-name" placeholder="r_sv_something" spellcheck="false" />
+        <label>原版基底</label><input id="nd-q" placeholder="搜索原版房间名…" spellcheck="false" />
+        <label></label><select id="nd-base" size="8"></select>
+        <label>内容</label>
+        <select id="nd-keep"><option value="all">复制全部实例（在原版上加工）</option><option value="controllers">只留控制器（用原版美术从头搭）</option></select>
+        <label></label>
+        <div style="display:flex; gap:8px; justify-content:flex-end">
+          <button value="cancel">取消</button><button id="nd-ok" value="ok" class="primary">创建</button>
+        </div>
+      </form>
+    </dialog>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

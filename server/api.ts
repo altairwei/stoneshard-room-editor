@@ -1,20 +1,25 @@
-// Dev-server middleware: the editor's only door to the disk.
+// Dev-server middleware: the HTTP face of the Store (server/store.ts), shared by the
+// browser and the `svre` CLI. Events (who changed what) go out on Vite's websocket as
+// the custom event "svre:event"; the CLI polls /changes instead.
 //
-//   GET /api/config          the resolved svre.config.json
-//   GET /api/rooms           every MSL room JSON under <modDir>/Codes (the .gml-wrapped kind),
-//                            with the generator script that owns it, if any
-//   GET /api/room/<file>     one room file, raw text (so the client keeps the exact bytes);
-//                            header X-Svre-Hash = sha1 of those bytes
-//   PUT /api/room/<file>     write it back. Requires X-Svre-Base = the hash the client loaded;
-//                            if the file changed on disk since (another session, a generator
-//                            run), answers 409 and writes nothing
-//   GET /assets/<path>       the extracted asset cache (pages/*.png, *.json)
-//
-// Game art never passes through the mod tree or git: it is read from assetsDir only.
-import crypto from "node:crypto";
+//   GET  /api/rooms                         every room: project? compiled? dirty? drift?
+//   GET  /api/vanilla?q=                    search vanilla rooms (bases)
+//   POST /api/import      {name, base?, by?} project from an existing Codes/<name>.gml
+//   POST /api/create      {name, base, keep?, by?}  new room on a vanilla base
+//   GET  /api/doc/<room>                    full state: room JSON, log summary, notes, selections
+//   POST /api/doc/<room>/apply   {by, label?, note?, ops}
+//   POST /api/doc/<room>/undo    {by}        /redo {by}
+//   GET  /api/doc/<room>/changes?since=N
+//   POST /api/doc/<room>/compile {force?}    write Codes/<room>.gml
+//   POST /api/doc/<room>/adopt   {by?}       log an outside edit of Codes/<room>.gml
+//   GET  /api/doc/<room>/describe | lint | grid?region= | query?id=&object=&layer=&rect=&cell=
+//   POST /api/doc/<room>/notes   {by, x, y, text} | {remove}
+//   GET|POST /api/doc/<room>/selection  {by, ids}
+//   GET  /assets/<path>                     the extracted asset cache
 import fs from "node:fs";
 import path from "node:path";
-import type { Plugin, Connect } from "vite";
+import type { Connect, Plugin } from "vite";
+import { HttpError, Store } from "./store.ts";
 
 export interface SvreConfig {
   modDir: string;
@@ -34,137 +39,95 @@ export function loadConfig(root: string): SvreConfig {
   return cfg;
 }
 
-const MIME: Record<string, string> = {
-  ".png": "image/png",
-  ".json": "application/json",
-  ".webp": "image/webp",
-};
+const MIME: Record<string, string> = { ".png": "image/png", ".json": "application/json", ".webp": "image/webp" };
 
-const sha1 = (b: Buffer | string) => crypto.createHash("sha1").update(b).digest("hex");
-
-// a room file is a Codes/*.gml whose body is the JSON AddRoomJson reads
-function isRoomFile(file: string): boolean {
-  const fd = fs.openSync(file, "r");
-  try {
-    const buf = Buffer.alloc(256);
-    const n = fs.readSync(fd, buf, 0, 256, 0);
-    return /^\s*\{\s*"name"\s*:/.test(buf.subarray(0, n).toString("utf8"));
-  } finally {
-    fs.closeSync(fd);
-  }
-}
-
-// generator scripts under <modDir>/tools that name a room file are taken to own it:
-// hand edits there are lost on the next generator run, and the UI says so
-function generatorsOf(modDir: string): Map<string, string[]> {
-  const owners = new Map<string, string[]>();
-  const toolsDir = path.join(modDir, "tools");
-  if (!fs.existsSync(toolsDir)) return owners;
-  const walk = (dir: string) => {
-    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-      const full = path.join(dir, e.name);
-      if (e.isDirectory()) { if (e.name !== "node_modules" && !e.name.startsWith(".")) walk(full); continue; }
-      if (!/\.(py|mjs|js|ts|csx)$/.test(e.name)) continue;
-      const text = fs.readFileSync(full, "utf8");
-      for (const m of text.matchAll(/r_[A-Za-z0-9_]+(?:\.gml)?/g)) {
-        const f = m[0].endsWith(".gml") ? m[0] : `${m[0]}.gml`;
-        const rel = path.relative(modDir, full).replace(/\\/g, "/");
-        const list = owners.get(f) ?? [];
-        if (!list.includes(rel)) list.push(rel);
-        owners.set(f, list);
-      }
-    }
-  };
-  walk(toolsDir);
-  return owners;
-}
-
-function send(res: any, status: number, type: string, body: string | Buffer, headers: Record<string, string> = {}) {
+function send(res: any, status: number, body: unknown, type = "application/json") {
   res.statusCode = status;
   res.setHeader("Content-Type", type);
-  for (const [k, v] of Object.entries(headers)) res.setHeader(k, v);
-  res.end(body);
+  res.end(typeof body === "string" || Buffer.isBuffer(body) ? body : JSON.stringify(body));
 }
 
-function readBody(req: any): Promise<Buffer> {
+function readJson(req: any): Promise<any> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     req.on("data", (c: Buffer) => chunks.push(c));
-    req.on("end", () => resolve(Buffer.concat(chunks)));
+    req.on("end", () => {
+      const s = Buffer.concat(chunks).toString("utf8");
+      try { resolve(s ? JSON.parse(s) : {}); } catch { reject(new HttpError(400, "body is not JSON")); }
+    });
     req.on("error", reject);
   });
 }
 
 export function svreApi(root: string): Plugin {
   const cfg = loadConfig(root);
-  const codesDir = path.join(cfg.modDir, "Codes");
+  let emit: (e: Record<string, unknown>) => void = () => {};
+  const store = new Store(cfg, (e) => emit({ ...e, at: new Date().toISOString() }));
 
   const handler: Connect.NextHandleFunction = async (req, res, next) => {
-    const url = decodeURIComponent((req.url ?? "").split("?")[0]);
-
-    if (url === "/api/config") return send(res, 200, "application/json", JSON.stringify(cfg));
-
-    if (url === "/api/rooms") {
-      const owners = generatorsOf(cfg.modDir);
-      const rooms = fs
-        .readdirSync(codesDir)
-        .filter((f) => f.endsWith(".gml"))
-        .filter((f) => isRoomFile(path.join(codesDir, f)))
-        .map((f) => ({ file: f, bytes: fs.statSync(path.join(codesDir, f)).size, generatedBy: owners.get(f) ?? [] }));
-      return send(res, 200, "application/json", JSON.stringify(rooms));
-    }
-
-    if (url.startsWith("/api/room/")) {
-      const file = path.basename(url.slice("/api/room/".length));
-      if (!file.endsWith(".gml")) return send(res, 400, "text/plain", "room files end in .gml");
-      const full = path.join(codesDir, file);
-
-      if (req.method === "GET") {
-        if (!fs.existsSync(full)) return send(res, 404, "text/plain", "no such room file");
-        const buf = fs.readFileSync(full);
-        return send(res, 200, "text/plain; charset=utf-8", buf, { "X-Svre-Hash": sha1(buf) });
+    const [rawPath, qs] = (req.url ?? "").split("?");
+    const url = decodeURIComponent(rawPath);
+    const q = Object.fromEntries(new URLSearchParams(qs ?? ""));
+    const method = req.method ?? "GET";
+    try {
+      if (url === "/api/config") return send(res, 200, cfg);
+      if (url === "/api/rooms") return send(res, 200, store.listRooms());
+      if (url === "/api/vanilla") return send(res, 200, store.searchVanilla(q.q ?? ""));
+      if (url === "/api/import" && method === "POST") {
+        const b = await readJson(req);
+        return send(res, 200, store.importRoom(b.name, { base: b.base, by: b.by }));
+      }
+      if (url === "/api/create" && method === "POST") {
+        const b = await readJson(req);
+        return send(res, 200, store.createRoom(b.name, { base: b.base, keep: b.keep, by: b.by }));
       }
 
-      if (req.method === "PUT") {
-        const base = String(req.headers["x-svre-base"] ?? "");
-        const body = await readBody(req);
-        try {
-          JSON.parse(body.toString("utf8"));
-        } catch (e) {
-          return send(res, 400, "text/plain", `refusing to write invalid JSON: ${(e as Error).message}`);
+      const m = /^\/api\/doc\/([A-Za-z0-9_]+)(?:\/([a-z]+))?$/.exec(url);
+      if (m) {
+        const [, room, action] = m;
+        if (!action && method === "GET") return send(res, 200, store.snapshot(room));
+        const body = method === "POST" ? await readJson(req) : {};
+        switch (action) {
+          case "apply": return send(res, 200, store.apply(room, body));
+          case "undo": return send(res, 200, store.undo(room, body.by));
+          case "redo": return send(res, 200, store.redo(room, body.by));
+          case "changes": return send(res, 200, store.changes(room, Number(q.since ?? 0)));
+          case "compile": return send(res, 200, store.compileRoom(room, !!body.force));
+          case "adopt": return send(res, 200, store.adoptExternal(room, body.by));
+          case "describe": return send(res, 200, store.describe(room));
+          case "lint": return send(res, 200, store.describe(room).findings);
+          case "grid": return send(res, 200, store.grid(room, q.region), "text/plain; charset=utf-8");
+          case "query": return send(res, 200, store.query(room, q));
+          case "notes":
+            if (method !== "POST") return send(res, 200, store.snapshot(room).notes);
+            return send(res, 200, body.remove ? store.removeNote(room, body.remove) : store.addNote(room, body));
+          case "selection":
+            if (method === "POST") return send(res, 200, store.setSelection(room, body.by, body.ids ?? []));
+            return send(res, 200, store.selectionOf(room));
         }
-        if (fs.existsSync(full)) {
-          const current = sha1(fs.readFileSync(full));
-          if (current !== base)
-            return send(res, 409, "application/json", JSON.stringify({ error: "changed on disk since you opened it", current }));
-        } else if (base !== "new") {
-          return send(res, 409, "application/json", JSON.stringify({ error: "file no longer exists" }));
-        }
-        // write-then-rename so a crash never leaves half a room behind
-        const tmp = `${full}.svre-tmp`;
-        fs.writeFileSync(tmp, body);
-        fs.renameSync(tmp, full);
-        return send(res, 200, "application/json", JSON.stringify({ hash: sha1(body) }));
+        return send(res, 404, { error: `unknown action ${action}` });
       }
 
-      return send(res, 405, "text/plain", "GET or PUT");
+      if (url.startsWith("/assets/")) {
+        const rel = path.normalize(url.slice("/assets/".length));
+        const full = path.join(cfg.assetsDir, rel);
+        if (!full.startsWith(path.normalize(cfg.assetsDir)) || !fs.existsSync(full))
+          return send(res, 404, "asset not found -- run the extract step (README)", "text/plain");
+        res.setHeader("Cache-Control", "max-age=86400");
+        return send(res, 200, fs.readFileSync(full), MIME[path.extname(full)] ?? "application/octet-stream");
+      }
+    } catch (e) {
+      if (e instanceof HttpError) return send(res, e.status, { error: e.message, detail: e.extra });
+      console.error(e);
+      return send(res, 500, { error: (e as Error).message });
     }
-
-    if (url.startsWith("/assets/")) {
-      const rel = path.normalize(url.slice("/assets/".length));
-      const full = path.join(cfg.assetsDir, rel);
-      if (!full.startsWith(path.normalize(cfg.assetsDir)) || !fs.existsSync(full))
-        return send(res, 404, "text/plain", "asset not found -- run the extract step (README)");
-      res.setHeader("Cache-Control", "max-age=86400");
-      return send(res, 200, MIME[path.extname(full)] ?? "application/octet-stream", fs.readFileSync(full));
-    }
-
     next();
   };
 
   return {
     name: "svre-api",
     configureServer(server) {
+      emit = (e) => server.ws.send("svre:event", e);
       server.middlewares.use(handler);
     },
   };
