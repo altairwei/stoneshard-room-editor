@@ -1,6 +1,6 @@
 // Object palette: search the 9.6k game objects by name or family, with a thumbnail cut
 // straight out of the texture page by CSS (no canvas, no extra requests beyond the page).
-import type { AssetDb } from "./assets";
+import { pageUrl, type AssetDb } from "./assets";
 
 export interface Family {
   label: string;
@@ -27,7 +27,7 @@ export function thumbHtml(db: AssetDb, object: string): string {
   const [page, sx, sy, sw, sh] = f;
   const k = Math.min(THUMB / sw, THUMB / sh, 2);
   const w = Math.max(1, Math.round(sw * k)), h = Math.max(1, Math.round(sh * k));
-  return `<div class="thumb"><div style="width:${sw}px;height:${sh}px;background:url(/assets/pages/${page}.png) -${sx}px -${sy}px no-repeat;transform:scale(${k});transform-origin:0 0;margin-right:${w - sw}px;margin-bottom:${h - sh}px"></div></div>`;
+  return `<div class="thumb"><div style="width:${sw}px;height:${sh}px;background:url(${pageUrl(page)}) -${sx}px -${sy}px no-repeat;transform:scale(${k});transform-origin:0 0;margin-right:${w - sw}px;margin-bottom:${h - sh}px"></div></div>`;
 }
 
 export function searchObjects(db: AssetDb, query: string, family: Family, limit = 150): string[] {

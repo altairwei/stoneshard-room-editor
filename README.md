@@ -101,12 +101,27 @@ node test/diff_rooms.ts    # 四个生成器产出 diff→重放→序列化逐�
 检查器写明，不猜。Step_0 同法：每帧重写 depth 的以 Step 为准（门族 `-y - start_depth`）。
 房间 CC 里改的 `start_depth` 还没读，留给 P3。
 
+**mod 自建资产**由服务器在启动时扫描 mod 目录（`server/modassets.ts`），与原版缓存叠加：
+
+- `Sprites/<name>_<N>.png`（第 N 帧）/ `<name>.png`（单帧）按名字聚成 sprite；每张 PNG
+  自成一个伪贴图页（页号 ≥ 1,000,000），走与原版完全相同的 Frame/纹理管线。
+- 原点与 margin 默认是 packer 的值（原点 (0,0)、满框 margin，TextureLoader.cs:140-141）；
+  若 mod 的 C# 里用 `local = Msl.GetSprite("name")` 后逐字段赋过
+  `OriginX/OriginY/Margin*`（修原点那套写法），扫描器把这些赋值叠上来。
+- `*.cs` 里的对象注册两种写法都认：命名参数 `Msl.AddObject("o_x", spriteName: ...,
+  parentName: ..., isVisible: ...)` 和属性赋值 `X = Msl.AddObject(...)` /
+  `Msl.GetObject(...)` 后的 `X.ParentId / X.Sprite / X.Visible`。**定义是稀疏的**——
+  只含 C# 显式设的字段，其余字段落回原版同名对象（GetObject 改原版对象的场景不会被
+  默认值盖掉）。
+- mod 对象的 Create 事实沿父链取（父链是原版的，`from` 标注保持真实来源）；
+  create.json 只扫原版，不猜 mod 对象的运行时行为。
+- 端点：`GET /api/mod-assets`（每次请求重扫，改完 C#/PNG 刷新即可），
+  `GET /mod-assets/pages/<i>.png`（no-store）。
+
 ## 已知不在画面里的东西
 
 - **野外的底层草地和树林**：运行时由 `o_biome_switcher` 生成。
-- **C# 事后补进房间的实例**（如 `o_sv_house01` 的外壳）。
-- **mod 自建的 sprite 和对象**：资产缓存只来自原版。但探针实证过：mod 对象在
-  `AddRoomJson` **之前** `AddObject` 注册就能进房间 JSON，不会被丢。
+- **C# 事后补进房间的实例**（如运行时 `instance_create` 出来的东西）。
 - 玩家、雾、光照。
 
 ## P0 保真度验证（2026-09-28）

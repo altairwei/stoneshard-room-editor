@@ -42,7 +42,7 @@ export interface RoomScene {
 const COLLISION_SPRITES = new Set(["s_handmadeCollision"]);
 
 function resolveDepth(db: AssetDb, obj: string, inst: RoomInstance, layer: RoomLayer): [number, string] {
-  const d = db.create[obj]?.depth;
+  const d = db.createOf(obj)?.depth;
   if (d && !d.conditional) {
     if (d.mode === "y") {
       const off = d.offset ?? 0;
@@ -59,14 +59,14 @@ function resolveDepth(db: AssetDb, obj: string, inst: RoomInstance, layer: RoomL
 
 function resolveVisible(db: AssetDb, obj: string, layer: RoomLayer): [boolean, string] {
   const def = db.objects[obj];
-  const v = db.create[obj]?.visible;
+  const v = db.createOf(obj)?.visible;
   let vis = def?.visible ?? true;
   let why = `对象标志 visible=${vis}`;
   if (v && !v.conditional) {
     vis = v.value;
     why = `${v.from} 的 Create 设 visible=${v.value}`;
   }
-  const draw = db.create[obj]?.draw;
+  const draw = db.createOf(obj)?.draw;
   if (vis && draw && (draw.mode === "hl" || draw.mode === "none")) {
     // doors, ladders, the furnace: their picture is baked into the walls; at rest they
     // draw nothing, only a hover highlight
@@ -173,7 +173,7 @@ export async function buildScene(db: AssetDb, room: Room): Promise<RoomScene> {
       const def = db.objects[obj];
       let [depth, depthWhy] = resolveDepth(db, obj, inst, layer);
       const [vis, visibleWhy] = resolveVisible(db, obj, layer);
-      const draw = db.create[obj]?.draw;
+      const draw = db.createOf(obj)?.draw;
       if (draw?.mode === "baked") {
         depth = draw.depth!;
         depthWhy = `${draw.depth}（scr_bgRenderAdd 烙进背景 surface，${draw.from}）`;

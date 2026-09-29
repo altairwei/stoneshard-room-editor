@@ -51,6 +51,9 @@ def main():
     for f in (Path(CFG["modDir"]) / "Codes").iterdir():
         if f.name.startswith("r_") and f.suffix == ".gml":
             shutil.copy2(f, scratch / "Codes" / f.name)
+    shutil.copytree(Path(CFG["modDir"]) / "Sprites", scratch / "Sprites")
+    for f in Path(CFG["modDir"]).glob("*.cs"):
+        shutil.copy2(f, scratch / f.name)
 
     env = {**os.environ, "SVRE_MOD_DIR": str(scratch)}
     server = subprocess.Popen(f"npx vite --port {PORT} --strictPort", cwd=ROOT, env=env, shell=True,
@@ -123,6 +126,18 @@ def main():
         ok, out = svre("describe", "r_smoke_new")
         names = json.dumps(out)
         check(ok and "r_smoke_new" in names, "the new room describes")
+
+        print("mod assets endpoint")
+        with urllib.request.urlopen(f"{SERVER}/api/mod-assets", timeout=5) as r:
+            ma = json.loads(r.read())
+        sp = ma["sprites"].get("s_sv_house01", {})
+        check(sp.get("oy") == 234 and len(sp.get("frames", [])) == 2, f"mod sprite def incl. C# origin fixup ({sp.get('w')}x{sp.get('h')}, oy={sp.get('oy')})")
+        check(ma["objects"].get("o_sv_house01", {}).get("sprite") == "s_sv_house01"
+              and ma["objects"]["o_sv_house01"].get("parent") == "c_barrierFade", "AddObject named-arg style parsed")
+        check(ma["objects"].get("o_sv_hut", {}).get("parent") == "o_globalmap_herbalistHouse", "property-assignment style parsed")
+        with urllib.request.urlopen(f"{SERVER}/mod-assets/pages/0.png", timeout=5) as r:
+            sig = r.read(8)
+        check(sig[:4] == b"\x89PNG", "pseudo page serves a PNG")
     finally:
         subprocess.run(f"taskkill /PID {server.pid} /T /F", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         shutil.rmtree(scratch, ignore_errors=True)

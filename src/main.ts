@@ -1040,7 +1040,8 @@ function inspect() {
     if (n.customDraw) flags.push(`<span class="flag">自定义 Draw：编辑器按默认绘制</span>`);
     if (n.kind === "hidden") flags.push(`<span class="flag info">游戏内不可见</span>`);
     if (n.kind === "collision") flags.push(`<span class="flag info">碰撞戳 ${first.scale_x}×${first.scale_y} 格</span>`);
-    if (!db.objects[obj]) flags.push(`<span class="flag">原版里没有这个对象：确认 mod 已 AddObject 且先于 AddRoomJson</span>`);
+    if (!db.objects[obj]) flags.push(`<span class="flag">原版和 mod 里都没有这个对象：AddRoomJson 会静默丢弃这个实例</span>`);
+    else if (db.modObjects.has(obj)) flags.push(`<span class="flag info">mod 对象（C# AddObject 注册，须先于 AddRoomJson）</span>`);
     facts = `<div class="insp-section kv">
         <div class="k">sprite</div><div class="v">${esc(db.objects[obj]?.sprite ?? "—")}</div>
         <div class="k">格</div><div class="v">${Math.floor(first.x / CELL)}, ${Math.floor(first.y / CELL)}</div>
@@ -1187,6 +1188,8 @@ const whoText = (by?: string) => (by === BY ? "你" : by ? `${by}` : "有人");
     const b = n.view.getBounds();
     return { id: n.inst.instance_id, object: n.inst.object_definition, x: b.x + b.width / 2, y: b.y + b.height / 2 };
   },
+  kindOf(id: number) { return nodeById.get(id)?.kind ?? null; },
+  spriteOf(name: string) { const d = db.sprites[name]; return d && { w: d.w, h: d.h, ox: d.ox, oy: d.oy, frames: d.frames.length }; },
 };
 
 init().catch((e) => {

@@ -80,6 +80,10 @@ def main():
     for f in SRC_CODES.iterdir():
         if f.name.startswith("r_") and f.suffix == ".gml":
             shutil.copy2(f, scratch / "Codes" / f.name)
+    # mod assets: the editor reads Sprites/*.png + the C# registrations
+    shutil.copytree(Path(CFG["modDir"]) / "Sprites", scratch / "Sprites")
+    for f in Path(CFG["modDir"]).glob("*.cs"):
+        shutil.copy2(f, scratch / f.name)
     target = scratch / "Codes" / f"{ROOM}.gml"
     original = target.read_bytes()
 
@@ -228,10 +232,76 @@ def main():
             got = pg.evaluate(f"(() => {{ const r = svre.doc.room; for (const L of r.layers) for (const i of (L.layer_data.instances ?? [])) if (i.instance_id === {tid}) return i.y; }})()")
             check(got == src["y"] + 52, f"websocket change refetched the doc (y={got})")
 
+            print("mod assets in the editor")
+            sp = pg.evaluate("svre.spriteOf('s_sv_house01')")
+            check(sp == {"w": 442, "h": 312, "ox": 0, "oy": 234, "frames": 2}, f"mod sprite def incl. the C# origin fixup ({sp})")
+            # placement goes to the active layer, and clicking the canvas sets that to
+            # whatever was hit (the prelude's drag can leave it on the in-game-hidden
+            # Colissions) -- so pick a visible instances layer first, like a human would
+            pg.click(".tabs button[data-tab=layers]")
+            pg.locator("#layer-list li", has_text="ForegroundInstances").first.click()
+            pg.click(".tabs button[data-tab=palette]")
+            pg.fill("#palette-q", "o_sv_house01")
+            # renderPalette is debounced (80ms) off the input event; wait for the list to
+            # actually reflect the query rather than guessing how long that takes
+            try:
+                pg.wait_for_function("document.querySelector('#palette-list li[data-o]')?.dataset.o === 'o_sv_house01'", timeout=5000)
+                listed = True
+            except Exception:
+                listed = False
+            first = pg.locator("#palette-list li[data-o]").first
+            check(listed and first.get_attribute("data-o") == "o_sv_house01",
+                  f"mod object appears in the palette (first={first.get_attribute('data-o')}, q={pg.eval_on_selector('#palette-q', 'el => el.value')!r})")
+            first.click()
+            ps = pg.evaluate("svre.screen(390, 400)")
+            box = pg.locator("#stage").bounding_box()
+            pg.mouse.click(box["x"] + ps["x"], box["y"] + ps["y"])
+            pg.keyboard.press("Escape")
+            # placement is a chain of async stages (HTTP commit -> server log -> WS refetch
+            # -> scene rebuild, plus the first load of the mod PNG texture), so wait for
+            # each stage instead of guessing one timeout
+            hid = None
+            hlayer = None
+            for _ in range(40):
+                st, d = call("GET", f"/api/doc/{ROOM}")
+                news = [(L, i) for L in d["room"]["layers"] for i in L["layer_data"].get("instances", [])
+                        if i["object_definition"] == "o_sv_house01"]
+                if news:
+                    hlayer, hi = max(news, key=lambda p: p[1]["instance_id"])
+                    hid = hi["instance_id"]
+                    break
+                time.sleep(0.25)
+            check(hid is not None, "placement commit landed in the server log")
+            check(hlayer and hlayer["layer_name"] == "ForegroundInstances" and hlayer["is_visible"],
+                  f"it went to the visible ForegroundInstances layer (got {hlayer and hlayer['layer_name']})")
+            if hid is not None:
+                try:
+                    pg.wait_for_function(f"svre.kindOf({hid}) === 'drawn'", timeout=10000)
+                    drawn = True
+                except Exception:
+                    drawn = False
+                check(drawn, f"placed o_sv_house01 renders as drawn (id {hid}, kind={pg.evaluate(f'svre.kindOf({hid})')})")
+                pg.keyboard.press("Control+z")
+                gone = False
+                for _ in range(40):
+                    st, d = call("GET", f"/api/doc/{ROOM}")
+                    if find_inst(d, hid) is None:
+                        gone = True
+                        break
+                    time.sleep(0.25)
+                check(gone, "Ctrl+Z undid the placement on the server")
+                if gone:
+                    try:
+                        pg.wait_for_function(f"svre.kindOf({hid}) == null", timeout=10000)
+                        removed = True
+                    except Exception:
+                        removed = False
+                    check(removed, "undo removes it from the page too")
+
             print("palette placement")
             pg.click(".tabs button[data-tab=palette]")
             pg.fill("#palette-q", "o_chest")
-            pg.wait_for_timeout(400)
+            pg.wait_for_function("document.querySelector('#palette-list li[data-o]')?.dataset.o?.includes('chest')", timeout=5000)
             first = pg.locator("#palette-list li[data-o]").first
             obj = first.get_attribute("data-o")
             first.click()

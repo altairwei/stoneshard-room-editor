@@ -1,6 +1,12 @@
 // The extracted asset cache (see extract/): objects, sprites, Create-scan facts, and the
-// game's own texture pages, loaded lazily page by page.
+// game's own texture pages, loaded lazily page by page. On top of that sits the mod's own
+// art (/api/mod-assets, parsed server-side from Sprites/*.png + the mod's C#): its frames
+// get pseudo page numbers >= MOD_PAGE_BASE and each PNG is its own "page".
 import { Assets, Rectangle, Texture, TextureSource } from "pixi.js";
+
+export const MOD_PAGE_BASE = 1_000_000;
+export const pageUrl = (i: number) =>
+  i >= MOD_PAGE_BASE ? `/mod-assets/pages/${i - MOD_PAGE_BASE}.png` : `/assets/pages/${i}.png`;
 
 export interface ObjectDef {
   sprite?: string;
@@ -38,6 +44,7 @@ export class AssetDb {
   objects: Record<string, ObjectDef> = {};
   sprites: Record<string, SpriteDef> = {};
   create: Record<string, CreateFacts> = {};
+  modObjects = new Set<string>(); // names the mod's C# registers (AddObject / GetObject fixups)
   private pages = new Map<number, Promise<TextureSource>>();
   private frameTex = new Map<string, Texture>();
 
@@ -47,12 +54,39 @@ export class AssetDb {
       return r.json();
     });
     [this.objects, this.sprites, this.create] = await Promise.all([get("objects.json"), get("sprites.json"), get("create.json")]);
+
+    // mod overlay: its objects merge over vanilla defs (a mod can re-sprite a vanilla
+    // object), its sprites likewise. Best-effort: an editor without the route still works.
+    try {
+      const ma = await fetch("/api/mod-assets").then((r) => (r.ok ? r.json() : null));
+      if (ma) {
+        for (const [name, def] of Object.entries(ma.objects) as [string, Partial<ObjectDef>][]) {
+          this.modObjects.add(name);
+          const base: ObjectDef = this.objects[name] ?? { visible: true, persistent: false, depth: 0, events: [] };
+          this.objects[name] = { ...base, ...def };
+        }
+        for (const [name, def] of Object.entries(ma.sprites) as [string, SpriteDef][]) this.sprites[name] = def;
+      }
+    } catch { /* mod assets are additive; vanilla-only editing still works */ }
   }
 
   parentChain(name: string): string[] {
     const out: string[] = [];
     for (let n = this.objects[name]?.parent; n && out.length < 32; n = this.objects[n]?.parent) out.push(n);
     return out;
+  }
+
+  // Create-scan facts for an object, falling back along its parent chain: mod objects are
+  // never in create.json (the scan is vanilla-only) but their parents are vanilla, and the
+  // facts genuinely come from that chain (the `from` attribution in the facts says so).
+  createOf(name: string): CreateFacts | undefined {
+    let n: string | undefined = name;
+    for (let i = 0; n && i < 32; i++) {
+      const f = this.create[n];
+      if (f) return f;
+      n = this.objects[n]?.parent;
+    }
+    return undefined;
   }
 
   hasEvent(name: string, type: number): boolean {
@@ -62,7 +96,7 @@ export class AssetDb {
   private page(i: number): Promise<TextureSource> {
     let p = this.pages.get(i);
     if (!p) {
-      p = Assets.load<Texture>({ src: `/assets/pages/${i}.png`, parser: "loadTextures" }).then((t) => {
+      p = Assets.load<Texture>({ src: pageUrl(i), parser: "loadTextures" }).then((t) => {
         t.source.scaleMode = "nearest";
         return t.source;
       });

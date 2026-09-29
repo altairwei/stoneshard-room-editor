@@ -15,10 +15,13 @@
 //   GET  /api/doc/<room>/describe | lint | grid?region= | query?id=&object=&layer=&rect=&cell=
 //   POST /api/doc/<room>/notes   {by, x, y, text} | {remove}
 //   GET|POST /api/doc/<room>/selection  {by, ids}
-//   GET  /assets/<path>                     the extracted asset cache
+//   GET  /assets/<path>                     the extracted asset cache (vanilla, from data.win)
+//   GET  /api/mod-assets                    the mod's own sprites/objects (Sprites/*.png + C# scan)
+//   GET  /mod-assets/pages/<i>.png          one mod sprite frame (pseudo pages, see modassets.ts)
 import fs from "node:fs";
 import path from "node:path";
 import type { Connect, Plugin } from "vite";
+import { scanModAssets, type ModAssets } from "./modassets.ts";
 import { HttpError, Store } from "./store.ts";
 
 export interface SvreConfig {
@@ -63,6 +66,9 @@ export function svreApi(root: string): Plugin {
   const cfg = loadConfig(root);
   let emit: (e: Record<string, unknown>) => void = () => {};
   const store = new Store(cfg, (e) => emit({ ...e, at: new Date().toISOString() }));
+  // the page index a client got from /api/mod-assets must stay valid for the session,
+  // so pages are served from the last scan the client could have seen
+  let modScan: ModAssets = scanModAssets(cfg.modDir);
 
   const handler: Connect.NextHandleFunction = async (req, res, next) => {
     const [rawPath, qs] = (req.url ?? "").split("?");
@@ -73,6 +79,17 @@ export function svreApi(root: string): Plugin {
       if (url === "/api/config") return send(res, 200, cfg);
       if (url === "/api/rooms") return send(res, 200, store.listRooms());
       if (url === "/api/vanilla") return send(res, 200, store.searchVanilla(q.q ?? ""));
+      if (url === "/api/mod-assets") {
+        modScan = scanModAssets(cfg.modDir);
+        return send(res, 200, { sprites: modScan.sprites, objects: modScan.objects, pages: modScan.pages.length });
+      }
+      const pm = /^\/mod-assets\/pages\/(\d+)\.png$/.exec(url);
+      if (pm) {
+        const file = modScan.pages[Number(pm[1])];
+        if (!file || !fs.existsSync(file)) return send(res, 404, "no such mod sprite page", "text/plain");
+        res.setHeader("Cache-Control", "no-store"); // mod art changes while developing
+        return send(res, 200, fs.readFileSync(file), "image/png");
+      }
       if (url === "/api/import" && method === "POST") {
         const b = await readJson(req);
         return send(res, 200, store.importRoom(b.name, { base: b.base, by: b.by }));
