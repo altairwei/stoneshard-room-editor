@@ -70,7 +70,7 @@ python cli/svre.py render r_x out.png --zoom 2 --grid --labels
 python cli/svre.py --help                         # 全部命令 + op 词汇表
 ```
 
-配套技能 `.claude/skills/stoneshard-svre`（在 mod 仓库里）教 agent 完整工作流。
+配套技能 `.claude/skills/stoneshard-room-editor`（在 mod 仓库里）教 agent 完整工作流。
 
 ## 存盘的保证
 
