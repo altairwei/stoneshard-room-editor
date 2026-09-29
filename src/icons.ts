@@ -34,6 +34,18 @@ export const ICONS: Record<string, string> = {
   zoomOut: S(`<circle cx="7" cy="7" r="4.6"/><path d="M10.3 10.3 14 14M5 7h4"/>`),
   fit: S(`<path d="M2 5.5V2h3.5M10.5 2H14v3.5M14 10.5V14h-3.5M5.5 14H2v-3.5"/>`),
   chevron: S(`<path d="M4 6l4 4 4-4"/>`),
+  // paint bucket, tipped and dripping (collision painting)
+  bucket: S(
+    `<path d="M7.4 2.5l5.1 5.1-4.9 4.9a1.9 1.9 0 0 1-2.7 0L2.6 10.2a1.9 1.9 0 0 1 0-2.7z"/><path d="M6.3 5.4l6.3 6.3"/><path d="M13.6 11.4s1.3 1.6 1.3 2.4a1.3 1.3 0 1 1-2.6 0c0-.8 1.3-2.4 1.3-2.4z"/>`,
+  ),
+  // rectangle-draw: dashed rect with corner points (zones, trigger boxes)
+  zone: S(
+    `<rect x="3" y="3.5" width="10" height="9" stroke-dasharray="2.4 1.8"/><path d="M3 3.5h.01M13 3.5h.01M3 12.5h.01M13 12.5h.01" stroke-width="2.4"/>`,
+  ),
+  // six-dot grip marking draggable rows
+  grip: F(
+    `<circle cx="6" cy="4" r="1.1"/><circle cx="10" cy="4" r="1.1"/><circle cx="6" cy="8" r="1.1"/><circle cx="10" cy="8" r="1.1"/><circle cx="6" cy="12" r="1.1"/><circle cx="10" cy="12" r="1.1"/>`,
+  ),
 };
 
 // fill every [data-icon] placeholder in the static document

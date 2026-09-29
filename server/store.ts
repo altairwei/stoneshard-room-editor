@@ -530,8 +530,12 @@ function summarize(e: Entry) {
 
 function defaultLabel(ops: Op[]): string {
   const kinds: Record<string, number> = {};
-  for (const o of ops) kinds[o.op] = (kinds[o.op] ?? 0) + 1;
-  const zh: Record<string, string> = { add: "添加", delete: "删除", set: "修改", relayer: "换图层", room: "改房间属性", layer: "改图层属性" };
+  for (const o of ops) {
+    // relayer onto the same layer is a z-order move, not a layer change
+    const k = o.op === "relayer" && (o.expect as { layer?: string } | undefined)?.layer === o.layer ? "reorder" : o.op;
+    kinds[k] = (kinds[k] ?? 0) + 1;
+  }
+  const zh: Record<string, string> = { add: "添加", delete: "删除", set: "修改", relayer: "换图层", reorder: "调整顺序", room: "改房间属性", layer: "改图层属性" };
   return Object.entries(kinds).map(([k, n]) => `${zh[k] ?? k} ${n}`).join("，");
 }
 

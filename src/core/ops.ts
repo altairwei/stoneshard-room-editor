@@ -16,6 +16,11 @@
 // Two invariants every op keeps: key order is never changed (AddRoomJson reads
 // positionally), and the top-level game_objects list mirrors the layer instances by id
 // (MSL ignores it for GMS2, but the file should not lie).
+//
+// `relayer` doubles as the reorder op: with layer = the instance's own layer and a
+// `before` anchor it just moves the instance inside its layer's array. Array order is
+// creation order in-game, and creation order breaks same-depth draw ties (later = on
+// top), so this is how "bring forward / send backward" is expressed.
 import { INSTANCE_KEYS, LayerType, findInstance, layerIndexByName, type Room, type RoomInstance } from "./room.ts";
 
 export type InstFields = Partial<Omit<RoomInstance, "instance_id">>;
@@ -147,9 +152,13 @@ export function applyOp(room: Room, op: Op): Op {
       checkExpect(`relayer ${op.id}`, { layer: fromName }, op.expect);
       const to = needLayer(room, op.layer);
       const fromList = room.layers[at.layer].layer_data.instances as RoomInstance[];
+      const toList = room.layers[to].layer_data.instances as RoomInstance[];
+      if (op.before != null) {
+        if (op.before === op.id) throw new OpError("invalid", `relayer ${op.id}: an instance cannot be its own anchor`);
+        if (!toList.some((i) => i.instance_id === op.before)) throw new OpError("missing", `relayer: anchor id ${op.before} is not in layer "${op.layer}"`);
+      }
       const next = fromList[at.index + 1]?.instance_id ?? null;
       fromList.splice(at.index, 1);
-      const toList = room.layers[to].layer_data.instances as RoomInstance[];
       const bi = op.before != null ? toList.findIndex((i) => i.instance_id === op.before) : -1;
       insertBefore(toList, at.inst, bi);
       return { op: "relayer", id: op.id, layer: fromName, before: next, expect: { layer: op.layer } };

@@ -19,6 +19,7 @@
     </header>
     <div id="options">
       <span id="opt-tool">选择</span>
+      <span id="opt-extra"></span>
       <div class="sep"></div>
       <label class="itoggle" title="吸附：拖动与放置按 26px 格对齐；按住 Alt 临时自由 (S)"><input type="checkbox" id="t-snap" checked /><i data-icon="snap"></i></label>
       <label class="itoggle" title="隐形对象 (Shift+H)"><input type="checkbox" id="t-hidden" checked /><i data-icon="eye"></i></label>
@@ -50,6 +51,11 @@
         <button data-tool="select" class="on" data-icon="select" title="选择 (V)" aria-pressed="true"></button>
         <button data-tool="hand" data-icon="hand" title="抓手 (H)：拖动平移；空格临时切换" aria-pressed="false"></button>
         <button data-tool="place" data-icon="place" title="放置 (P)：在「对象」页签挑选，单击放入" aria-pressed="false"></button>
+        <div class="tsep"></div>
+        <button data-tool="collision" data-icon="bucket" title="碰撞涂刷 (C)：拖动刷 o_hut_wall 碰撞格；Alt+拖动 = 擦除" aria-pressed="false"></button>
+        <button data-tool="zone" data-icon="zone" title="区域 (T)：拖出一个矩形（Trigger/相机/表面等纯色盒功能对象），在选项栏换对象" aria-pressed="false"></button>
+        <button data-tool="marker" data-icon="markers" title="标记 (M)：单击放出生点/灯光等功能标记，在选项栏换对象" aria-pressed="false"></button>
+        <div class="tsep"></div>
         <button data-tool="note" data-icon="note" title="便签 (N)：单击在那个位置留便签" aria-pressed="false"></button>
       </nav>
       <div id="canvas-area">
@@ -65,11 +71,16 @@
         </section>
         <section class="dock-panel dock-tabs">
           <nav class="tabs">
-            <button data-tab="layers" class="on">图层</button>
+            <button data-tab="insts" class="on" title="实例图层：每个实例一行，按遮挡顺序排列；拖动调序，眼睛 = 编辑器内隐藏">图层</button>
+            <button data-tab="layers" title="GameMaker 图层（分组）：放置目标层与整层显隐">层组</button>
             <button data-tab="palette">对象</button>
             <button data-tab="history">历史<span id="history-badge"></span></button>
           </nav>
-          <section id="tab-layers"><ul id="layer-list"></ul></section>
+          <section id="tab-insts">
+            <div class="palette-head"><input id="insts-q" type="search" placeholder="筛选实例名或 #id…" autocomplete="off" /></div>
+            <ul id="inst-list"></ul>
+          </section>
+          <section id="tab-layers" hidden><ul id="layer-list"></ul></section>
           <section id="tab-palette" hidden>
             <div class="palette-head">
               <input id="palette-q" type="search" placeholder="搜索对象名…  (Ctrl+K)" autocomplete="off" />
@@ -90,7 +101,7 @@
       <span id="s-cell">—</span>
       <span id="s-zoom">—</span>
       <span id="s-hover" class="grow">—</span>
-      <span id="s-hint">V 选择 · H 抓手 · P 放置 · N 便签 · 空格/中键拖=平移 · 右键单击=便签 · Shift+H 隐形 · G 网格 · S 吸附 · F 适配</span>
+      <span id="s-hint">V 选择 · H 抓手 · P 放置 · C 碰撞 · T 区域 · M 标记 · N 便签 · 空格/右键拖=平移 · Shift+H 隐形 · G 网格 · S 吸附 · F 适配</span>
     </footer>
     <div id="toasts"></div>
     <dialog id="new-dialog">

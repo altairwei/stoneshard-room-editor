@@ -152,6 +152,29 @@ def main():
         st, ch = call("GET", f"/api/doc/{ROOM}/changes?since=1")
         check(st == 200 and len(ch["entries"]) >= 3 and ch["head"] == ch["entries"][-1]["rev"], "changes since rev 1 lists the log")
 
+        print("A. z-order: same-layer relayer = reorder")
+        st, docr = call("GET", f"/api/doc/{ROOM}")
+        lay = next(L for L in docr["room"]["layers"] if L["layer_type"] == 2 and len(L["layer_data"].get("instances", [])) >= 3)
+        arr = [i["instance_id"] for i in lay["layer_data"]["instances"]]
+        victim, anchor = arr[0], arr[2]
+        st, r = call("POST", f"/api/doc/{ROOM}/apply", {
+            "by": "agent-test", "label": "提到前面",
+            "ops": [{"op": "relayer", "id": victim, "layer": lay["layer_name"], "before": anchor,
+                     "expect": {"layer": lay["layer_name"]}}]})
+        st2, docr2 = call("GET", f"/api/doc/{ROOM}")
+        arr2 = [i["instance_id"] for i in next(L for L in docr2["room"]["layers"] if L["layer_name"] == lay["layer_name"])["layer_data"]["instances"]]
+        check(st == 200 and arr2.index(victim) == arr2.index(anchor) - 1, "same-layer relayer moves the instance just before its anchor")
+        st, r = call("POST", f"/api/doc/{ROOM}/apply", {
+            "by": "agent-test", "ops": [{"op": "relayer", "id": victim, "layer": lay["layer_name"], "before": victim}]})
+        check(st == 409 and r.get("detail", {}).get("code") == "invalid", "self-anchor refused with 409")
+        st, r = call("POST", f"/api/doc/{ROOM}/apply", {
+            "by": "agent-test", "ops": [{"op": "relayer", "id": victim, "layer": lay["layer_name"], "before": 99999999}]})
+        check(st == 409 and r.get("detail", {}).get("code") == "missing", "missing anchor refused with 409")
+        st, r = call("POST", f"/api/doc/{ROOM}/undo", {"by": "agent-test"})
+        st2, docr3 = call("GET", f"/api/doc/{ROOM}")
+        arr3 = [i["instance_id"] for i in next(L for L in docr3["room"]["layers"] if L["layer_name"] == lay["layer_name"])["layer_data"]["instances"]]
+        check(st == 200 and arr3 == arr, "undo restores the original order")
+
         st, note = call("POST", f"/api/doc/{ROOM}/notes", {"by": "agent-test", "x": 100, "y": 130, "text": "这里要放箱子"})
         st2, doc2 = call("GET", f"/api/doc/{ROOM}")
         check(st == 200 and any(n["text"] == "这里要放箱子" for n in doc2["notes"]), "note lands in the project")
@@ -371,6 +394,140 @@ def main():
                 check(list(i.keys()) == list(insts[0].keys()), "new instance has the exporter's key order")
             check(doc6["log"][-1]["by"] == "human", "placement logged as human")
             check(mirror_ok(doc6["room"]), "placement mirrored into game_objects")
+
+            print("functional-object tools")
+            st, d0 = call("GET", f"/api/doc/{ROOM}")
+            taken = {(i["x"] // 26, i["y"] // 26) for L in d0["room"]["layers"] for i in L["layer_data"].get("instances", []) if i["object_definition"] == "o_hut_wall"}
+            spot = None
+            for cx in range(1, 27):
+                for cy in range(1, 25):
+                    if all((cx + dx, cy + dy) not in taken for dx in (0, 1) for dy in (0, 1)):
+                        spot = (cx, cy)
+                        break
+                if spot:
+                    break
+            check(spot is not None, "found a free 2x2 cell span for painting")
+            # identify the collision layer structurally (vanilla spells it "Colissions")
+            coll_name = next(L["layer_name"] for L in d0["room"]["layers"] if any(i["object_definition"] == "o_hut_wall" for i in L["layer_data"].get("instances", [])))
+            box = pg.locator("#stage").bounding_box()
+            pg.evaluate(f"svre.focus({spot[0] * 26 + 26}, {spot[1] * 26 + 26}, 2)")
+            pg.wait_for_timeout(150)
+
+            pg.click("#toolbox button[data-tool=collision]")
+            check(pg.evaluate("svre.toolKind()") == "collision", "collision tool armed")
+            p0 = pg.evaluate(f"svre.screen({spot[0] * 26 + 4}, {spot[1] * 26 + 4})")
+            p1 = pg.evaluate(f"svre.screen({(spot[0] + 2) * 26 - 4}, {(spot[1] + 2) * 26 - 4})")
+            pg.mouse.move(box["x"] + p0["x"], box["y"] + p0["y"])
+            pg.mouse.down()
+            pg.mouse.move(box["x"] + p1["x"], box["y"] + p1["y"], steps=5)
+            pg.mouse.up()
+            pg.wait_for_timeout(700)
+            st, d1 = call("GET", f"/api/doc/{ROOM}")
+            stamps = {(i["x"] // 26, i["y"] // 26) for L in d1["room"]["layers"] for i in L["layer_data"].get("instances", []) if i["object_definition"] == "o_hut_wall"}
+            newcells = stamps - taken
+            check(len(newcells) == 4, f"painted a 2x2 span ({sorted(newcells)})")
+            lay = next((L["layer_name"] for L in d1["room"]["layers"] for i in L["layer_data"].get("instances", []) if (i["x"] // 26, i["y"] // 26) == spot and i["object_definition"] == "o_hut_wall"), None)
+            check(lay == coll_name, f"stamps landed in the collision layer ({lay})")
+            check(d1["log"][-1]["label"] == "涂刷碰撞 4 格", f"paint commit labelled ({d1['log'][-1]['label']})")
+            pg.keyboard.down("Alt")
+            pg.mouse.move(box["x"] + p0["x"], box["y"] + p0["y"])
+            pg.mouse.down()
+            pg.mouse.move(box["x"] + p1["x"], box["y"] + p1["y"], steps=5)
+            pg.mouse.up()
+            pg.keyboard.up("Alt")
+            pg.wait_for_timeout(700)
+            st, d2 = call("GET", f"/api/doc/{ROOM}")
+            stamps2 = {(i["x"] // 26, i["y"] // 26) for L in d2["room"]["layers"] for i in L["layer_data"].get("instances", []) if i["object_definition"] == "o_hut_wall"}
+            check(stamps2 == taken, "Alt+drag erased the painted span")
+
+            pg.click("#toolbox button[data-tool=zone]")
+            try:
+                pg.wait_for_function("!document.querySelector('#opt-extra select')?.disabled", timeout=20000)
+                zready = True
+            except Exception:
+                zready = False
+            check(zready, "zone object picker populated")
+            zone_obj = pg.eval_on_selector("#opt-extra select", "e => e.value")
+            check(zone_obj == "oCameraStatic", f"zone tool defaults to oCameraStatic ({zone_obj})")
+            cams0 = [i for L in d2["room"]["layers"] for i in L["layer_data"].get("instances", []) if i["object_definition"] == "oCameraStatic"]
+            q0 = pg.evaluate(f"svre.screen({spot[0] * 26 + 2}, {spot[1] * 26 + 2})")
+            q1 = pg.evaluate(f"svre.screen({(spot[0] + 4) * 26 - 2}, {(spot[1] + 2) * 26 - 2})")
+            pg.mouse.move(box["x"] + q0["x"], box["y"] + q0["y"])
+            pg.mouse.down()
+            pg.mouse.move(box["x"] + q1["x"], box["y"] + q1["y"], steps=5)
+            pg.mouse.up()
+            pg.wait_for_timeout(700)
+            st, d3 = call("GET", f"/api/doc/{ROOM}")
+            cams = [i for L in d3["room"]["layers"] for i in L["layer_data"].get("instances", []) if i["object_definition"] == "oCameraStatic"]
+            check(len(cams) == len(cams0) + 1, "zone draw added an oCameraStatic")
+            znew = max(cams, key=lambda i: i["instance_id"])
+            try:
+                pg.wait_for_function(f"svre.geom({znew['instance_id']}) !== null", timeout=5000)
+                g = pg.evaluate(f"svre.geom({znew['instance_id']})")
+            except Exception:
+                g = None
+            check(g is not None and abs(znew["scale_x"] - 104 / g["lb"]["w"]) < 0.02 and abs(znew["scale_y"] - 52 / g["lb"]["h"]) < 0.02,
+                  f"box scaled to the dragged span ({znew['scale_x']:.3f}x{znew['scale_y']:.3f})")
+            zl = next((L["layer_name"] for L in d3["room"]["layers"] if any(i["instance_id"] == znew["instance_id"] for i in L["layer_data"].get("instances", []))), None)
+            check(zl is not None and "amera" in zl, f"camera box landed in the camera layer ({zl})")
+            pg.keyboard.press("Control+z")
+            pg.wait_for_timeout(500)
+
+            pg.click("#toolbox button[data-tool=marker]")
+            mk = pg.eval_on_selector("#opt-extra select", "e => e.value")
+            check(mk == "o_position_starter", f"marker tool defaults to o_position_starter ({mk})")
+            starters0 = [i for L in d3["room"]["layers"] for i in L["layer_data"].get("instances", []) if i["object_definition"] == "o_position_starter"]
+            mp = pg.evaluate(f"svre.screen({spot[0] * 26 + 130}, {spot[1] * 26 + 52})")
+            pg.mouse.click(box["x"] + mp["x"], box["y"] + mp["y"])
+            pg.wait_for_timeout(700)
+            st, d4 = call("GET", f"/api/doc/{ROOM}")
+            starters = [i for L in d4["room"]["layers"] for i in L["layer_data"].get("instances", []) if i["object_definition"] == "o_position_starter"]
+            check(len(starters) == len(starters0) + 1, "marker click added an o_position_starter")
+            mnew = max(starters, key=lambda i: i["instance_id"]) if starters else None
+            check(mnew is not None and mnew["x"] % 26 == 0 and mnew["y"] % 26 == 0, f"marker snapped to a cell corner ({mnew and (mnew['x'], mnew['y'])})")
+            check(d4["log"][-1]["label"].startswith("标记 o_position_starter"), f"marker commit labelled ({d4['log'][-1]['label']})")
+            pg.keyboard.press("Control+z")
+            pg.wait_for_timeout(500)
+            pg.keyboard.press("Escape")
+
+            print("instance layers tab")
+            pg.click(".tabs button[data-tab=insts]")
+            pg.wait_for_timeout(200)
+            n_rows = pg.evaluate("svre.instRowCount()")
+            st, d5 = call("GET", f"/api/doc/{ROOM}")
+            total = sum(len(L["layer_data"].get("instances", [])) for L in d5["room"]["layers"])
+            check(n_rows == total, f"图层 tab lists every instance ({n_rows}/{total})")
+            fg = next(L for L in d5["room"]["layers"] if L["layer_name"] == "ForegroundInstances")
+            fid = fg["layer_data"]["instances"][0]["instance_id"]
+            pg.click(f"#inst-list li.inst[data-id='{fid}']")
+            pg.wait_for_timeout(200)
+            check(pg.evaluate("svre.selection") == [fid], f"row click selects #{fid}")
+            check(pg.eval_on_selector(f"#inst-list li.inst[data-id='{fid}']", "e => e.classList.contains('sel')"), "row highlights on selection")
+            check(pg.evaluate(f"svre.visOf({fid})") is True, "row starts visible")
+            pg.click(f"#inst-list li.inst[data-id='{fid}'] .eye")
+            pg.wait_for_timeout(200)
+            check(pg.evaluate(f"svre.visOf({fid})") is False, "eye hides the instance in the editor")
+            check(pg.eval_on_selector(f"#inst-list li.inst[data-id='{fid}']", "e => e.classList.contains('off')"), "row dims when hidden")
+            pg.click(f"#inst-list li.inst[data-id='{fid}'] .eye")
+            pg.wait_for_timeout(200)
+            check(pg.evaluate(f"svre.visOf({fid})") is True, "eye again shows it")
+
+            # dragging a row onto another row's top half moves it just in front of that row
+            col = next(L for L in d5["room"]["layers"] if L["layer_name"] == coll_name)
+            arr = [i["instance_id"] for i in col["layer_data"]["instances"]]
+            A, C = arr[-3], arr[-1]
+            pg.locator(f"#inst-list li.inst[data-id='{A}']").drag_to(
+                pg.locator(f"#inst-list li.inst[data-id='{C}']"), target_position={"x": 60, "y": 2})
+            pg.wait_for_timeout(700)
+            st, d6 = call("GET", f"/api/doc/{ROOM}")
+            arr6 = [i["instance_id"] for i in next(L for L in d6["room"]["layers"] if L["layer_name"] == coll_name)["layer_data"]["instances"]]
+            check(len(arr6) == len(arr) and arr6[-1] == A and arr6[-2] == C, f"row drag reordered the layer array (front-most now #{A})")
+            check(d6["log"][-1]["label"].startswith("调整顺序"), f"reorder labelled ({d6['log'][-1]['label']})")
+            pg.keyboard.press("Control+z")
+            pg.wait_for_timeout(600)
+            st, d7 = call("GET", f"/api/doc/{ROOM}")
+            arr7 = [i["instance_id"] for i in next(L for L in d7["room"]["layers"] if L["layer_name"] == coll_name)["layer_data"]["instances"]]
+            check(arr7 == arr, "Ctrl+Z restores the layer order")
 
             print("compile from the page")
             pg.keyboard.press("Control+s")

@@ -32,6 +32,9 @@ Ops vocabulary for apply (JSON array; instance ids are the room JSON's instance_
     {"op": "delete",  "id": 100234}
     {"op": "set",     "id": 100234, "set": {"x": 416, "creation_code": "..."}, "expect": {"x": 390}}
     {"op": "relayer", "id": 100234, "layer": "ForegroundInstances"}
+    {"op": "relayer", "id": 100234, "layer": "<its own layer>", "before": 100240}   # same layer = z-order move:
+                                                                                    # sit just before the anchor (later in
+                                                                                    # the array = drawn on top at equal depth)
     {"op": "room",    "set": {"width": 1300}, "expect": {"width": 1040}}
     {"op": "layer",   "layer": "Instances", "set": {"is_visible": true}}
 

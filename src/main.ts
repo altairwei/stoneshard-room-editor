@@ -81,9 +81,25 @@ const remoteSel = new Map<string, number[]>(); // other authors' selections
 let flash = new Map<number, number>(); // id -> highlight-until timestamp (history click)
 let activeLayer = -1;
 const layerOff = new Set<number>();
-type Tool = { kind: "select" } | { kind: "hand" } | { kind: "note" } | { kind: "place"; object: string };
+type Tool =
+  | { kind: "select" }
+  | { kind: "hand" }
+  | { kind: "note" }
+  | { kind: "place"; object: string } // palette pick, single clicks
+  | { kind: "collision" } // paint/erase o_hut_wall cells like a bucket/eraser
+  | { kind: "zone"; object: string } // drag out a scaled plain-box object (trigger, camera, surface…)
+  | { kind: "marker"; object: string }; // click to drop a functional marker (starter, light…)
 let tool: Tool = { kind: "select" };
 let lastPlaced: string | null = null; // the P key re-arms the last palette pick
+let zoneObject = "oCameraStatic";
+let markerObject = "o_position_starter";
+let zoneObjectsCache: Promise<string[]> | null = null;
+let markerObjectsCache: string[] | null = null;
+// o_hut_wall is THE walk-grid collision stamp: the only room object that writes
+// o_controller.newgrid; sprite s_handmadeCollision 26×26 at origin (0,0).
+const COLLISION_PAINT = "o_hut_wall";
+const hiddenInsts = new Set<number>(); // per-instance editor-local hide (the eyes in the 图层 tab)
+let dragRowId: number | null = null; // instance row mid-drag in the 图层 tab
 let clipboard: { layerName: string | null; inst: RoomInstance }[] = [];
 let cursorWorld = { x: 0, y: 0 };
 let spaceHeld = false;
@@ -216,6 +232,7 @@ async function init() {
   wireTabs();
   wireDock();
   wirePalette();
+  wireInsts();
   wireViewport(host);
   wireKeys(host);
   wireWs();
@@ -283,6 +300,7 @@ async function openRoom(name: string, opts: { silent?: boolean } = {}) {
   selection.clear();
   hovered = null;
   layerOff.clear();
+  hiddenInsts.clear();
   remoteSel.clear();
   flash.clear();
   activeLayer = guessActiveLayer();
@@ -418,6 +436,7 @@ async function refreshScene() {
   if (hovered !== null && !nodeById.has(hovered)) hovered = null;
   applyVisibility();
   renderLayerList();
+  renderInstList();
   renderHistory();
   drawNotes();
   inspect();
@@ -427,7 +446,7 @@ async function refreshScene() {
 function applyVisibility() {
   if (!scene || !doc) return;
   for (const n of scene.nodes) {
-    let on = !layerOff.has(n.layerIndex);
+    let on = !layerOff.has(n.layerIndex) && !hiddenInsts.has(n.inst.instance_id);
     if (n.kind === "hidden") on &&= toggles.hidden.checked;
     if (n.kind === "collision") on &&= toggles.collision.checked;
     if (n.kind === "marker") on &&= toggles.markers.checked;
@@ -508,6 +527,172 @@ function renderLayerList() {
   });
 }
 
+// ================= instance layers (the real, Photoshop-style 图层) =================
+//
+// Each row is one instance. Groups are GameMaker layers sorted by depth, front-most
+// first; inside a group the array order is reversed, because array order is creation
+// order and creation order breaks same-depth draw ties (created later = drawn on top).
+// Dragging a row between two rows of the same group reorders the array; dragging across
+// groups relayers. Both are the `relayer` op — same-layer relayer IS the reorder op.
+// Rows whose depth code overrides the layer depth (the -y autosorters, baked decals…)
+// carry a badge: their occlusion doesn't come from where they sit in the list.
+
+function renderInstList() {
+  if (!doc || !scene || $("tab-insts").hidden) return;
+  const q = $<HTMLInputElement>("insts-q").value.trim().toLowerCase();
+  const groups = room()
+    .layers.map((L, i) => ({ L, i }))
+    .filter(({ L }) => L.layer_type === LayerType.Instances)
+    .sort((a, b) => a.L.layer_depth - b.L.layer_depth);
+  const rows: string[] = [];
+  for (const { L, i } of groups) {
+    const insts = (L.layer_data.instances as RoomInstance[]).slice().reverse(); // front-most first
+    const shown = insts.filter((inst) => !q || (inst.object_definition ?? "").toLowerCase().includes(q) || String(inst.instance_id).includes(q));
+    if (q && !shown.length) continue;
+    rows.push(`<li class="grp${i === activeLayer ? " active" : ""}" data-gi="${i}" title="单击设为放置目标层；把实例拖到这一行 = 移到该层最前">
+      <span class="gname">${esc(L.layer_name)}</span><span class="gmeta">d${L.layer_depth} · ${insts.length}</span></li>`);
+    for (const inst of shown) {
+      const n = nodeById.get(inst.instance_id);
+      const obj = inst.object_definition ?? "";
+      const badge = n && n.depth !== L.layer_depth ? `<span class="depth-badge" title="${esc(n.depthWhy)}">d${n.depth}</span>` : "";
+      rows.push(`<li class="inst${selection.has(inst.instance_id) ? " sel" : ""}${hiddenInsts.has(inst.instance_id) ? " off" : ""}"
+        data-id="${inst.instance_id}" draggable="true" title="${esc(obj)} #${inst.instance_id}&#10;${esc(n?.depthWhy ?? "")}&#10;拖动调整遮挡顺序（同组 = 同层调序，跨组 = 换层）">
+        <span class="grip">${ICONS.grip}</span>${thumbHtml(db, obj, inst.image_index, 28)}
+        <div class="itext"><div class="iname">${esc(obj)} <span class="iid">#${inst.instance_id}</span>${badge}</div>
+        <div class="imeta">@${inst.x},${inst.y}${inst.scale_x !== 1 || inst.scale_y !== 1 ? ` · ${inst.scale_x}×${inst.scale_y}` : ""}</div></div>
+        <span class="eye" data-eye="${inst.instance_id}" title="编辑器内隐藏（不进游戏）">${hiddenInsts.has(inst.instance_id) ? ICONS.eyeOff : ICONS.eye}</span></li>`);
+    }
+  }
+  const list = $("inst-list");
+  list.innerHTML = rows.join("") || `<li class="muted" style="padding:10px">没有匹配的实例</li>`;
+  wireInstRows(list);
+}
+
+function wireInstRows(list: HTMLElement) {
+  list.querySelectorAll<HTMLElement>("li.inst").forEach((li) => {
+    const id = Number(li.dataset.id);
+    li.addEventListener("click", (e) => {
+      if ((e.target as Element).closest("[data-eye]")) {
+        hiddenInsts.has(id) ? hiddenInsts.delete(id) : hiddenInsts.add(id);
+        li.classList.toggle("off");
+        li.querySelector("[data-eye]")!.innerHTML = hiddenInsts.has(id) ? ICONS.eyeOff : ICONS.eye;
+        applyVisibility();
+        return;
+      }
+      if (e.shiftKey || e.ctrlKey) selection.has(id) ? selection.delete(id) : selection.add(id);
+      else { selection.clear(); selection.add(id); }
+      const at = findInstance(room(), id);
+      if (at) activeLayer = at.layer;
+      renderLayerList();
+      syncInstSelection(false);
+      inspect();
+      drawOverlay();
+      postSelection();
+    });
+    li.addEventListener("dblclick", () => {
+      const at = findInstance(room(), id);
+      if (at) focusOn(at.inst.x, at.inst.y, Math.max(zoom, 2));
+    });
+    li.addEventListener("dragstart", (e) => {
+      dragRowId = id;
+      if (!selection.has(id)) {
+        selection.clear();
+        selection.add(id);
+        syncInstSelection(false);
+        inspect();
+        drawOverlay();
+        postSelection();
+      }
+      e.dataTransfer?.setData("text/plain", String(id));
+      if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+    });
+    li.addEventListener("dragover", (e) => {
+      if (dragRowId === null || dragRowId === id) return;
+      e.preventDefault();
+      const r = li.getBoundingClientRect();
+      const after = e.clientY > r.top + r.height / 2;
+      li.classList.toggle("drop-before", !after);
+      li.classList.toggle("drop-after", after);
+    });
+    li.addEventListener("dragleave", () => li.classList.remove("drop-before", "drop-after"));
+    li.addEventListener("drop", (e) => {
+      e.preventDefault();
+      li.classList.remove("drop-before", "drop-after");
+      if (dragRowId === null || dragRowId === id) return;
+      const after = e.clientY > li.getBoundingClientRect().top + li.getBoundingClientRect().height / 2;
+      dropInstAt(dragRowId, { kind: "row", id, after });
+      dragRowId = null;
+    });
+    li.addEventListener("dragend", () => { dragRowId = null; });
+  });
+  list.querySelectorAll<HTMLElement>("li.grp").forEach((li) => {
+    const gi = Number(li.dataset.gi);
+    li.addEventListener("click", () => {
+      activeLayer = gi;
+      renderLayerList();
+      renderInstList();
+    });
+    li.addEventListener("dragover", (e) => {
+      if (dragRowId === null) return;
+      e.preventDefault();
+      li.classList.add("drop-before");
+    });
+    li.addEventListener("dragleave", () => li.classList.remove("drop-before"));
+    li.addEventListener("drop", (e) => {
+      e.preventDefault();
+      li.classList.remove("drop-before");
+      if (dragRowId !== null) dropInstAt(dragRowId, { kind: "front", layer: gi });
+      dragRowId = null;
+    });
+  });
+}
+
+// A drop between rows means "sit immediately before the row above the line" in that
+// layer's array (the list shows front-most first = the array reversed). A drop on a group
+// header = front-most of that layer. Same layer = reorder, different layer = relayer.
+function dropInstAt(id: number, target: { kind: "row"; id: number; after: boolean } | { kind: "front"; layer: number }) {
+  if (!doc) return;
+  const src = findInstance(room(), id);
+  if (!src) return;
+  let toLayer: number, anchor: number | null;
+  if (target.kind === "front") {
+    toLayer = target.layer;
+    anchor = null;
+  } else {
+    const dst = findInstance(room(), target.id);
+    if (!dst) return;
+    toLayer = dst.layer;
+    const arr = room().layers[toLayer].layer_data.instances as RoomInstance[];
+    anchor = target.after ? target.id : (arr[dst.index + 1]?.instance_id ?? null);
+  }
+  if (anchor === id) return;
+  const arr = room().layers[src.layer].layer_data.instances as RoomInstance[];
+  if (toLayer === src.layer && (arr[src.index + 1]?.instance_id ?? null) === anchor) return; // already there
+  const srcName = room().layers[src.layer].layer_name!;
+  const dstName = room().layers[toLayer].layer_name!;
+  const obj = src.inst.object_definition ?? String(id);
+  commit(toLayer === src.layer ? `调整顺序 ${obj}` : `移到 ${dstName}：${obj}`, [
+    { op: "relayer", id, layer: dstName, before: anchor, expect: { layer: srcName } },
+  ]);
+}
+
+// keep row highlights in step with the canvas selection; canvas-side picks also scroll
+function syncInstSelection(scroll: boolean) {
+  const list = $("inst-list");
+  list.querySelectorAll<HTMLElement>("li.inst").forEach((li) => li.classList.toggle("sel", selection.has(Number(li.dataset.id))));
+  if (scroll && selection.size && !$("tab-insts").hidden)
+    list.querySelector<HTMLElement>(`li.inst[data-id="${[...selection][0]}"]`)?.scrollIntoView({ block: "nearest" });
+}
+
+function wireInsts() {
+  const q = $<HTMLInputElement>("insts-q");
+  let t = 0;
+  q.oninput = () => {
+    clearTimeout(t);
+    t = window.setTimeout(renderInstList, 80);
+  };
+}
+
 // ---------------- toolbox & dock ----------------
 
 function wireToolbox() {
@@ -542,9 +727,11 @@ function wireTabs() {
 }
 function showTab(tab: string) {
   document.querySelectorAll<HTMLButtonElement>(".tabs button[data-tab]").forEach((x) => x.classList.toggle("on", x.dataset.tab === tab));
+  $("tab-insts").hidden = tab !== "insts";
   $("tab-layers").hidden = tab !== "layers";
   $("tab-palette").hidden = tab !== "palette";
   $("tab-history").hidden = tab !== "history";
+  if (tab === "insts") renderInstList();
   if (tab === "palette") $<HTMLInputElement>("palette-q").focus();
   if (tab === "history" && doc) {
     lastSeenRev = doc.rev;
@@ -681,20 +868,26 @@ function renderPalette() {
 
 function toolCursor() {
   if (spaceHeld || tool.kind === "hand") return "grab";
-  if (tool.kind === "place" || tool.kind === "note") return "crosshair";
+  if (tool.kind !== "select") return "crosshair";
   return "";
 }
 
 function setTool(t: Tool) {
   tool = t;
   if (t.kind === "place") lastPlaced = t.object;
+  if (t.kind === "zone") zoneObject = t.object;
+  if (t.kind === "marker") markerObject = t.object;
   ghostLayer.removeChildren().forEach((c) => c.destroy({ children: true }));
+  const names = { select: "选择", hand: "抓手", note: "便签", place: "放置", collision: "碰撞涂刷", zone: "区域", marker: "标记" } as const;
   $("s-tool").textContent =
     t.kind === "place" ? `放置 ${t.object}（单击放置，Esc 结束）`
     : t.kind === "hand" ? "抓手（拖动平移）"
     : t.kind === "note" ? "便签（单击留便签）"
+    : t.kind === "collision" ? "碰撞涂刷（拖动刷格 · Alt+拖动擦除 · Esc 结束）"
+    : t.kind === "zone" ? `区域 ${t.object}（拖出矩形，Esc 结束）`
+    : t.kind === "marker" ? `标记 ${t.object}（单击放置，Esc 结束）`
     : "选择";
-  $("opt-tool").textContent = t.kind === "place" ? `放置：${t.object}` : { select: "选择", hand: "抓手", note: "便签" }[t.kind];
+  $("opt-tool").textContent = names[t.kind] + (t.kind === "place" ? `：${t.object}` : "");
   $("stage").style.cursor = toolCursor();
   document.querySelectorAll<HTMLButtonElement>("#toolbox button[data-tool]").forEach((b) => {
     const on = b.dataset.tool === t.kind;
@@ -704,22 +897,25 @@ function setTool(t: Tool) {
   document.querySelectorAll<HTMLElement>("#palette-list li[data-o]").forEach((li) => {
     li.classList.toggle("on", t.kind === "place" && li.dataset.o === t.object);
   });
-  if (t.kind === "place") buildGhost(t.object);
-  requestRender();
+  if (t.kind === "place" || t.kind === "marker") buildGhost(t.object);
+  renderToolExtras();
+  drawOverlay();
 }
 
-// toolbox buttons and V/H/P/N land here; P without a pick yet just opens the palette
+// toolbox buttons and the letter keys land here; P without a pick yet opens the palette
 function pickTool(kind: Tool["kind"]) {
   if (kind === "place") {
     if (!lastPlaced) { showTab("palette"); return; }
     setTool({ kind: "place", object: lastPlaced });
-  } else setTool({ kind });
+  } else if (kind === "zone") setTool({ kind, object: zoneObject });
+  else if (kind === "marker") setTool({ kind, object: markerObject });
+  else setTool({ kind });
 }
 
 async function buildGhost(object: string) {
   const spr = db.objects[object]?.sprite;
   const v = (spr && (await spriteView(db, spr, 0))) || markerView(object.replace(/^o_/, ""));
-  if (tool.kind !== "place" || tool.object !== object) return; // tool changed meanwhile
+  if ((tool.kind !== "place" && tool.kind !== "marker") || tool.object !== object) return; // tool changed meanwhile
   ghostLayer.removeChildren();
   ghostLayer.addChild(v);
   moveGhost();
@@ -733,23 +929,201 @@ function moveGhost() {
 }
 
 function placeAt(wx: number, wy: number) {
-  if (!doc || tool.kind !== "place") return;
-  const L = room().layers[activeLayer];
+  if (!doc || (tool.kind !== "place" && tool.kind !== "marker")) return;
+  const object = tool.object;
+  const li = tool.kind === "marker" ? layerFor(object) : activeLayer;
+  const L = room().layers[li];
   if (L?.layer_type !== LayerType.Instances) {
-    alert("先在图层面板里选一个实例图层");
+    alert("先在「层组」页签里选一个实例图层");
     return;
   }
+  const verb = tool.kind === "marker" ? "标记" : "放置";
+  commit(`${verb} ${object}`, [{ op: "add", layer: L.layer_name!, inst: { object_definition: object, x: snapPoint(wx), y: snapPoint(wy) } as RoomInstance }]).then(selectPlaced);
+}
+
+// select what a placement/drawing commit just created (the ids came back in the log entry)
+function selectPlaced(ok: boolean) {
+  if (!ok || !doc) return;
+  selection.clear();
+  for (const id of doc.log[doc.log.length - 1]?.ids ?? []) selection.add(id);
+  inspect();
+  drawOverlay();
+}
+
+// ---------------- functional object tools ----------------
+
+// where a freshly drawn functional object belongs: the layer already holding one of its
+// kind, else a well-known home (collision stamps, camera boxes, surfaces), else the
+// active layer. The options bar shows the answer next to the tool ("→ Collisions").
+function layerFor(object: string): number {
+  const r = room();
+  const instLayers = r.layers.map((L, i) => ({ L, i })).filter(({ L }) => L.layer_type === LayerType.Instances);
+  for (const { L, i } of instLayers)
+    if ((L.layer_data.instances as RoomInstance[]).some((x) => x.object_definition === object)) return i;
+  const byName = (re: RegExp) => instLayers.find(({ L }) => re.test(L.layer_name ?? ""))?.i ?? -1;
+  if (object === COLLISION_PAINT) { const i = byName(/coli/i); if (i >= 0) return i; } // vanilla spells it "Colissions"
+  if (/^oCamera/.test(object)) { const i = byName(/camera/i); if (i >= 0) return i; }
+  if (db.parentChain(object).includes("c_zone")) { const i = byName(/surface/i); if (i >= 0) return i; }
+  if (r.layers[activeLayer]?.layer_type === LayerType.Instances) return activeLayer;
+  return guessActiveLayer();
+}
+const layerNameOf = (i: number) => room().layers[i]?.layer_name ?? "?";
+
+// zone-drawable objects: an invisible/trigger-ish object whose sprite is a solid-colour
+// box -- the same pixel test that gates the resize handles, so anything the editor can
+// stretch it can also draw. Scanned lazily on first use (~70 candidates, ~8 pages).
+function zoneObjects(): Promise<string[]> {
+  if (!zoneObjectsCache)
+    zoneObjectsCache = (async () => {
+      const cand = Object.keys(db.objects).filter((n) => {
+        const d = db.objects[n];
+        const s = d.sprite ? db.sprites[d.sprite] : undefined;
+        if (!d.sprite || !s || s.w > 128 || s.h > 128) return false;
+        return /trigger|zone|camera|surface|area|collis/i.test(n) || db.parentChain(n).some((p) => /^(c_trigger|c_zone)$/.test(p) || /camera/i.test(p));
+      });
+      const ok: string[] = [];
+      for (const n of cand) {
+        try {
+          if (await plainBoxSprite(db.objects[n].sprite!)) ok.push(n);
+        } catch { /* unreadable frame */ }
+      }
+      ok.sort();
+      const pin = ["oCameraStatic", "o_area_marker"]; // the usual suspects first
+      return [...pin.filter((p) => ok.includes(p)), ...ok.filter((n) => !pin.includes(n))];
+    })();
+  return zoneObjectsCache;
+}
+
+// the marker tool's list: the palette's curated 碰撞/标记 family (starters, barrier and
+// encounter markers…) minus the collision stamp, plus the light markers
+function markerObjects(): string[] {
+  if (!markerObjectsCache) {
+    const fam = FAMILIES.find((f) => f.label === "碰撞/标记")!;
+    const set = new Set(searchObjects(db, "", fam, 300).filter((n) => n !== COLLISION_PAINT));
+    for (const n of Object.keys(db.objects)) if (/^o_light_marker/.test(n)) set.add(n);
+    const pin = ["o_position_starter", "o_position_starter_dungeon_enter", "o_position_starter_dungeon_exit"];
+    markerObjectsCache = [...pin.filter((p) => set.has(p)), ...[...set].filter((n) => !pin.includes(n)).sort()];
+  }
+  return markerObjectsCache;
+}
+
+// the options bar shows each drawing tool's particulars: object pickers, target layer
+function renderToolExtras() {
+  const box = $("opt-extra");
+  box.innerHTML = "";
+  if (!doc) return;
+  const hint = (text: string) => {
+    const s = document.createElement("span");
+    s.className = "opt-hint";
+    s.textContent = text;
+    box.appendChild(s);
+  };
+  if (tool.kind === "collision") {
+    hint(`${COLLISION_PAINT} · 拖动=涂刷 · Alt+拖动=擦除 · → ${layerNameOf(layerFor(COLLISION_PAINT))}`);
+    return;
+  }
+  if (tool.kind === "zone") {
+    const cur0 = tool.object; // const: `tool` is a mutable module var, closures un-narrow it
+    const sel = document.createElement("select");
+    sel.title = "画哪个对象：纯色盒 sprite 的功能对象（与尺寸手柄同一套像素判据）";
+    sel.innerHTML = `<option>${esc(cur0)}</option>`;
+    sel.disabled = true;
+    box.appendChild(sel);
+    hint(`拖出矩形 · → ${layerNameOf(layerFor(cur0))}`);
+    void zoneObjects().then((names) => {
+      if (!names.includes(cur0)) names.unshift(cur0);
+      sel.innerHTML = names.map((n) => `<option ${n === cur0 ? "selected" : ""}>${esc(n)}</option>`).join("");
+      sel.disabled = false;
+    });
+    sel.onchange = () => setTool({ kind: "zone", object: sel.value });
+    return;
+  }
+  if (tool.kind === "marker") {
+    const cur0 = tool.object;
+    const names = markerObjects();
+    if (!names.includes(cur0)) names.unshift(cur0);
+    const sel = document.createElement("select");
+    sel.title = "放哪个标记：出生点 / 灯光 / 区域标记等功能对象";
+    sel.innerHTML = names.map((n) => `<option ${n === cur0 ? "selected" : ""}>${esc(n)}</option>`).join("");
+    sel.onchange = () => setTool({ kind: "marker", object: sel.value });
+    box.appendChild(sel);
+    hint(`单击放置 · → ${layerNameOf(layerFor(cur0))}`);
+  }
+}
+
+// the world rect a zone drag covers: edges snap to cell lines like the resize handles;
+// a plain click means the cell under the cursor
+function zoneRect(d: { ax: number; ay: number; bx: number; by: number; moved: boolean }) {
+  const snapE = (v: number) => (snapOn() ? Math.round(v / CELL) * CELL : Math.round(v));
+  if (!d.moved) {
+    const L = snapPoint(d.ax), T = snapPoint(d.ay);
+    return { L, T, R: L + CELL, B: T + CELL };
+  }
+  const L = snapE(Math.min(d.ax, d.bx)), T = snapE(Math.min(d.ay, d.by));
+  const unit = snapOn() ? CELL : 1;
+  const R = Math.max(L + unit, snapE(Math.max(d.ax, d.bx)));
+  const B = Math.max(T + unit, snapE(Math.max(d.ay, d.by)));
+  return { L, T, R, B };
+}
+
+// every cell a paint stroke touches, clamped to the room; a click is just that cell
+function paintCells(d: { ax: number; ay: number; bx: number; by: number }) {
+  const L = Math.min(d.ax, d.bx), T = Math.min(d.ay, d.by);
+  const spanX = Math.max(Math.abs(d.bx - d.ax), 1), spanY = Math.max(Math.abs(d.by - d.ay), 1);
+  const maxCX = Math.ceil(room().width / CELL) - 1, maxCY = Math.ceil(room().height / CELL) - 1;
+  const cx0 = Math.max(0, Math.floor(L / CELL)), cy0 = Math.max(0, Math.floor(T / CELL));
+  // the far edge lands exactly on a cell line: don't bleed into the next cell
+  const cx1 = Math.min(maxCX, Math.floor((L + spanX - 1e-6) / CELL)), cy1 = Math.min(maxCY, Math.floor((T + spanY - 1e-6) / CELL));
+  return { cx0, cy0, cx1, cy1 };
+}
+
+function zoneCommit(d: { ax: number; ay: number; bx: number; by: number; moved: boolean }) {
+  if (!doc || tool.kind !== "zone") return;
   const object = tool.object;
-  commit(`放置 ${object}`, [{ op: "add", layer: L.layer_name!, inst: { object_definition: object, x: snapPoint(wx), y: snapPoint(wy) } as RoomInstance }]).then(
-    (ok) => {
-      if (!ok || !doc) return;
-      // select what we just placed (the id came back in the logged ops)
-      selection.clear();
-      for (const id of doc.log[doc.log.length - 1]?.ids ?? []) selection.add(id);
-      inspect();
-      drawOverlay();
-    },
-  );
+  const { L, T, R, B } = zoneRect(d);
+  const spr = db.objects[object]?.sprite;
+  const def = spr ? db.sprites[spr] : undefined;
+  const f = def?.frames[0];
+  let x = L, y = T, scale_x = 1, scale_y = 1;
+  if (def && f && f.length) {
+    // the same math as the resize handles: the sprite's local box sits at (tgt − origin)
+    const lb = { x: f[5] - def.ox, y: f[6] - def.oy, w: f[7], h: f[8] };
+    scale_x = (R - L) / lb.w;
+    scale_y = (B - T) / lb.h;
+    x = Math.round(L - lb.x * scale_x);
+    y = Math.round(T - lb.y * scale_y);
+  }
+  commit(`区域 ${object} ${R - L}×${B - T}`, [
+    { op: "add", layer: layerNameOf(layerFor(object)), inst: { object_definition: object, x, y, scale_x, scale_y } as RoomInstance },
+  ]).then(selectPlaced);
+}
+
+function paintCommit(d: { ax: number; ay: number; bx: number; by: number }, erase: boolean) {
+  if (!doc) return;
+  const { cx0, cy0, cx1, cy1 } = paintCells(d);
+  if (cx1 < cx0 || cy1 < cy0) { drawOverlay(); return; }
+  const stamps: RoomInstance[] = [];
+  for (const L of room().layers)
+    if (L.layer_type === LayerType.Instances)
+      for (const i of L.layer_data.instances as RoomInstance[]) if (i.object_definition === COLLISION_PAINT) stamps.push(i);
+  const inRect = (i: RoomInstance) => {
+    const cx = Math.floor(i.x / CELL), cy = Math.floor(i.y / CELL);
+    return cx >= cx0 && cx <= cx1 && cy >= cy0 && cy <= cy1;
+  };
+  if (erase) {
+    const hits = stamps.filter(inRect);
+    if (!hits.length) { $("s-hover").textContent = "这里没有碰撞格可擦"; drawOverlay(); return; }
+    commit(`擦除碰撞 ${hits.length} 格`, hits.map((i) => ({ op: "delete", id: i.instance_id, expect: { object_definition: i.object_definition, x: i.x, y: i.y } })));
+    return;
+  }
+  const taken = new Set(stamps.map((i) => `${Math.floor(i.x / CELL)},${Math.floor(i.y / CELL)}`));
+  const layer = layerNameOf(layerFor(COLLISION_PAINT));
+  const ops: Op[] = [];
+  for (let cx = cx0; cx <= cx1; cx++)
+    for (let cy = cy0; cy <= cy1; cy++)
+      if (!taken.has(`${cx},${cy}`)) ops.push({ op: "add", layer, inst: { object_definition: COLLISION_PAINT, x: cx * CELL, y: cy * CELL } as RoomInstance });
+  if (!ops.length) { $("s-hover").textContent = "这些格已有碰撞"; drawOverlay(); return; }
+  commit(`涂刷碰撞 ${ops.length} 格`, ops);
 }
 
 // ================= viewport & pointer =================
@@ -887,6 +1261,8 @@ type Drag =
   | { mode: "pan"; sx: number; sy: number; wx: number; wy: number; button: number; moved: boolean }
   | { mode: "move"; sx: number; sy: number; ids: number[]; orig: { id: number; x: number; y: number }[]; dx: number; dy: number; moved: boolean }
   | { mode: "resize"; sx: number; sy: number; id: number; handle: string; lb: { x: number; y: number; w: number; h: number }; box: { x: number; y: number; w: number; h: number }; unit: number; orig: { x: number; y: number; scale_x: number; scale_y: number }; moved: boolean }
+  | { mode: "zone"; ax: number; ay: number; bx: number; by: number; moved: boolean }
+  | { mode: "paint"; ax: number; ay: number; bx: number; by: number; moved: boolean }
   | { mode: "marquee"; sx: number; sy: number; ex: number; ey: number; additive: boolean; moved: boolean };
 let drag: Drag | null = null;
 
@@ -942,9 +1318,15 @@ function wireViewport(host: HTMLElement) {
       return;
     }
     if (e.button !== 0 || !doc) return;
-    if (tool.kind === "place") {
+    if (tool.kind === "place" || tool.kind === "marker") {
       const w = toWorld(sx, sy);
       placeAt(w.x, w.y);
+      return;
+    }
+    if (tool.kind === "zone" || tool.kind === "collision") {
+      const w = toWorld(sx, sy);
+      drag = { mode: tool.kind === "zone" ? "zone" : "paint", ax: w.x, ay: w.y, bx: w.x, by: w.y, moved: false };
+      drawOverlay();
       return;
     }
     // a handle of the single selected coverage rectangle wins over move/marquee
@@ -980,6 +1362,7 @@ function wireViewport(host: HTMLElement) {
       if (!selection.has(id)) { selection.clear(); selection.add(id); }
       activeLayer = hit.layerIndex;
       renderLayerList();
+      syncInstSelection(true);
       inspect();
       const orig = instsOf(selection).map((a) => ({ id: a.inst.instance_id, x: a.inst.x, y: a.inst.y }));
       drag = { mode: "move", sx, sy, ids: orig.map((o) => o.id), orig, dx: 0, dy: 0, moved: false };
@@ -998,7 +1381,8 @@ function wireViewport(host: HTMLElement) {
     $("s-pos").textContent = `x ${Math.floor(cursorWorld.x)}  y ${Math.floor(cursorWorld.y)}`;
     $("s-cell").textContent = `格 ${Math.floor(cursorWorld.x / CELL)}, ${Math.floor(cursorWorld.y / CELL)}`;
     drawRulers();
-    if (tool.kind === "place") moveGhost();
+    if (tool.kind === "place" || tool.kind === "marker") moveGhost();
+    else if ((tool.kind === "zone" || tool.kind === "collision") && !drag) drawOverlay(); // idle cursor cell
 
     if (drag?.mode === "pan") {
       if (Math.abs(e.clientX - drag.sx) + Math.abs(e.clientY - drag.sy) > 4) drag.moved = true;
@@ -1036,13 +1420,30 @@ function wireViewport(host: HTMLElement) {
       drawOverlay();
       return;
     }
+    if (drag?.mode === "zone" || drag?.mode === "paint") {
+      const d = drag;
+      const t = tool; // a const, so narrowing survives the DOM calls below
+      const w = toWorld(sx, sy);
+      d.bx = w.x;
+      d.by = w.y;
+      if (!d.moved && (Math.abs(w.x - d.ax) + Math.abs(w.y - d.ay)) * zoom > 4) d.moved = true;
+      if (d.mode === "zone" && t.kind === "zone") {
+        const r = zoneRect(d);
+        $("s-hover").textContent = `区域 ${r.R - r.L}×${r.B - r.T} → ${layerNameOf(layerFor(t.object))}`;
+      } else if (d.mode === "paint") {
+        const c = paintCells(d);
+        $("s-hover").textContent = `${altHeld ? "擦除" : "涂刷"}碰撞 ${c.cx1 - c.cx0 + 1}×${c.cy1 - c.cy0 + 1} 格${altHeld ? "" : "（Alt 擦除）"}`;
+      }
+      drawOverlay();
+      return;
+    }
     if (drag?.mode === "marquee") {
       drag.ex = sx; drag.ey = sy;
       if (Math.abs(sx - drag.sx) + Math.abs(sy - drag.sy) > 3) drag.moved = true;
       drawOverlay();
       return;
     }
-    const h = tool.kind === "hand" ? null : pick(sx, sy);
+    const h = tool.kind === "hand" || tool.kind === "zone" || tool.kind === "collision" ? null : pick(sx, sy);
     if (h?.inst.instance_id !== hovered) {
       hovered = h?.inst.instance_id ?? null;
       $("s-hover").textContent = h ? `${h.inst.object_definition}  #${h.inst.instance_id}  @${h.inst.x},${h.inst.y}  depth ${h.depth}  [${h.layer.layer_name}]` : "—";
@@ -1076,6 +1477,15 @@ function wireViewport(host: HTMLElement) {
         const w = toWorld(e.clientX - r.left, e.clientY - r.top);
         addNoteAt(w.x, w.y);
       }
+      return;
+    }
+    if (d.mode === "zone") {
+      zoneCommit(d);
+      drawOverlay();
+      return;
+    }
+    if (d.mode === "paint") {
+      paintCommit(d, e.altKey);
       return;
     }
     if (d.mode === "resize") {
@@ -1115,6 +1525,7 @@ function wireViewport(host: HTMLElement) {
           if (b.x < x1 && b.x + b.width > x0 && b.y < y1 && b.y + b.height > y0) selection.add(n.inst.instance_id);
         }
       }
+      syncInstSelection(false);
       inspect();
       drawOverlay();
       postSelection();
@@ -1194,6 +1605,31 @@ function drawOverlay() {
     overlay.rect(x, y, Math.abs(drag.ex - drag.sx), Math.abs(drag.ey - drag.sy))
       .fill({ color: 0x6cb6ff, alpha: 0.08 }).stroke({ color: 0x6cb6ff, width: 1 });
   }
+  // drawing-tool previews: the zone rect / paint span mid-drag, or the starting cell
+  // under the cursor when a drawing tool is idle
+  if (doc && !renderMode) {
+    if (drag?.mode === "zone" && tool.kind === "zone") {
+      const r = zoneRect(drag);
+      overlay
+        .rect(world.x + r.L * zoom, world.y + r.T * zoom, (r.R - r.L) * zoom, (r.B - r.T) * zoom)
+        .fill({ color: 0x40c0ff, alpha: 0.1 })
+        .stroke({ color: 0x40c0ff, width: 1 });
+    } else if (drag?.mode === "paint") {
+      const c = paintCells(drag);
+      if (c.cx1 >= c.cx0 && c.cy1 >= c.cy0) {
+        const color = altHeld ? 0xffb454 : 0xff3040;
+        overlay
+          .rect(world.x + c.cx0 * CELL * zoom, world.y + c.cy0 * CELL * zoom, (c.cx1 - c.cx0 + 1) * CELL * zoom, (c.cy1 - c.cy0 + 1) * CELL * zoom)
+          .fill({ color, alpha: 0.16 })
+          .stroke({ color, width: 1.5 });
+      }
+    } else if ((tool.kind === "zone" || tool.kind === "collision") && rulerCursor) {
+      const cx = Math.floor(cursorWorld.x / CELL), cy = Math.floor(cursorWorld.y / CELL);
+      overlay
+        .rect(world.x + cx * CELL * zoom + 0.5, world.y + cy * CELL * zoom + 0.5, CELL * zoom - 1, CELL * zoom - 1)
+        .stroke({ color: tool.kind === "collision" ? 0xff3040 : 0x40c0ff, width: 1, alpha: 0.75 });
+    }
+  }
   drawRulers();
   requestRender();
 }
@@ -1266,6 +1702,7 @@ function wireKeys(host: HTMLElement) {
       return;
     }
     if (e.key === "Escape") {
+      if (drag && (drag.mode === "zone" || drag.mode === "paint")) { drag = null; drawOverlay(); $("s-hover").textContent = "—"; return; }
       if (tool.kind !== "select") setTool({ kind: "select" });
       else { selection.clear(); inspect(); drawOverlay(); postSelection(); }
       return;
@@ -1279,6 +1716,9 @@ function wireKeys(host: HTMLElement) {
     if (k === "h" && !e.shiftKey) { pickTool("hand"); return; }
     if (k === "h") { toggles.hidden.checked = !toggles.hidden.checked; applyVisibility(); return; } // Shift+H
     if (k === "p") { pickTool("place"); return; }
+    if (k === "c") { pickTool("collision"); return; }
+    if (k === "t") { pickTool("zone"); return; }
+    if (k === "m") { pickTool("marker"); return; }
     if (k === "n") { pickTool("note"); return; }
     if (k === "f") fit();
     if (k === "1") zoomAt(1, host.clientWidth / 2, host.clientHeight / 2);
@@ -1366,8 +1806,9 @@ function parseField(kind: FieldKind, s: string): { ok: true; v: unknown } | { ok
 function inspect() {
   const body = $("inspect-body");
   const at = doc ? instsOf(selection) : [];
+  syncInstSelection(false);
   if (!doc || at.length === 0) {
-    body.innerHTML = `<span class="muted">点选一个实例；Shift 加选，空白处拖动框选。<br><br>工具：V 选择 · H 抓手 · P 放置 · N 便签。<br>从「对象」页签挑一个对象即可放置；右键单击留便签。</span>`;
+    body.innerHTML = `<span class="muted">点选一个实例；Shift 加选，空白处拖动框选。<br><br>工具：V 选择 · H 抓手 · P 放置 · C 碰撞涂刷 · T 区域 · M 标记 · N 便签。<br>「图层」页签里每个实例一行，拖动调整遮挡顺序。</span>`;
     return;
   }
   const insts = at.map((a) => a.inst);
@@ -1546,6 +1987,9 @@ const whoText = (by?: string) => (by === BY ? "你" : by ? `${by}` : "有人");
     return { id: n.inst.instance_id, object: n.inst.object_definition, x: b.x + b.width / 2, y: b.y + b.height / 2 };
   },
   kindOf(id: number) { return nodeById.get(id)?.kind ?? null; },
+  visOf(id: number) { return nodeById.get(id)?.view.visible ?? null; },
+  toolKind() { return tool.kind; },
+  instRowCount() { return document.querySelectorAll("#inst-list li.inst").length; },
   gateOf(id: number) { return resizeGate.get(id) ?? null; },
   handlePoint(id: number, handle = "e") {
     const n = nodeById.get(id);

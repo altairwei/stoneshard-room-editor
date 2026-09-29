@@ -85,6 +85,13 @@ button.primary:hover { background: linear-gradient(#4a97ea, #3380d2); }
 .itoggle i { display: grid; place-items: center; width: 100%; height: 100%; }
 .itoggle svg { width: 14px; height: 14px; display: block; }
 #zoom-preset { width: 76px; text-align: right; background: #1e1e21; border-color: var(--line); padding: 3px 4px; }
+/* tool-specific extras (object pickers, paint hints) next to the tool name */
+#opt-extra { display: flex; align-items: center; gap: 8px; min-width: 0; overflow: hidden; }
+#opt-extra select {
+  max-width: 240px; background: #1e1e21; border-color: var(--line); padding: 2px 4px;
+  font-family: Consolas, "Cascadia Mono", monospace; font-size: 11px;
+}
+#opt-extra .opt-hint { color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* ---------------- banner ---------------- */
 #banner {
@@ -115,6 +122,7 @@ main {
   box-shadow: inset 0 0 0 1px rgba(108, 182, 255, .45);
 }
 #toolbox button svg { width: 17px; height: 17px; display: block; }
+#toolbox .tsep { width: 18px; height: 1px; background: var(--line); margin: 3px 0; flex: none; }
 
 /* ---------------- canvas area + rulers ---------------- */
 #canvas-area {
@@ -180,6 +188,48 @@ main {
 #layer-list .meta { color: var(--faint); font-size: 10px; font-variant-numeric: tabular-nums; }
 #layer-list .tag { font-size: 10px; color: var(--warn); }
 #layer-list li.nonedit .name { color: var(--muted); }
+
+/* ---------------- instance layers (the Photoshop-style tab) ---------------- */
+#tab-insts { display: flex; flex-direction: column; }
+#inst-list { list-style: none; margin: 0; padding: 4px; }
+#inst-list li.inst {
+  display: flex; align-items: center; gap: 7px; padding: 3px 6px 3px 2px; border-radius: 5px; cursor: pointer;
+  border-top: 2px solid transparent; border-bottom: 2px solid transparent;
+}
+#inst-list li.inst:hover { background: var(--hover); }
+#inst-list li.inst.sel { background: rgba(108, 182, 255, .13); box-shadow: inset 0 0 0 1px rgba(108, 182, 255, .32); }
+#inst-list li.inst.off .itext, #inst-list li.inst.off .thumb { opacity: .4; }
+#inst-list li.inst.drop-before { border-top-color: var(--accent); }
+#inst-list li.inst.drop-after { border-bottom-color: var(--accent); }
+#inst-list li.grp {
+  display: flex; align-items: center; gap: 7px; padding: 5px 8px 3px; margin-top: 4px; cursor: pointer;
+  border-top: 1px solid var(--line-2); border-bottom: 2px solid transparent;
+  font-size: 10px; font-weight: 700; letter-spacing: .06em; color: var(--muted);
+}
+#inst-list li.grp:first-child { margin-top: 0; border-top: 0; }
+#inst-list li.grp:hover { color: var(--text); }
+#inst-list li.grp.active { color: var(--accent); }
+#inst-list li.grp.drop-before { border-bottom-color: var(--accent); }
+#inst-list .gname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#inst-list .gmeta { color: var(--faint); font-weight: 400; font-variant-numeric: tabular-nums; }
+#inst-list .grip { width: 12px; height: 16px; flex: none; display: grid; place-items: center; color: var(--faint); cursor: grab; }
+#inst-list .grip svg { width: 12px; height: 12px; display: block; }
+#inst-list li.inst:hover .grip { color: var(--muted); }
+#inst-list .itext { flex: 1; min-width: 0; }
+#inst-list .iname {
+  font-family: Consolas, "Cascadia Mono", monospace; font-size: 12px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+#inst-list .iid { color: var(--faint); font-size: 10px; }
+#inst-list .imeta { color: var(--faint); font-size: 10px; font-variant-numeric: tabular-nums; }
+#inst-list .depth-badge {
+  margin-left: 5px; padding: 0 5px; border-radius: 8px; font-size: 10px;
+  background: #17293a; color: var(--accent);
+}
+#inst-list .eye { width: 18px; height: 18px; display: grid; place-items: center; flex: none; color: var(--muted); }
+#inst-list .eye svg { width: 13px; height: 13px; display: block; }
+#inst-list li.inst:hover .eye { color: var(--text); }
+#inst-list li.inst.off .eye { color: var(--warn); }
 
 /* ---------------- palette ---------------- */
 .palette-head { position: sticky; top: 0; z-index: 1; padding: 8px; background: var(--panel); border-bottom: 1px solid var(--line-2); }

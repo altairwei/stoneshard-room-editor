@@ -20,14 +20,15 @@ export const FAMILIES: Family[] = [
 
 const THUMB = 40;
 
-export function thumbHtml(db: AssetDb, object: string): string {
+export function thumbHtml(db: AssetDb, object: string, frame = 0, size = THUMB): string {
   const spr = db.objects[object]?.sprite;
-  const f = spr ? db.sprites[spr]?.frames[0] : undefined;
-  if (!f || f.length === 0) return `<div class="thumb empty">◇</div>`;
+  const def = spr ? db.sprites[spr] : undefined;
+  const f = def && def.frames.length ? def.frames[frame % def.frames.length] : undefined;
+  if (!f || f.length === 0) return `<div class="thumb empty" style="width:${size}px;height:${size}px">◇</div>`;
   const [page, sx, sy, sw, sh] = f;
-  const k = Math.min(THUMB / sw, THUMB / sh, 2);
+  const k = Math.min(size / sw, size / sh, 2);
   const w = Math.max(1, Math.round(sw * k)), h = Math.max(1, Math.round(sh * k));
-  return `<div class="thumb"><div style="width:${sw}px;height:${sh}px;background:url(${pageUrl(page)}) -${sx}px -${sy}px no-repeat;transform:scale(${k});transform-origin:0 0;margin-right:${w - sw}px;margin-bottom:${h - sh}px"></div></div>`;
+  return `<div class="thumb" style="width:${size}px;height:${size}px"><div style="width:${sw}px;height:${sh}px;background:url(${pageUrl(page)}) -${sx}px -${sy}px no-repeat;transform:scale(${k});transform-origin:0 0;margin-right:${w - sw}px;margin-bottom:${h - sh}px"></div></div>`;
 }
 
 export function searchObjects(db: AssetDb, query: string, family: Family, limit = 150): string[] {
