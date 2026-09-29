@@ -1260,7 +1260,7 @@ function drawRulers() {
 type Drag =
   | { mode: "pan"; sx: number; sy: number; wx: number; wy: number; button: number; moved: boolean }
   | { mode: "move"; sx: number; sy: number; ids: number[]; orig: { id: number; x: number; y: number }[]; dx: number; dy: number; moved: boolean }
-  | { mode: "resize"; sx: number; sy: number; id: number; handle: string; lb: { x: number; y: number; w: number; h: number }; box: { x: number; y: number; w: number; h: number }; unit: number; orig: { x: number; y: number; scale_x: number; scale_y: number }; moved: boolean }
+  | { mode: "resize"; sx: number; sy: number; id: number; handle: string; lb: { x: number; y: number; w: number; h: number }; box: { x: number; y: number; w: number; h: number }; orig: { x: number; y: number; scale_x: number; scale_y: number }; moved: boolean }
   | { mode: "zone"; ax: number; ay: number; bx: number; by: number; moved: boolean }
   | { mode: "paint"; ax: number; ay: number; bx: number; by: number; moved: boolean }
   | { mode: "marquee"; sx: number; sy: number; ex: number; ey: number; additive: boolean; moved: boolean };
@@ -1281,12 +1281,15 @@ function handleAt(n: InstanceNode, sx: number, sy: number): string | null {
 // fixed edges come from the box at drag start; the moving edge follows the pointer
 // (snapped). New scale keeps the sprite's sign; x/y shift so the fixed edges stay put.
 function resizeCompute(d: Extract<Drag, { mode: "resize" }>, wx: number, wy: number) {
-  const snapE = (v: number) => (snapOn() ? Math.round(v / d.unit) * d.unit : Math.round(v));
+  // edges snap to the 26px grid like zone-drawing and moving, whatever the sprite's
+  // frame size; the 吸附 toggle off (or Alt held) frees them to whole pixels
+  const unit = snapOn() ? CELL : 1;
+  const snapE = (v: number) => Math.round(v / unit) * unit;
   let L = d.box.x, T = d.box.y, R = L + d.box.w, B = T + d.box.h;
-  if (d.handle.includes("e")) R = Math.max(L + d.unit, snapE(wx));
-  if (d.handle.includes("w")) L = Math.min(R - d.unit, snapE(wx));
-  if (d.handle.includes("s")) B = Math.max(T + d.unit, snapE(wy));
-  if (d.handle.includes("n")) T = Math.min(B - d.unit, snapE(wy));
+  if (d.handle.includes("e")) R = Math.max(L + unit, snapE(wx));
+  if (d.handle.includes("w")) L = Math.min(R - unit, snapE(wx));
+  if (d.handle.includes("s")) B = Math.max(T + unit, snapE(wy));
+  if (d.handle.includes("n")) T = Math.min(B - unit, snapE(wy));
   const gx = Math.sign(d.orig.scale_x) || 1, gy = Math.sign(d.orig.scale_y) || 1;
   const scale_x = (gx * (R - L)) / d.lb.w, scale_y = (gy * (B - T)) / d.lb.h;
   // origins can sit off-cell (oCameraStatic is centred), which leaves x/y fractional
@@ -1341,7 +1344,6 @@ function wireViewport(host: HTMLElement) {
             mode: "resize", sx, sy, id: n.inst.instance_id, handle,
             lb: { x: lb.x, y: lb.y, w: lb.width, h: lb.height },
             box: { x: n.view.x + lb.x * vsx, y: n.view.y + lb.y * vsy, w: lb.width * vsx, h: lb.height * vsy },
-            unit: lb.width % CELL === 0 && lb.height % CELL === 0 ? CELL : 1,
             orig: { x: n.inst.x, y: n.inst.y, scale_x: n.inst.scale_x, scale_y: n.inst.scale_y },
             moved: false,
           };
@@ -1400,7 +1402,7 @@ function wireViewport(host: HTMLElement) {
       const v = resizeCompute(d, w.x, w.y);
       n.view.scale.set(v.scale_x, v.scale_y);
       n.view.position.set(v.x, v.y);
-      $("s-hover").textContent = `调整尺寸 ${Math.round(v.w)}×${Math.round(v.h)}${snapOn() ? `（吸附 ${d.unit}px，Alt 自由）` : ""}`;
+      $("s-hover").textContent = `调整尺寸 ${Math.round(v.w)}×${Math.round(v.h)}${snapOn() ? `（吸附 ${CELL}px，Alt 自由）` : ""}`;
       drawOverlay();
       return;
     }

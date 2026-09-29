@@ -296,6 +296,70 @@ def main():
                 st, doc7 = call("GET", f"/api/doc/{ROOM}")
                 check(find_inst(doc7, sel[0])["scale_x"] == srcr["scale_x"], "Ctrl+Z undid the resize on the server")
 
+            print("resize snaps whatever the sprite frame")
+            # s_gray is 5x5 -- a frame that is not a multiple of 26. The snap unit used to
+            # be derived from the frame and fell back to 1px for these, so the 吸附 toggle
+            # did nothing; now the edge always snaps to the grid, Alt frees it
+            st, r = call("POST", f"/api/doc/{ROOM}/apply", {
+                "by": "agent-test", "label": "放个非整格盒子",
+                "ops": [{"op": "add", "layer": "ForegroundInstances",
+                         "inst": {"object_definition": "o_speech_trigger", "x": 52, "y": 52,
+                                  "scale_x": 5.2, "scale_y": 5.2}}]})
+            gid = r["ids"][0] if st == 200 else None
+            check(gid is not None, "added a non-cell coverage rectangle (o_speech_trigger, 5x5 frame)")
+            if gid:
+                # select via the insts-tab row: a canvas click would hit the wall-sized
+                # collision stamps (overlay zIndex above hidden objects) instead
+                try:
+                    pg.wait_for_selector(f"#inst-list li.inst[data-id='{gid}']", timeout=10000)
+                    pg.click(f"#inst-list li.inst[data-id='{gid}']")
+                    pg.wait_for_function(f"svre.gateOf({gid}) === true", timeout=10000)
+                    g0 = pg.evaluate(f"svre.geom({gid})")
+                except Exception:
+                    g0 = None
+                check(pg.evaluate("svre.selection") == [gid], "row click selects the non-cell box")
+                check(g0 is not None, "it offers resize handles")
+                if g0:
+                    cx, cy = g0["box"]["x"] + g0["box"]["w"] / 2, g0["box"]["y"] + g0["box"]["h"] / 2
+                    pg.evaluate(f"svre.focus({cx}, {cy}, 2)")
+                    pg.wait_for_timeout(250)
+                    box = pg.locator("#stage").bounding_box()
+                    hp = pg.evaluate(f"svre.handlePoint({gid}, 'e')")
+                    right0 = g0["box"]["x"] + g0["box"]["w"]
+                    if hp:
+                        pg.mouse.move(box["x"] + hp["x"], box["y"] + hp["y"])
+                        pg.mouse.down()
+                        pg.mouse.move(box["x"] + hp["x"] + 60, box["y"] + hp["y"], steps=5)  # +30 world px at zoom 2
+                        pg.mouse.up()
+                        pg.wait_for_timeout(600)
+                        st, dd = call("GET", f"/api/doc/{ROOM}")
+                        mir = find_inst(dd, gid)
+                        edge = g0["box"]["x"] + mir["scale_x"] * g0["lb"]["w"]
+                        check(abs(edge / 26 - round(edge / 26)) < 1e-6 and edge > right0,
+                              f"snap on: the dragged edge lands on a cell line ({right0} -> {edge})")
+                        pg.keyboard.press("Control+z")
+                        pg.wait_for_timeout(500)
+                        pg.keyboard.down("Alt")
+                        pg.mouse.move(box["x"] + hp["x"], box["y"] + hp["y"])
+                        pg.mouse.down()
+                        pg.mouse.move(box["x"] + hp["x"] + 60, box["y"] + hp["y"], steps=5)
+                        pg.mouse.up()
+                        pg.keyboard.up("Alt")
+                        pg.wait_for_timeout(600)
+                        st, dd = call("GET", f"/api/doc/{ROOM}")
+                        mir = find_inst(dd, gid)
+                        edge = g0["box"]["x"] + mir["scale_x"] * g0["lb"]["w"]
+                        check(abs(edge - round(right0 + 30)) < 1, f"Alt frees the edge to the raw pixel ({edge})")
+                        pg.keyboard.press("Control+z")
+                        pg.wait_for_timeout(500)
+                        pg.keyboard.press("Escape")
+                st, r = call("POST", f"/api/doc/{ROOM}/apply", {
+                    "by": "agent-test",
+                    "ops": [{"op": "delete", "id": gid, "expect": {"object_definition": "o_speech_trigger"}}]})
+                check(st == 200, "non-cell box removed again")
+                pg.evaluate("svre.focus(364, 338, 2)")  # back over the room for the later fixed-coordinate steps
+                pg.wait_for_timeout(200)
+
             art = pg.evaluate("svre.pickTarget()")
             if art:
                 check(pg.evaluate(f"svre.gateOf({art['id']})") is not True, "drawn art gets no resize handles")
