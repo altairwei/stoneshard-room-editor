@@ -43,7 +43,7 @@ export function genRoomsCs(modName: string, rooms: { name: string; text: string 
     "{",
     "    // Call after SvGeneratedAssets.Register() and after every Msl.AddCode whose name a",
     "    // room references as creation_code (RoomUtils resolves both by name, silently).",
-    "    public static void RegisterAll()",
+    "    public static void Register()",
     "    {",
   ];
   for (const r of [...rooms].sort((a, b) => a.name.localeCompare(b.name)))

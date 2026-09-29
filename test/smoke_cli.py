@@ -121,7 +121,7 @@ def main():
         rcs = scratch / f"{scratch.name}.Rooms.g.cs"
         rcsraw = rcs.read_bytes() if rcs.exists() else b""
         check(b'public const string r_sv_hut_inside1 = """' in rcsraw
-              and b"Msl.AddRoomJson(r_sv_hut_inside1);" in rcsraw, "Rooms.g.cs has the const + RegisterAll call")
+              and b"Msl.AddRoomJson(r_sv_hut_inside1);" in rcsraw, "Rooms.g.cs has the const + Register call")
         m = re.search(rb'public const string r_sv_hut_inside1 = ("{3,})\n(.*?)\n\1;', rcsraw, re.S)
         check(m is not None and m.group(2) == snap.read_bytes(), "the const's value is the snapshot byte for byte")
         # self-heal: tamper the generated file, recompile, it comes back

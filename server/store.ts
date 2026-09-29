@@ -5,7 +5,7 @@
 // On disk, per room, inside the mod:
 //   rooms/<name>.room.json       the project (base + log + notes); written on every change
 //   rooms/<name>.compiled.json   the compiled snapshot; written only by compile()/adopt/import
-//   <Mod>.Rooms.g.cs             GENERATED: every snapshot as a const + RegisterAll();
+//   <Mod>.Rooms.g.cs             GENERATED: every snapshot as a const + Register();
 //                                self-healed from the snapshots (see server/roomsgen.ts)
 //
 // "dirty" = the log has moved past the last compile. "drift" = the compiled snapshot on

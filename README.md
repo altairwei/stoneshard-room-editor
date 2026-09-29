@@ -16,7 +16,7 @@ P0 渲染保真度已对游戏截图验证过（见文末）。
   没人手改它；磁盘上的文件和上次编译不一致 = 漂移（drift），要么 `adopt` 把外部改动
   记成一条日志，要么强制覆盖。
 - `<Mod>.Rooms.g.cs` 是**生成的运输形态**：每个快照嵌成一个 raw string const（C# 11，
-  打包器的 Roslyn 4.7 实测支持）加 `SvGeneratedRooms.RegisterAll()`，房间 JSON 就这样
+  打包器的 Roslyn 4.7 实测支持）加 `SvGeneratedRooms.Register()`，房间 JSON 就这样
   随程序集进 `.sml`——不用再伪装成 `.gml` 给 `ModFiles.GetCode` 读（打包器也只收
   `Codes/*.gml`，别的扩展名根本不进包，实测）。GENERATED，别手改；server 启动和每次
   compile/import/adopt 时从快照自愈重写（有漂移的快照会卡住整个重写，防止把篡改进构建）。
