@@ -89,6 +89,56 @@ let lintFindings: Finding[] = [];
 let lastSeenRev = 0; // history badge counts entries past this
 let renderMode = false;
 
+// Coverage rectangles (collision stamps, wall/trigger/surface boxes) are solid-colour
+// sprites; drag-resize handles are offered only for those, so game art never stretches.
+// Decided from the pixels, not a name list: new vanilla coverage objects qualify on
+// their own, and multi-colour art (chests, cave walls, floor bakes) never does.
+const plainBoxCache = new Map<string, Promise<boolean>>();
+function plainBoxSprite(sprite: string): Promise<boolean> {
+  let p = plainBoxCache.get(sprite);
+  if (!p) {
+    p = (async () => {
+      const ft = await db.frameTexture(sprite, 0);
+      if (!ft) return false;
+      const [, sx, sy, sw, sh] = ft.frame as number[];
+      const c = document.createElement("canvas");
+      c.width = Math.max(1, sw);
+      c.height = Math.max(1, sh);
+      const ctx = c.getContext("2d", { willReadFrequently: true })!;
+      ctx.drawImage(ft.tex.source.resource as CanvasImageSource, -sx, -sy);
+      const data = ctx.getImageData(0, 0, c.width, c.height).data;
+      let opaque = 0;
+      const colors = new Set<string>();
+      for (let i = 0; i < data.length; i += 4) {
+        if (data[i + 3] <= 8) continue;
+        opaque++;
+        colors.add(`${data[i]},${data[i + 1]},${data[i + 2]}`);
+        if (colors.size > 4) return false;
+      }
+      return opaque / (data.length / 4) >= 0.98;
+    })();
+    plainBoxCache.set(sprite, p);
+  }
+  return p;
+}
+const resizeGate = new Map<number, boolean>(); // instance id -> drag-resize allowed
+async function computeResizeGate(n: InstanceNode): Promise<boolean> {
+  const id = n.inst.instance_id;
+  const hit = resizeGate.get(id);
+  if (hit !== undefined) return hit;
+  let ok = false;
+  try {
+    if (n.kind !== "marker" && Math.abs(n.inst.rotation) < 0.001) {
+      const spr = db.objects[n.inst.object_definition ?? ""]?.sprite;
+      ok = !!spr && (await plainBoxSprite(spr));
+    }
+  } catch {
+    ok = false;
+  }
+  resizeGate.set(id, ok);
+  return ok;
+}
+
 const toggles = {
   snap: $<HTMLInputElement>("t-snap"),
   hidden: $<HTMLInputElement>("t-hidden"),
@@ -336,6 +386,7 @@ async function refreshScene() {
     scene.root.destroy({ children: true });
   }
   scene = next;
+  resizeGate.clear(); // gates are per instance; classification re-asks the sprite cache
   world.addChild(scene.root);
   world.addChild(ghostLayer); // keep the ghost on top
   nodeById = new Map(scene.nodes.map((n) => [n.inst.instance_id, n]));
@@ -661,8 +712,37 @@ function fit() {
 type Drag =
   | { mode: "pan"; sx: number; sy: number; wx: number; wy: number; button: number; moved: boolean }
   | { mode: "move"; sx: number; sy: number; ids: number[]; orig: { id: number; x: number; y: number }[]; dx: number; dy: number; moved: boolean }
+  | { mode: "resize"; sx: number; sy: number; id: number; handle: string; lb: { x: number; y: number; w: number; h: number }; box: { x: number; y: number; w: number; h: number }; unit: number; orig: { x: number; y: number; scale_x: number; scale_y: number }; moved: boolean }
   | { mode: "marquee"; sx: number; sy: number; ex: number; ey: number; additive: boolean; moved: boolean };
 let drag: Drag | null = null;
+
+// where a resize handle sits, in screen px; hit-test radius matches the drawn square
+function handleAt(n: InstanceNode, sx: number, sy: number): string | null {
+  const b = n.view.getBounds();
+  const pts: [string, number, number][] = [
+    ["nw", b.x, b.y], ["n", b.x + b.width / 2, b.y], ["ne", b.x + b.width, b.y],
+    ["e", b.x + b.width, b.y + b.height / 2], ["se", b.x + b.width, b.y + b.height],
+    ["s", b.x + b.width / 2, b.y + b.height], ["sw", b.x, b.y + b.height], ["w", b.x, b.y + b.height / 2],
+  ];
+  for (const [h, x, y] of pts) if (Math.abs(sx - x) <= 5 && Math.abs(sy - y) <= 5) return h;
+  return null;
+}
+
+// fixed edges come from the box at drag start; the moving edge follows the pointer
+// (snapped). New scale keeps the sprite's sign; x/y shift so the fixed edges stay put.
+function resizeCompute(d: Extract<Drag, { mode: "resize" }>, wx: number, wy: number) {
+  const snapE = (v: number) => (snapOn() ? Math.round(v / d.unit) * d.unit : Math.round(v));
+  let L = d.box.x, T = d.box.y, R = L + d.box.w, B = T + d.box.h;
+  if (d.handle.includes("e")) R = Math.max(L + d.unit, snapE(wx));
+  if (d.handle.includes("w")) L = Math.min(R - d.unit, snapE(wx));
+  if (d.handle.includes("s")) B = Math.max(T + d.unit, snapE(wy));
+  if (d.handle.includes("n")) T = Math.min(B - d.unit, snapE(wy));
+  const gx = Math.sign(d.orig.scale_x) || 1, gy = Math.sign(d.orig.scale_y) || 1;
+  const scale_x = (gx * (R - L)) / d.lb.w, scale_y = (gy * (B - T)) / d.lb.h;
+  // origins can sit off-cell (oCameraStatic is centred), which leaves x/y fractional
+  // when an edge is pinned to the grid -- the room format stores integers
+  return { x: Math.round(L - d.lb.x * scale_x), y: Math.round(T - d.lb.y * scale_y), scale_x, scale_y, w: R - L, h: B - T };
+}
 
 function wireViewport(host: HTMLElement) {
   const local = (e: PointerEvent | WheelEvent) => {
@@ -692,6 +772,26 @@ function wireViewport(host: HTMLElement) {
       const w = toWorld(sx, sy);
       placeAt(w.x, w.y);
       return;
+    }
+    // a handle of the single selected coverage rectangle wins over move/marquee
+    if (selection.size === 1) {
+      const n = nodeById.get([...selection][0]);
+      if (n && n.view.visible && resizeGate.get(n.inst.instance_id)) {
+        const handle = handleAt(n, sx, sy);
+        if (handle) {
+          const lb = n.view.getLocalBounds();
+          const vsx = n.view.scale.x, vsy = n.view.scale.y;
+          drag = {
+            mode: "resize", sx, sy, id: n.inst.instance_id, handle,
+            lb: { x: lb.x, y: lb.y, w: lb.width, h: lb.height },
+            box: { x: n.view.x + lb.x * vsx, y: n.view.y + lb.y * vsy, w: lb.width * vsx, h: lb.height * vsy },
+            unit: lb.width % CELL === 0 && lb.height % CELL === 0 ? CELL : 1,
+            orig: { x: n.inst.x, y: n.inst.y, scale_x: n.inst.scale_x, scale_y: n.inst.scale_y },
+            moved: false,
+          };
+          return;
+        }
+      }
     }
     const hit = pick(sx, sy);
     if (hit) {
@@ -730,6 +830,20 @@ function wireViewport(host: HTMLElement) {
       drawOverlay();
       return;
     }
+    if (drag?.mode === "resize") {
+      const d = drag;
+      if (!d.moved && Math.abs(sx - d.sx) + Math.abs(sy - d.sy) < 4) return;
+      d.moved = true;
+      const w = toWorld(sx, sy);
+      const n = nodeById.get(d.id);
+      if (!n) return;
+      const v = resizeCompute(d, w.x, w.y);
+      n.view.scale.set(v.scale_x, v.scale_y);
+      n.view.position.set(v.x, v.y);
+      $("s-hover").textContent = `调整尺寸 ${Math.round(v.w)}×${Math.round(v.h)}${snapOn() ? `（吸附 ${d.unit}px，Alt 自由）` : ""}`;
+      drawOverlay();
+      return;
+    }
     if (drag?.mode === "move") {
       const d = drag;
       const rdx = (sx - d.sx) / zoom, rdy = (sy - d.sy) / zoom;
@@ -758,6 +872,18 @@ function wireViewport(host: HTMLElement) {
       $("s-hover").textContent = h ? `${h.inst.object_definition}  #${h.inst.instance_id}  @${h.inst.x},${h.inst.y}  depth ${h.depth}  [${h.layer.layer_name}]` : "—";
       drawOverlay();
     }
+    // resize-handle cursor for the single selected coverage rectangle
+    if (tool.kind === "select" && !spaceHeld) {
+      let cur = "";
+      if (selection.size === 1) {
+        const n = nodeById.get([...selection][0]);
+        if (n && n.view.visible && resizeGate.get(n.inst.instance_id)) {
+          const handle = handleAt(n, sx, sy);
+          if (handle) cur = handle.length === 1 ? (handle === "e" || handle === "w" ? "ew-resize" : "ns-resize") : handle === "nw" || handle === "se" ? "nwse-resize" : "nesw-resize";
+        }
+      }
+      host.style.cursor = cur;
+    }
   });
 
   host.addEventListener("pointerup", (e) => {
@@ -774,7 +900,23 @@ function wireViewport(host: HTMLElement) {
       }
       return;
     }
-    if (d.mode === "move" && d.moved && (d.dx || d.dy)) {
+    if (d.mode === "resize") {
+      if (!d.moved) return;
+      const r0 = host.getBoundingClientRect();
+      const w = toWorld(e.clientX - r0.left, e.clientY - r0.top);
+      const v = resizeCompute(d, w.x, w.y);
+      const unchanged = v.x === d.orig.x && v.y === d.orig.y && v.scale_x === d.orig.scale_x && v.scale_y === d.orig.scale_y;
+      if (unchanged) {
+        refreshScene(); // snapped back to the start: restore the previewed view
+        return;
+      }
+      const n = nodeById.get(d.id);
+      commit(`调整 ${n?.inst.object_definition ?? d.id} 尺寸`, [{
+        op: "set", id: d.id,
+        set: { x: v.x, y: v.y, scale_x: v.scale_x, scale_y: v.scale_y },
+        expect: { ...d.orig },
+      }]).then((ok) => { if (!ok) refreshScene(); });
+    } else if (d.mode === "move" && d.moved && (d.dx || d.dy)) {
       const ops: Op[] = d.orig.map((o) => ({
         op: "set",
         id: o.id,
@@ -829,6 +971,24 @@ function drawOverlay() {
   for (const id of selection) {
     const n = nodeById.get(id);
     if (n) box(n, 0x6cb6ff, 2);
+  }
+  // drag-resize handles: single selection of a visible coverage rectangle
+  if (selection.size === 1 && tool.kind === "select") {
+    const n = nodeById.get([...selection][0]);
+    if (n && n.view.visible) {
+      const gate = resizeGate.get(n.inst.instance_id);
+      if (gate === undefined) void computeResizeGate(n).then(() => drawOverlay());
+      else if (gate) {
+        const b = n.view.getBounds();
+        for (const [hx, hy] of [
+          [b.x, b.y], [b.x + b.width / 2, b.y], [b.x + b.width, b.y],
+          [b.x + b.width, b.y + b.height / 2], [b.x + b.width, b.y + b.height],
+          [b.x + b.width / 2, b.y + b.height], [b.x, b.y + b.height], [b.x, b.y + b.height / 2],
+        ] as [number, number][]) {
+          overlay.rect(hx - 3, hy - 3, 6, 6).fill({ color: 0xffffff }).stroke({ color: 0x1c2b3a, width: 1 });
+        }
+      }
+    }
   }
   // other authors' selections (thinner, warm)
   for (const ids of remoteSel.values()) {
@@ -1189,6 +1349,41 @@ const whoText = (by?: string) => (by === BY ? "你" : by ? `${by}` : "有人");
     return { id: n.inst.instance_id, object: n.inst.object_definition, x: b.x + b.width / 2, y: b.y + b.height / 2 };
   },
   kindOf(id: number) { return nodeById.get(id)?.kind ?? null; },
+  gateOf(id: number) { return resizeGate.get(id) ?? null; },
+  handlePoint(id: number, handle = "e") {
+    const n = nodeById.get(id);
+    if (!n || !resizeGate.get(id)) return null;
+    const b = n.view.getBounds();
+    const pts: Record<string, [number, number]> = {
+      nw: [b.x, b.y], n: [b.x + b.width / 2, b.y], ne: [b.x + b.width, b.y],
+      e: [b.x + b.width, b.y + b.height / 2], se: [b.x + b.width, b.y + b.height],
+      s: [b.x + b.width / 2, b.y + b.height], sw: [b.x, b.y + b.height], w: [b.x, b.y + b.height / 2],
+    };
+    const p = pts[handle];
+    return p ? { x: p[0], y: p[1] } : null;
+  },
+  // unscaled footprint + current world box of an instance (resize math checks)
+  geom(id: number) {
+    const n = nodeById.get(id);
+    if (!n) return null;
+    const lb = n.view.getLocalBounds();
+    const vsx = n.view.scale.x, vsy = n.view.scale.y;
+    return {
+      lb: { x: lb.x, y: lb.y, w: lb.width, h: lb.height },
+      box: { x: n.view.x + lb.x * vsx, y: n.view.y + lb.y * vsy, w: lb.width * vsx, h: lb.height * vsy },
+    };
+  },
+  // a reliable resize target for tests: screen point of the east handle of the first
+  // visible coverage rectangle (collision stamp / wall / trigger box)
+  async pickRect() {
+    for (const n of scene?.nodes ?? []) {
+      if (n.kind === "marker" || !n.view.visible) continue;
+      if (!(await computeResizeGate(n))) continue;
+      const b = n.view.getBounds();
+      return { id: n.inst.instance_id, object: n.inst.object_definition, x: b.x + b.width, y: b.y + b.height / 2, bounds: { x: b.x, y: b.y, w: b.width, h: b.height } };
+    }
+    return null;
+  },
   spriteOf(name: string) { const d = db.sprites[name]; return d && { w: d.w, h: d.h, ox: d.ox, oy: d.oy, frames: d.frames.length }; },
 };
 

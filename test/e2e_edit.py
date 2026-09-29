@@ -231,6 +231,52 @@ def main():
             st, doc5 = call("GET", f"/api/doc/{ROOM}")
             check(find_inst(doc5, tid)["x"] == src["x"], "Ctrl+Z undid the drag on the server")
 
+            print("drag-resize a coverage rectangle")
+            pg.evaluate("svre.set('collision', true)")
+            t = pg.evaluate("svre.pickRect()")
+            check(t is not None, "pickRect found a coverage rectangle")
+            if t:
+                srcr = find_inst(doc5, t["id"])
+                pg.evaluate(f"svre.focus({srcr['x']}, {srcr['y']}, 2)")
+                pg.wait_for_timeout(200)
+                t = pg.evaluate("svre.pickRect()")  # handle points after the refocus
+                box = pg.locator("#stage").bounding_box()
+                pg.mouse.click(box["x"] + t["bounds"]["x"] + t["bounds"]["w"] / 2, box["y"] + t["bounds"]["y"] + t["bounds"]["h"] / 2)
+                pg.wait_for_timeout(250)
+                sel = pg.evaluate("svre.selection")
+                check(len(sel) == 1, f"click selects one instance ({sel})")
+                check(pg.evaluate(f"svre.gateOf({sel[0]})") is True, f"selected #{sel[0]} offers resize handles")
+                hp = pg.evaluate(f"svre.handlePoint({sel[0]}, 'e')")
+                check(hp is not None, "east handle exists")
+                g = pg.evaluate(f"svre.geom({sel[0]})")
+                obj_w = g["lb"]["w"]
+                right0 = g["box"]["x"] + g["box"]["w"]
+                hx, hy = box["x"] + hp["x"], box["y"] + hp["y"]
+                pg.mouse.move(hx, hy)
+                pg.mouse.down()
+                pg.mouse.move(hx + 30, hy, steps=4)
+                pg.mouse.move(hx + 60, hy, steps=4)  # zoom 2 -> +30 world px -> snaps to +26
+                pg.mouse.up()
+                pg.wait_for_timeout(500)
+                st, doc6 = call("GET", f"/api/doc/{ROOM}")
+                mir = find_inst(doc6, sel[0])
+                last = doc6["log"][-1]
+                check(last["by"] == "human" and "调整" in last["label"], f"resize logged as a human entry ({last['label']!r})")
+                check(mir["y"] == srcr["y"] and mir["scale_y"] == srcr["scale_y"], "resize leaves y/scale_y alone")
+                check(abs(mir["x"] - srcr["x"]) <= 26, "x may shift to keep the far edge pinned (centred origins)")
+                grew = (mir["scale_x"] - srcr["scale_x"]) * obj_w
+                # the moving edge snaps to the grid: nearest cell edge to (start + 30 world px)
+                expected = round((right0 + 30) / 26) * 26 - right0
+                check(abs(grew - expected) < 1e-3 and expected >= 26, f"east drag grew the box by one snapped cell ({grew}px)")
+                pg.keyboard.press("Control+z")
+                pg.wait_for_timeout(500)
+                st, doc7 = call("GET", f"/api/doc/{ROOM}")
+                check(find_inst(doc7, sel[0])["scale_x"] == srcr["scale_x"], "Ctrl+Z undid the resize on the server")
+
+            art = pg.evaluate("svre.pickTarget()")
+            if art:
+                check(pg.evaluate(f"svre.gateOf({art['id']})") is not True, "drawn art gets no resize handles")
+
             print("agent edit reaches the open page")
             call("POST", f"/api/doc/{ROOM}/apply", {
                 "by": "agent-test", "label": "从 HTTP 挪一下",
