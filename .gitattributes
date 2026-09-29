@@ -1,1 +1,2 @@
-* text=auto eol=lf
+# byte-pinned fixtures: e2e/smoke compare them verbatim against compiled output
+test/golden/*.json -text
