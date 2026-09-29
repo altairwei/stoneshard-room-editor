@@ -6,49 +6,83 @@
     <title>SV Room Editor</title>
   </head>
   <body>
-    <header id="topbar">
-      <span class="brand">SV Room Editor</span>
+    <header id="appbar">
+      <span class="brand"><span class="brand-logo" data-icon="logo"></span>SV Room Editor</span>
       <select id="room-select" title="房间"></select>
       <button id="b-new" title="基于一个原版房间新建">新建…</button>
-      <button id="b-compile" title="把工程编译成 Codes/&lt;房间&gt;.gml（Ctrl+S）" disabled>编译</button>
-      <button id="b-undo" title="撤销 (Ctrl+Z)" disabled>↶</button>
-      <button id="b-redo" title="重做 (Ctrl+Y)" disabled>↷</button>
       <div class="sep"></div>
-      <label class="toggle" title="拖动与放置按 26px 格吸附；按住 Alt 临时自由"><input type="checkbox" id="t-snap" checked /> 吸附</label>
-      <label class="toggle"><input type="checkbox" id="t-hidden" checked /> 隐形对象</label>
-      <label class="toggle"><input type="checkbox" id="t-collision" checked /> 碰撞格</label>
-      <label class="toggle"><input type="checkbox" id="t-markers" /> 标记点</label>
-      <label class="toggle"><input type="checkbox" id="t-grid" /> 网格</label>
-      <label class="toggle"><input type="checkbox" id="t-notes" checked /> 便签</label>
-      <div class="sep"></div>
-      <button id="b-fit" title="适配窗口 (F)">适配</button>
-      <button id="b-1x" title="1:1 (1)">1:1</button>
+      <button id="b-undo" class="icon-btn" data-icon="undo" title="撤销 (Ctrl+Z)" disabled></button>
+      <button id="b-redo" class="icon-btn" data-icon="redo" title="重做 (Ctrl+Y)" disabled></button>
       <span class="spacer"></span>
       <span id="load-state"></span>
+      <button id="b-compile" title="把工程编译成 Codes/&lt;房间&gt;.gml（Ctrl+S）" disabled>编译</button>
     </header>
+    <div id="options">
+      <span id="opt-tool">选择</span>
+      <div class="sep"></div>
+      <label class="itoggle" title="吸附：拖动与放置按 26px 格对齐；按住 Alt 临时自由 (S)"><input type="checkbox" id="t-snap" checked /><i data-icon="snap"></i></label>
+      <label class="itoggle" title="隐形对象 (Shift+H)"><input type="checkbox" id="t-hidden" checked /><i data-icon="eye"></i></label>
+      <label class="itoggle" title="碰撞格"><input type="checkbox" id="t-collision" checked /><i data-icon="collision"></i></label>
+      <label class="itoggle" title="标记点"><input type="checkbox" id="t-markers" /><i data-icon="markers"></i></label>
+      <label class="itoggle" title="网格 (G)"><input type="checkbox" id="t-grid" /><i data-icon="grid"></i></label>
+      <label class="itoggle" title="便签"><input type="checkbox" id="t-notes" checked /><i data-icon="note"></i></label>
+      <span class="spacer"></span>
+      <button id="b-zoom-out" class="icon-btn" data-icon="zoomOut" title="缩小 (-)"></button>
+      <select id="zoom-preset" title="缩放">
+        <option value="" id="zoom-cur" hidden>100%</option>
+        <option value="25">25%</option>
+        <option value="50">50%</option>
+        <option value="100">100%</option>
+        <option value="200">200%</option>
+        <option value="300">300%</option>
+        <option value="400">400%</option>
+        <option value="800">800%</option>
+        <option value="fit">适配窗口</option>
+      </select>
+      <button id="b-zoom-in" class="icon-btn" data-icon="zoomIn" title="放大 (+)"></button>
+      <div class="sep"></div>
+      <button id="b-fit" title="适配窗口 (F / Ctrl+0)">适配</button>
+      <button id="b-1x" title="实际像素 (1 / Ctrl+1)">1:1</button>
+    </div>
     <div id="banner" hidden></div>
     <main>
-      <aside id="left" class="panel">
-        <nav class="tabs">
-          <button data-tab="layers" class="on">图层</button>
-          <button data-tab="palette">对象</button>
-          <button data-tab="history">历史<span id="history-badge"></span></button>
-        </nav>
-        <section id="tab-layers"><ul id="layer-list"></ul></section>
-        <section id="tab-palette" hidden>
-          <div class="palette-head">
-            <input id="palette-q" type="search" placeholder="搜索对象名…  (Ctrl+K)" autocomplete="off" />
-            <div id="palette-families"></div>
-          </div>
-          <ul id="palette-list"></ul>
+      <nav id="toolbox">
+        <button data-tool="select" class="on" data-icon="select" title="选择 (V)" aria-pressed="true"></button>
+        <button data-tool="hand" data-icon="hand" title="抓手 (H)：拖动平移；空格临时切换" aria-pressed="false"></button>
+        <button data-tool="place" data-icon="place" title="放置 (P)：在「对象」页签挑选，单击放入" aria-pressed="false"></button>
+        <button data-tool="note" data-icon="note" title="便签 (N)：单击在那个位置留便签" aria-pressed="false"></button>
+      </nav>
+      <div id="canvas-area">
+        <div id="ruler-corner"></div>
+        <canvas id="ruler-x"></canvas>
+        <canvas id="ruler-y"></canvas>
+        <section id="stage"></section>
+      </div>
+      <aside id="dock">
+        <section class="dock-panel" id="p-props">
+          <div class="dock-head" data-collapse="props"><span class="chev" data-icon="chevron"></span>属性</div>
+          <div class="dock-body"><div id="inspect-body" class="muted">点选一个实例</div></div>
         </section>
-        <section id="tab-history" hidden>
-          <div id="notes-list"></div>
-          <ul id="history-list"></ul>
+        <section class="dock-panel dock-tabs">
+          <nav class="tabs">
+            <button data-tab="layers" class="on">图层</button>
+            <button data-tab="palette">对象</button>
+            <button data-tab="history">历史<span id="history-badge"></span></button>
+          </nav>
+          <section id="tab-layers"><ul id="layer-list"></ul></section>
+          <section id="tab-palette" hidden>
+            <div class="palette-head">
+              <input id="palette-q" type="search" placeholder="搜索对象名…  (Ctrl+K)" autocomplete="off" />
+              <div id="palette-families"></div>
+            </div>
+            <ul id="palette-list"></ul>
+          </section>
+          <section id="tab-history" hidden>
+            <div id="notes-list"></div>
+            <ul id="history-list"></ul>
+          </section>
         </section>
       </aside>
-      <section id="stage"></section>
-      <aside id="inspector" class="panel"><h2>检查器</h2><div id="inspect-body" class="muted">点选一个实例</div></aside>
     </main>
     <footer id="status">
       <span id="s-tool">选择</span>
@@ -56,7 +90,7 @@
       <span id="s-cell">—</span>
       <span id="s-zoom">—</span>
       <span id="s-hover" class="grow">—</span>
-      <span id="s-hint">拖动=移动/框选 · 中键/右键/空格拖=平移 · 右键单击=便签 · Del 删除 · Ctrl+D 复制 · Ctrl+Z 撤销</span>
+      <span id="s-hint">V 选择 · H 抓手 · P 放置 · N 便签 · 空格/中键拖=平移 · 右键单击=便签 · Shift+H 隐形 · G 网格 · S 吸附 · F 适配</span>
     </footer>
     <div id="toasts"></div>
     <dialog id="new-dialog">

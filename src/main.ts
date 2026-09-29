@@ -18,6 +18,7 @@ import { applyAll, type Op } from "./core/ops.ts";
 import type { Note, ReplayProblem } from "./core/project.ts";
 import { buildScene, drawBounds, drawGrid, markerView, spriteView, type InstanceNode, type RoomScene } from "./render";
 import { FAMILIES, searchObjects, thumbHtml, type Family } from "./palette";
+import { ICONS, hydrateIcons } from "./icons.ts";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const esc = (s: unknown) => String(s).replace(/[&<>"]/g, (c) => `&${{ "&": "amp", "<": "lt", ">": "gt", '"': "quot" }[c]};`);
@@ -67,6 +68,7 @@ const world = new Container(); // pan/zoom lives here
 const ghostLayer = new Container(); // placement preview, in world space
 const notesLayer = new Container(); // note pins, in world space
 const overlay = new Graphics(); // screen-space outlines and marquee
+const artboard = new Graphics(); // pasteboard sheet under the room (world space, index 0)
 
 let rooms: RoomEntry[] = [];
 let doc: DocSnapshot | null = null;
@@ -79,7 +81,9 @@ const remoteSel = new Map<string, number[]>(); // other authors' selections
 let flash = new Map<number, number>(); // id -> highlight-until timestamp (history click)
 let activeLayer = -1;
 const layerOff = new Set<number>();
-let tool: { kind: "select" } | { kind: "place"; object: string } = { kind: "select" };
+type Tool = { kind: "select" } | { kind: "hand" } | { kind: "note" } | { kind: "place"; object: string };
+let tool: Tool = { kind: "select" };
+let lastPlaced: string | null = null; // the P key re-arms the last palette pick
 let clipboard: { layerName: string | null; inst: RoomInstance }[] = [];
 let cursorWorld = { x: 0, y: 0 };
 let spaceHeld = false;
@@ -172,12 +176,22 @@ async function init() {
   const params = new URLSearchParams(location.search);
   renderMode = params.get("render") === "1";
   if (renderMode) document.body.classList.add("render");
+  hydrateIcons();
 
   const host = $("stage");
-  await app.init({ resizeTo: host, background: 0x0d0e11, antialias: false, roundPixels: true, autoDensity: true, resolution: devicePixelRatio });
+  await app.init({ resizeTo: host, background: renderMode ? 0x0d0e11 : 0x2a2a2a, antialias: false, roundPixels: true, autoDensity: true, resolution: devicePixelRatio });
   host.appendChild(app.canvas);
+  world.addChild(artboard); // index 0, under every scene root
   ghostLayer.alpha = 0.65;
   app.stage.addChild(world, notesLayer, overlay);
+  // render on demand: the scene is static between mutations, and software GL charges full
+  // price for every frame. A slow heartbeat covers async texture arrivals and any missed
+  // invalidation; every mutation path below calls requestRender().
+  app.ticker.stop();
+  setInterval(() => app.render(), 500);
+  requestRender();
+  // resizeTo only tracks the window; the stage also changes when the banner or dock reflows
+  new ResizeObserver(() => { app.resize(); drawOverlay(); }).observe(host);
 
   $("load-state").textContent = "加载资产…";
   await db.load();
@@ -186,11 +200,21 @@ async function init() {
   for (const t of Object.values(toggles)) t.onchange = () => { applyVisibility(); };
   $("b-fit").onclick = fit;
   $("b-1x").onclick = () => zoomAt(1, host.clientWidth / 2, host.clientHeight / 2);
+  $("b-zoom-out").onclick = () => zoomStep(-1);
+  $("b-zoom-in").onclick = () => zoomStep(1);
+  const zp = $<HTMLSelectElement>("zoom-preset");
+  zp.onchange = () => {
+    if (zp.value === "fit") fit();
+    else if (zp.value) zoomAt(Number(zp.value) / 100, host.clientWidth / 2, host.clientHeight / 2);
+    zp.value = ""; // redrawZoomDependent rewrites the current-% option
+  };
   $("b-compile").onclick = compileDoc;
   $("b-undo").onclick = () => undoRedo("undo");
   $("b-redo").onclick = () => undoRedo("redo");
   $("b-new").onclick = openNewDialog;
+  wireToolbox();
   wireTabs();
+  wireDock();
   wirePalette();
   wireViewport(host);
   wireKeys(host);
@@ -206,6 +230,7 @@ async function init() {
     const z = Number(params.get("zoom"));
     if (focus && focus.length === 2 && focus.every(Number.isFinite)) focusOn(focus[0], focus[1], Number.isFinite(z) && z > 0 ? z : zoom);
     else fit();
+    app.render(); // deterministic pixels before the screenshotter's ready flag
     (window as any).svreReady = true;
     return;
   }
@@ -417,8 +442,9 @@ function applyVisibility() {
 function updateChrome() {
   if (!doc) return;
   const dirty = doc.dirty;
-  $<HTMLButtonElement>("b-compile").classList.toggle("primary", dirty);
-  $<HTMLButtonElement>("b-compile").textContent = dirty ? "编译 ●" : "编译";
+  const bc = $<HTMLButtonElement>("b-compile");
+  bc.classList.toggle("primary", dirty);
+  bc.innerHTML = `${ICONS.compile}<span>编译</span>${dirty ? '<span class="dirty-dot" title="有未编译的改动">●</span>' : ""}`;
   const canUndo = doc.undoable.includes(BY);
   const canRedo = doc.redoable.includes(BY);
   $<HTMLButtonElement>("b-undo").disabled = !canUndo;
@@ -463,7 +489,7 @@ function renderLayerList() {
       const n = inst ? L.layer_data.instances.length : "";
       const cls = [layerOff.has(i) ? "off" : "", i === activeLayer ? "active" : "", inst ? "" : "nonedit"].join(" ");
       return `<li data-i="${i}" class="${cls}" title="${inst ? "单击设为当前图层（新对象放这里）" : "非实例图层，只读"}">
-        <span class="eye" data-eye="${i}" title="显示/隐藏">${layerOff.has(i) ? "◌" : "●"}</span>
+        <span class="eye" data-eye="${i}" title="显示/隐藏">${layerOff.has(i) ? ICONS.eyeOff : ICONS.eye}</span>
         <span class="name">${esc(L.layer_name)}${L.is_visible ? "" : ' <span class="tag">游戏内隐藏</span>'}</span>
         <span class="meta">${typeName[L.layer_type] ?? L.layer_type} ${n} · d${L.layer_depth}</span></li>`;
     })
@@ -471,7 +497,7 @@ function renderLayerList() {
   list.querySelectorAll("li").forEach((li) => {
     li.addEventListener("click", (e) => {
       const i = Number((li as HTMLElement).dataset.i);
-      if ((e.target as HTMLElement).dataset.eye !== undefined) {
+      if ((e.target as Element).closest("[data-eye]")) {
         layerOff.has(i) ? layerOff.delete(i) : layerOff.add(i);
         applyVisibility();
       } else if (room().layers[i].layer_type === LayerType.Instances) {
@@ -482,13 +508,40 @@ function renderLayerList() {
   });
 }
 
+// ---------------- toolbox & dock ----------------
+
+function wireToolbox() {
+  document.querySelectorAll<HTMLButtonElement>("#toolbox button[data-tool]").forEach((b) => {
+    b.onclick = () => pickTool(b.dataset.tool as Tool["kind"]);
+  });
+}
+
+// collapsible dock panels; the collapsed set survives restarts
+function wireDock() {
+  let collapsed: string[] = [];
+  try { collapsed = JSON.parse(localStorage.getItem("svre.dock.collapsed") ?? "[]"); } catch { /* private mode */ }
+  const heads = [...document.querySelectorAll<HTMLElement>("[data-collapse]")];
+  const apply = () => {
+    for (const h of heads) h.closest(".dock-panel")!.classList.toggle("collapsed", collapsed.includes(h.dataset.collapse!));
+  };
+  for (const h of heads) {
+    h.onclick = () => {
+      const k = h.dataset.collapse!;
+      collapsed = collapsed.includes(k) ? collapsed.filter((x) => x !== k) : [...collapsed, k];
+      try { localStorage.setItem("svre.dock.collapsed", JSON.stringify(collapsed)); } catch { /* best effort */ }
+      apply();
+    };
+  }
+  apply();
+}
+
 function wireTabs() {
-  document.querySelectorAll<HTMLButtonElement>(".tabs button").forEach((b) => {
+  document.querySelectorAll<HTMLButtonElement>(".tabs button[data-tab]").forEach((b) => {
     b.onclick = () => showTab(b.dataset.tab!);
   });
 }
 function showTab(tab: string) {
-  document.querySelectorAll<HTMLButtonElement>(".tabs button").forEach((x) => x.classList.toggle("on", x.dataset.tab === tab));
+  document.querySelectorAll<HTMLButtonElement>(".tabs button[data-tab]").forEach((x) => x.classList.toggle("on", x.dataset.tab === tab));
   $("tab-layers").hidden = tab !== "layers";
   $("tab-palette").hidden = tab !== "palette";
   $("tab-history").hidden = tab !== "history";
@@ -570,6 +623,7 @@ function drawNotes() {
     notesLayer.addChild(pin);
   }
   notesLayer.visible = toggles.notes.checked;
+  requestRender();
 }
 
 // keep note pins readable at any zoom: counter-scale them
@@ -625,15 +679,41 @@ function renderPalette() {
   });
 }
 
-function setTool(t: typeof tool) {
+function toolCursor() {
+  if (spaceHeld || tool.kind === "hand") return "grab";
+  if (tool.kind === "place" || tool.kind === "note") return "crosshair";
+  return "";
+}
+
+function setTool(t: Tool) {
   tool = t;
+  if (t.kind === "place") lastPlaced = t.object;
   ghostLayer.removeChildren().forEach((c) => c.destroy({ children: true }));
-  $("s-tool").textContent = t.kind === "place" ? `放置 ${t.object}（单击放置，Esc 结束）` : "选择";
-  $("stage").style.cursor = t.kind === "place" ? "crosshair" : "";
+  $("s-tool").textContent =
+    t.kind === "place" ? `放置 ${t.object}（单击放置，Esc 结束）`
+    : t.kind === "hand" ? "抓手（拖动平移）"
+    : t.kind === "note" ? "便签（单击留便签）"
+    : "选择";
+  $("opt-tool").textContent = t.kind === "place" ? `放置：${t.object}` : { select: "选择", hand: "抓手", note: "便签" }[t.kind];
+  $("stage").style.cursor = toolCursor();
+  document.querySelectorAll<HTMLButtonElement>("#toolbox button[data-tool]").forEach((b) => {
+    const on = b.dataset.tool === t.kind;
+    b.classList.toggle("on", on);
+    b.setAttribute("aria-pressed", String(on));
+  });
   document.querySelectorAll<HTMLElement>("#palette-list li[data-o]").forEach((li) => {
     li.classList.toggle("on", t.kind === "place" && li.dataset.o === t.object);
   });
   if (t.kind === "place") buildGhost(t.object);
+  requestRender();
+}
+
+// toolbox buttons and V/H/P/N land here; P without a pick yet just opens the palette
+function pickTool(kind: Tool["kind"]) {
+  if (kind === "place") {
+    if (!lastPlaced) { showTab("palette"); return; }
+    setTool({ kind: "place", object: lastPlaced });
+  } else setTool({ kind });
 }
 
 async function buildGhost(object: string) {
@@ -649,6 +729,7 @@ function moveGhost() {
   const g = ghostLayer.children[0];
   if (!g) return;
   g.position.set(snapPoint(cursorWorld.x), snapPoint(cursorWorld.y));
+  requestRender();
 }
 
 function placeAt(wx: number, wy: number) {
@@ -678,8 +759,12 @@ function redrawZoomDependent() {
   if (toggles.grid.checked) drawGrid(scene.gridLayer, room(), zoom, true);
   drawBounds(scene.boundsLayer, room(), zoom);
   rescaleNotes();
+  drawArtboard();
   drawOverlay();
-  $("s-zoom").textContent = `${Math.round(zoom * 100)}%`;
+  const pct = `${Math.round(zoom * 100)}%`;
+  $("s-zoom").textContent = pct;
+  ($("zoom-cur") as HTMLOptionElement).textContent = pct;
+  $<HTMLSelectElement>("zoom-preset").value = "";
 }
 
 function zoomAt(z: number, sx: number, sy: number) {
@@ -707,6 +792,95 @@ function fit() {
   world.scale.set(zoom);
   world.position.set(Math.round((host.clientWidth - room().width * zoom) / 2), Math.round((host.clientHeight - room().height * zoom) / 2));
   redrawZoomDependent();
+}
+
+const ZOOM_STEPS = [0.1, 0.25, 0.5, 0.75, 1, 1.5, 2, 3, 4, 6, 8, 12, 16];
+// +/- step through the presets around the stage centre
+function zoomStep(dir: 1 | -1) {
+  const host = $("stage");
+  const z = dir > 0 ? ZOOM_STEPS.find((s) => s > zoom * 1.001) : [...ZOOM_STEPS].reverse().find((s) => s < zoom * 0.999);
+  zoomAt(z ?? (dir > 0 ? 16 : 0.1), host.clientWidth / 2, host.clientHeight / 2);
+}
+
+// the room as a dark sheet with a soft shadow over the neutral pasteboard
+function drawArtboard() {
+  artboard.clear();
+  if (renderMode || !doc) return;
+  artboard.rect(3 / zoom, 4 / zoom, room().width, room().height).fill({ color: 0x000000, alpha: 0.35 });
+  artboard.rect(0, 0, room().width, room().height).fill(0x0d0e11);
+}
+
+// ---------------- rulers ----------------
+
+const RULER = 22; // CSS px; matches --ruler
+let rulerCursor: { x: number; y: number } | null = null; // stage-local cursor, for the accent marker
+
+// major steps stay cell-aligned (the 26px grid); minors subdivide where readable
+function rulerStep() {
+  const majors = [1, 2, 13, 26, 52, 104, 260, 520, 1040, 2600, 5200, 10400];
+  const major = majors.find((m) => m * zoom >= 52) ?? majors[majors.length - 1];
+  let minor = major;
+  for (const n of [13, 10, 8, 5, 4, 2]) if (major % n === 0 && (major / n) * zoom >= 6) { minor = major / n; break; }
+  return { major, minor };
+}
+
+function drawRuler(c: HTMLCanvasElement, horizontal: boolean, len: number) {
+  const dpr = devicePixelRatio || 1;
+  const bw = Math.max(1, Math.round((horizontal ? len : RULER) * dpr));
+  const bh = Math.max(1, Math.round((horizontal ? RULER : len) * dpr));
+  if (c.width !== bw || c.height !== bh) { c.width = bw; c.height = bh; }
+  const ctx = c.getContext("2d");
+  if (!ctx || len <= 0) return;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, horizontal ? len : RULER, horizontal ? RULER : len);
+  ctx.font = "9px 'Segoe UI', sans-serif";
+  const off = horizontal ? world.x : world.y;
+  if (doc) {
+    const a = off, b = off + (horizontal ? room().width : room().height) * zoom;
+    ctx.fillStyle = "rgba(108,182,255,0.07)";
+    if (horizontal) ctx.fillRect(a, 0, b - a, RULER); else ctx.fillRect(0, a, RULER, b - a);
+    ctx.strokeStyle = "rgba(108,182,255,0.35)";
+    ctx.beginPath();
+    for (const p of [a, b]) {
+      const q = Math.round(p) + 0.5;
+      if (horizontal) { ctx.moveTo(q, 0); ctx.lineTo(q, RULER); } else { ctx.moveTo(0, q); ctx.lineTo(RULER, q); }
+    }
+    ctx.stroke();
+  }
+  const { major, minor } = rulerStep();
+  const k0 = Math.floor(-off / zoom / minor), k1 = Math.ceil((len - off) / zoom / minor);
+  for (let k = k0; k <= k1; k++) {
+    const v = k * minor;
+    const p = Math.round(off + v * zoom) + 0.5;
+    if (p < -0.5 || p > len + 0.5) continue;
+    const isMajor = v % major === 0;
+    const t = isMajor ? 13 : 6;
+    ctx.strokeStyle = isMajor ? "#6a6a70" : "#48484e";
+    ctx.beginPath();
+    if (horizontal) { ctx.moveTo(p, RULER); ctx.lineTo(p, RULER - t); }
+    else { ctx.moveTo(RULER, p); ctx.lineTo(RULER - t, p); }
+    ctx.stroke();
+    if (isMajor) {
+      ctx.fillStyle = "#9a9aa0";
+      if (horizontal) ctx.fillText(String(v), p + 3, 10);
+      else { ctx.save(); ctx.translate(9, p - 2); ctx.rotate(-Math.PI / 2); ctx.fillText(String(v), 0, 0); ctx.restore(); }
+    }
+  }
+  const cur = horizontal ? rulerCursor?.x : rulerCursor?.y;
+  if (cur !== undefined && cur >= 0 && cur <= len) {
+    const q = Math.round(cur) + 0.5;
+    ctx.strokeStyle = "#6cb6ff";
+    ctx.beginPath();
+    if (horizontal) { ctx.moveTo(q, 0); ctx.lineTo(q, RULER); } else { ctx.moveTo(0, q); ctx.lineTo(RULER, q); }
+    ctx.stroke();
+  }
+}
+
+function drawRulers() {
+  if (renderMode) return;
+  const host = $("stage");
+  drawRuler($("ruler-x") as HTMLCanvasElement, true, host.clientWidth);
+  drawRuler($("ruler-y") as HTMLCanvasElement, false, host.clientHeight);
 }
 
 type Drag =
@@ -762,7 +936,7 @@ function wireViewport(host: HTMLElement) {
     host.setPointerCapture(e.pointerId);
     const { sx, sy } = local(e);
     altHeld = e.altKey;
-    if (e.button === 1 || e.button === 2 || (e.button === 0 && spaceHeld)) {
+    if (e.button === 1 || e.button === 2 || (e.button === 0 && (spaceHeld || tool.kind === "hand" || tool.kind === "note"))) {
       drag = { mode: "pan", sx: e.clientX, sy: e.clientY, wx: world.x, wy: world.y, button: e.button, moved: false };
       host.classList.add("panning");
       return;
@@ -820,8 +994,10 @@ function wireViewport(host: HTMLElement) {
     const { sx, sy } = local(e);
     altHeld = e.altKey;
     cursorWorld = toWorld(sx, sy);
+    rulerCursor = { x: sx, y: sy };
     $("s-pos").textContent = `x ${Math.floor(cursorWorld.x)}  y ${Math.floor(cursorWorld.y)}`;
     $("s-cell").textContent = `格 ${Math.floor(cursorWorld.x / CELL)}, ${Math.floor(cursorWorld.y / CELL)}`;
+    drawRulers();
     if (tool.kind === "place") moveGhost();
 
     if (drag?.mode === "pan") {
@@ -866,7 +1042,7 @@ function wireViewport(host: HTMLElement) {
       drawOverlay();
       return;
     }
-    const h = pick(sx, sy);
+    const h = tool.kind === "hand" ? null : pick(sx, sy);
     if (h?.inst.instance_id !== hovered) {
       hovered = h?.inst.instance_id ?? null;
       $("s-hover").textContent = h ? `${h.inst.object_definition}  #${h.inst.instance_id}  @${h.inst.x},${h.inst.y}  depth ${h.depth}  [${h.layer.layer_name}]` : "—";
@@ -886,14 +1062,16 @@ function wireViewport(host: HTMLElement) {
     }
   });
 
+  host.addEventListener("pointerleave", () => { rulerCursor = null; drawRulers(); });
+
   host.addEventListener("pointerup", (e) => {
     host.classList.remove("panning");
     const d = drag;
     drag = null;
     if (!d || !doc) return;
     if (d.mode === "pan") {
-      // a right-click that didn't drag = place a note there
-      if (d.button === 2 && !d.moved && !renderMode) {
+      // a click that didn't drag = note: right-click always, left-click with the note tool
+      if (!d.moved && !renderMode && (d.button === 2 || (d.button === 0 && tool.kind === "note" && !spaceHeld))) {
         const r = host.getBoundingClientRect();
         const w = toWorld(e.clientX - r.left, e.clientY - r.top);
         addNoteAt(w.x, w.y);
@@ -957,6 +1135,14 @@ function pick(sx: number, sy: number): InstanceNode | null {
   return best;
 }
 
+// pixi's ticker is stopped (see init): mutations ask for a frame here, coalesced by RAF
+let renderQueued = false;
+function requestRender() {
+  if (renderQueued) return;
+  renderQueued = true;
+  requestAnimationFrame(() => { renderQueued = false; app.render(); });
+}
+
 function drawOverlay() {
   overlay.clear();
   const box = (n: InstanceNode, color: number, w: number) => {
@@ -1008,6 +1194,8 @@ function drawOverlay() {
     overlay.rect(x, y, Math.abs(drag.ex - drag.sx), Math.abs(drag.ey - drag.sy))
       .fill({ color: 0x6cb6ff, alpha: 0.08 }).stroke({ color: 0x6cb6ff, width: 1 });
   }
+  drawRulers();
+  requestRender();
 }
 
 // tell the world what we have selected (agents see it in the snapshot / over WS)
@@ -1024,7 +1212,7 @@ function postSelection() {
 
 function wireKeys(host: HTMLElement) {
   window.addEventListener("keyup", (e) => {
-    if (e.key === " ") { spaceHeld = false; host.style.cursor = tool.kind === "place" ? "crosshair" : ""; }
+    if (e.key === " ") { spaceHeld = false; host.style.cursor = toolCursor(); }
     if (e.key === "Alt") { altHeld = false; moveGhost(); }
   });
   window.addEventListener("keydown", (e) => {
@@ -1078,15 +1266,24 @@ function wireKeys(host: HTMLElement) {
       return;
     }
     if (e.key === "Escape") {
-      if (tool.kind === "place") setTool({ kind: "select" });
+      if (tool.kind !== "select") setTool({ kind: "select" });
       else { selection.clear(); inspect(); drawOverlay(); postSelection(); }
       return;
     }
+    if (k === "=" || k === "+") { e.preventDefault(); zoomStep(1); return; }
+    if (k === "-") { e.preventDefault(); zoomStep(-1); return; }
+    if (ctrl && k === "0") { e.preventDefault(); fit(); return; }
+    if (ctrl && k === "1") { e.preventDefault(); zoomAt(1, host.clientWidth / 2, host.clientHeight / 2); return; }
+    if (ctrl || e.altKey || e.metaKey) return;
+    if (k === "v") { pickTool("select"); return; }
+    if (k === "h" && !e.shiftKey) { pickTool("hand"); return; }
+    if (k === "h") { toggles.hidden.checked = !toggles.hidden.checked; applyVisibility(); return; } // Shift+H
+    if (k === "p") { pickTool("place"); return; }
+    if (k === "n") { pickTool("note"); return; }
     if (k === "f") fit();
     if (k === "1") zoomAt(1, host.clientWidth / 2, host.clientHeight / 2);
     if (k === "g") { toggles.grid.checked = !toggles.grid.checked; applyVisibility(); }
-    if (k === "s" && !ctrl) { toggles.snap.checked = !toggles.snap.checked; }
-    if (k === "h") { toggles.hidden.checked = !toggles.hidden.checked; applyVisibility(); }
+    if (k === "s") { toggles.snap.checked = !toggles.snap.checked; }
   });
 }
 
@@ -1170,7 +1367,7 @@ function inspect() {
   const body = $("inspect-body");
   const at = doc ? instsOf(selection) : [];
   if (!doc || at.length === 0) {
-    body.innerHTML = `<span class="muted">点选一个实例；Shift 加选，空白处拖动框选。<br><br>从「对象」页签挑一个对象即可放置。<br><br>右键单击 = 在那个位置留便签。</span>`;
+    body.innerHTML = `<span class="muted">点选一个实例；Shift 加选，空白处拖动框选。<br><br>工具：V 选择 · H 抓手 · P 放置 · N 便签。<br>从「对象」页签挑一个对象即可放置；右键单击留便签。</span>`;
     return;
   }
   const insts = at.map((a) => a.inst);
