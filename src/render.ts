@@ -112,6 +112,12 @@ export async function buildScene(db: AssetDb, room: Room): Promise<RoomScene> {
   const root = new Container();
   root.sortableChildren = true;
   const nodes: InstanceNode[] = [];
+  // the grid is a background, not an overlay: it must sit above the room's flat colour
+  // fills (the void around interiors -- those are opaque, so below them it would be
+  // invisible) but below every sprite, tile and instance, so it never covers game art.
+  // A conflicting z (a fill in front of art) resolves to under everything.
+  let maxFillZ = -1e9;
+  let minArtZ = 1e9;
 
   // preload every page the room touches, so the scene appears in one go
   const frames: Frame[] = [];
@@ -134,12 +140,14 @@ export async function buildScene(db: AssetDb, room: Room): Promise<RoomScene> {
           if (v) {
             v.position.set(layer.x_offset, layer.y_offset);
             v.zIndex = -layer.layer_depth;
+            minArtZ = Math.min(minArtZ, v.zIndex);
             root.addChild(v);
           }
         } else {
           // a sprite-less background layer is a flat fill of its colour
           const g = new Graphics().rect(0, 0, room.width, room.height).fill({ color: rgb, alpha });
           g.zIndex = -layer.layer_depth;
+          maxFillZ = Math.max(maxFillZ, g.zIndex);
           root.addChild(g);
         }
       }
@@ -159,6 +167,7 @@ export async function buildScene(db: AssetDb, room: Room): Promise<RoomScene> {
         v.alpha = alpha;
         v.zIndex = -layer.layer_depth;
         v.visible = layer.is_visible;
+        minArtZ = Math.min(minArtZ, v.zIndex);
         root.addChild(v);
       }
       continue;
@@ -212,6 +221,7 @@ export async function buildScene(db: AssetDb, room: Room): Promise<RoomScene> {
       }
       // overlays sit above the game picture, in a fixed order
       view.zIndex = kind === "drawn" ? -depth : 1e8 + (kind === "hidden" ? 0 : kind === "collision" ? 1 : 2);
+      minArtZ = Math.min(minArtZ, view.zIndex);
 
       const node: InstanceNode = {
         kind, layerIndex: li, instIndex: ii, layer, inst, depth, depthWhy, visibleWhy,
@@ -223,7 +233,8 @@ export async function buildScene(db: AssetDb, room: Room): Promise<RoomScene> {
   }
 
   const gridLayer = new Graphics();
-  gridLayer.zIndex = 2e8;
+  // above the backmost fill, below the backmost art (see the comment atop buildScene)
+  gridLayer.zIndex = Math.min(maxFillZ + 0.5, minArtZ - 0.5);
   root.addChild(gridLayer);
   const boundsLayer = new Graphics();
   boundsLayer.zIndex = 2e8 + 1;
