@@ -1,4 +1,4 @@
-// node test/diff_rooms.ts -- diff each generator output against its vanilla base and
+// node test/diff_rooms.ts -- diff each compiled snapshot against its vanilla base and
 // prove the ops replay to the byte-identical file.
 import fs from "node:fs";
 import { diffRooms, verifyDiff } from "../src/core/diff.ts";
@@ -16,7 +16,7 @@ const pairs = [
 let bad = 0;
 for (const [b, t] of pairs) {
   const base = JSON.parse(fs.readFileSync(`${VAN}/${b}.json`, "utf8"));
-  const text = fs.readFileSync(`${MOD}/Codes/${t}.gml`, "utf8");
+  const text = fs.readFileSync(`${MOD}/rooms/${t}.compiled.json`, "utf8");
   const target = JSON.parse(text);
   const ops = diffRooms(base, target);
   const r = cloneRoom(base);

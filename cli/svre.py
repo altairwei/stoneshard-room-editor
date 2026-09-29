@@ -6,7 +6,7 @@ room project. Everything an agent can do to a room goes through here; a human lo
 the same room in a browser sees these changes land (and you see theirs via `changes`).
 
     python cli/svre.py rooms                        what rooms exist, what state they're in
-    python cli/svre.py import r_foo                 turn Codes/r_foo.gml into a project
+    python cli/svre.py import r_foo                 turn a legacy Codes/r_foo.gml into a project
     python cli/svre.py create r_bar --base r_house01inside [--keep controllers]
     python cli/svre.py describe r_foo               summary + layers + links + problems
     python cli/svre.py lint r_foo                   rule findings (unknown objects, leaks, ...)
@@ -15,8 +15,8 @@ the same room in a browser sees these changes land (and you see theirs via `chan
     python cli/svre.py apply r_foo --ops ops.json [--label "..."] [--note "..."] [--by name]
     python cli/svre.py undo r_foo / redo r_foo      per-author; --by picks whose
     python cli/svre.py changes r_foo [--since N]    log entries + undone revs since N
-    python cli/svre.py compile r_foo [--force]      write Codes/<name>.gml
-    python cli/svre.py adopt r_foo                  log an outside edit of the compiled file
+    python cli/svre.py compile r_foo [--force]      write rooms/<name>.compiled.json + <Mod>.Rooms.g.cs
+    python cli/svre.py adopt r_foo                  log an outside edit of the compiled snapshot
     python cli/svre.py notes r_foo                  list notes
     python cli/svre.py note r_foo X Y "text"        leave a note at a position
     python cli/svre.py note rm r_foo ID             remove one

@@ -14,6 +14,7 @@ StoneValley room files, so nothing here can touch the real mod. Two halves:
 """
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -27,7 +28,6 @@ from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parent.parent
 CFG = json.loads((ROOT / "svre.config.json").read_text(encoding="utf-8"))
-SRC_CODES = Path(CFG["modDir"]) / "Codes"
 ROOM = "r_sv_hut_inside2"
 PORT = 5179
 BASE = f"http://localhost:{PORT}"
@@ -77,15 +77,16 @@ def mirror_ok(room):
 def main():
     scratch = Path(tempfile.mkdtemp(prefix="svre-e2e-"))
     (scratch / "Codes").mkdir()
-    for f in SRC_CODES.iterdir():
-        if f.name.startswith("r_") and f.suffix == ".gml":
-            shutil.copy2(f, scratch / "Codes" / f.name)
+    # the import source is a legacy Codes/r_*.gml room artifact; the golden fixture
+    # stands in for one (the mod's own rooms live in rooms/*.compiled.json now)
+    golden = (ROOT / "test" / "golden" / f"{ROOM}.json").read_bytes()
+    (scratch / "Codes" / f"{ROOM}.gml").write_bytes(golden)
     # mod assets: the editor reads Sprites/*.png + the assets.json manifest (which it
     # also compiles to <Mod>.Assets.g.cs -- no C# parsing anywhere)
     shutil.copytree(Path(CFG["modDir"]) / "Sprites", scratch / "Sprites")
     shutil.copy2(Path(CFG["modDir"]) / "assets.json", scratch / "assets.json")
-    target = scratch / "Codes" / f"{ROOM}.gml"
-    original = target.read_bytes()
+    target = scratch / "rooms" / f"{ROOM}.compiled.json"  # written by import, then by compile
+    original = golden
 
     env = {**os.environ, "SVRE_MOD_DIR": str(scratch)}
     server = subprocess.Popen("npx vite --port %d --strictPort" % PORT, cwd=ROOT, env=env, shell=True,
@@ -112,6 +113,12 @@ def main():
 
         st, r = call("POST", f"/api/doc/{ROOM}/compile", {})
         check(st == 200 and target.read_bytes() == original, "compile of an untouched import is byte-identical")
+        # read the generated C# as BYTES: the snapshots are CRLF-styled
+        rcs = scratch / f"{scratch.name}.Rooms.g.cs"
+        rcsraw = rcs.read_bytes() if rcs.exists() else b""
+        m = re.search(rb'public const string ' + ROOM.encode() + rb' = ("{3,})\n(.*?)\n\1;', rcsraw, re.S)
+        check(m is not None and m.group(2) == original
+              and f"Msl.AddRoomJson({ROOM});".encode() in rcsraw, "Rooms.g.cs embeds the room byte-identically + registers it")
 
         # two instances to move, one per author
         insts = [i for L in doc["room"]["layers"] for i in L["layer_data"].get("instances", [])]

@@ -10,8 +10,8 @@
 //   POST /api/doc/<room>/apply   {by, label?, note?, ops}
 //   POST /api/doc/<room>/undo    {by}        /redo {by}
 //   GET  /api/doc/<room>/changes?since=N
-//   POST /api/doc/<room>/compile {force?}    write Codes/<room>.gml
-//   POST /api/doc/<room>/adopt   {by?}       log an outside edit of Codes/<room>.gml
+//   POST /api/doc/<room>/compile {force?}    write rooms/<room>.compiled.json + regenerate <Mod>.Rooms.g.cs
+//   POST /api/doc/<room>/adopt   {by?}       log an outside edit of rooms/<room>.compiled.json
 //   GET  /api/doc/<room>/describe | lint | grid?region= | query?id=&object=&layer=&rect=&cell=
 //   POST /api/doc/<room>/notes   {by, x, y, text} | {remove}
 //   GET|POST /api/doc/<room>/selection  {by, ids}
@@ -75,6 +75,12 @@ export function svreApi(root: string): Plugin {
   // the page index a client got from /api/mod-assets must stay valid for the session,
   // so pages are served from the last scan the client could have seen
   let modScan: ModAssets = scanModAssets(cfg.modDir, { vanilla: vanillaNames });
+  // <Mod>.Rooms.g.cs self-heals from the compiled snapshots at startup (and on every
+  // compile/import/adopt from inside store.ts); a drifted snapshot blocks the regen
+  // instead of being laundered into the build
+  const csHeal = store.syncRoomsCs();
+  if (csHeal.skipped.length) console.warn(`Rooms.g.cs NOT regenerated: drifted snapshots: ${csHeal.skipped.join(", ")}`);
+  else if (csHeal.synced) console.log(`Rooms.g.cs regenerated (${csHeal.rooms.length} rooms)`);
 
   const handler: Connect.NextHandleFunction = async (req, res, next) => {
     const [rawPath, qs] = (req.url ?? "").split("?");

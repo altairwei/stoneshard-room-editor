@@ -292,7 +292,7 @@ async function compileDoc() {
   try {
     const r = await api(`/api/doc/${doc.name}/compile`, "POST", {});
     lintFindings = r.findings ?? [];
-    toast(`已编译 ${r.file}（rev ${r.rev}）${lintFindings.length ? ` · ⚠ ${lintFindings.length} 条规则提示` : ""}`);
+    toast(`已编译 ${r.file}（rev ${r.rev}） → ${r.roomsCs}${lintFindings.length ? ` · ⚠ ${lintFindings.length} 条规则提示` : ""}`);
     await syncDoc();
   } catch (e) {
     if (e instanceof ApiError && e.status === 409) {
@@ -388,7 +388,7 @@ function updateChrome() {
   const banner = $("banner");
   let html = "";
   if (doc.drift)
-    html = `⚠ 磁盘上的 Codes/${esc(doc.name)}.gml 在上次编译后被外部改过（生成器？手工？）。编译前要么采纳它，要么强制覆盖。<button data-act="adopt">采纳外部改动</button>`;
+    html = `⚠ 磁盘上的 rooms/${esc(doc.name)}.compiled.json 在上次编译后被外部改过（生成器？手工？）。编译前要么采纳它，要么强制覆盖。<button data-act="adopt">采纳外部改动</button>`;
   else if (doc.baseChanged)
     html = `⚠ 基底房间变了（游戏更新？）。日志仍照常重放${doc.problems.length ? `，但有 ${doc.problems.length} 个操作对不上` : ""}。`;
   else if (doc.problems.length)

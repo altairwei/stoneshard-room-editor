@@ -1,8 +1,8 @@
 # sv-room-editor
 
 StoneShard 专用房间编辑器，**人和 agent 共用一份文档**。读写的是 MSL 的房间 JSON
-（`Msl.AddRoomJson` 吃的那种、约定用 `.gml` 后缀装在 mod 的 `Codes/` 下），按游戏自己的
-规则把房间画出来。P0 渲染保真度已对游戏截图验证过（见文末）。
+（`Msl.AddRoomJson` 吃的那种），按游戏自己的规则把房间画出来。
+P0 渲染保真度已对游戏截图验证过（见文末）。
 
 ## 模型
 
@@ -12,9 +12,14 @@ StoneShard 专用房间编辑器，**人和 agent 共用一份文档**。读写�
 - 日志里每条条目是一次改动（一次拖动、一次删除、一批 agent 操作），带作者、时间、注释。
 - 每个操作（op）只有六种：`add / delete / set / relayer / room / layer`，都带 `expect`
   乐观锁——目标被别人动过就拒（409），agent 的过期编辑不会落在人类改过的东西上。
-- `Codes/<name>.gml` 是**编译产物**：`compile` 重放日志到基底上写出来，MSL 读它。
+- `rooms/<name>.compiled.json` 是**编译快照**：`compile` 重放日志到基底上写出来。
   没人手改它；磁盘上的文件和上次编译不一致 = 漂移（drift），要么 `adopt` 把外部改动
   记成一条日志，要么强制覆盖。
+- `<Mod>.Rooms.g.cs` 是**生成的运输形态**：每个快照嵌成一个 raw string const（C# 11，
+  打包器的 Roslyn 4.7 实测支持）加 `SvGeneratedRooms.RegisterAll()`，房间 JSON 就这样
+  随程序集进 `.sml`——不用再伪装成 `.gml` 给 `ModFiles.GetCode` 读（打包器也只收
+  `Codes/*.gml`，别的扩展名根本不进包，实测）。GENERATED，别手改；server 启动和每次
+  compile/import/adopt 时从快照自愈重写（有漂移的快照会卡住整个重写，防止把篡改进构建）。
 
 dev server（Vite 中间件）是文档的唯一持有者。浏览器是视图+命令客户端；agent 走
 HTTP/`svre` CLI。同一套 op、同一套规则、同一份撤销历史（撤销按作者：agent 不会
@@ -32,7 +37,7 @@ npm run dev         # http://localhost:5178/?room=r_sv_hut_inside1
 
 | 键 | 含义 |
 |---|---|
-| `modDir` | mod 源码目录；房间工程在 `<modDir>/rooms/`，编译产物在 `<modDir>/Codes/` |
+| `modDir` | mod 源码目录；房间工程与编译快照在 `<modDir>/rooms/`，生成的 `<Mod>.Rooms.g.cs` 在根目录 |
 | `assetsDir` | 资产缓存（游戏美术）。**必须在 git 和任何 mod 目录树之外** |
 | `sourceDir` | 反编译源码（`gml_Object_*_Create_0.gml` 等），供事件扫描用 |
 | `vanillaWin` | 未改动的原版 data 文件（`data.win` 是 patch 产物，不能用） |
@@ -60,7 +65,7 @@ agent 改动到达时页面弹 toast 并刷新；agent 的选区以橙色框显�
 
 ```bash
 python cli/svre.py rooms                          # 状态一览（未编译/漂移/生成器归属）
-python cli/svre.py import r_sv_hut_inside1        # 把现有 Codes 文件变成工程（基底自动推断）
+python cli/svre.py import r_sv_hut_inside1        # 把遗留的 Codes/r_x.gml 变成工程（基底自动推断）
 python cli/svre.py describe r_sv_hut_inside1      # 概况 + 门链 + 问题
 python cli/svre.py grid r_sv_hut_inside1 10,4,30,20
 python cli/svre.py query r_sv_hut_inside1 --object o_chest
@@ -75,15 +80,16 @@ python cli/svre.py --help                         # 全部命令 + op 词汇表
 ## 存盘的保证
 
 - **没改过的房间编译逐字节不变**：JSON 版式与导出器一致，换行符与末尾换行按原文件
-  保留；导入时验证"基底+日志重放 == 磁盘字节"，不等就拒绝。
+  保留；导入时验证"基底+日志重放 == 磁盘字节"，不等就拒绝；`Rooms.g.cs` 里的 const
+  与快照逐字节相等（e2e 钉死）。
 - **key 顺序不动**：`AddRoomJson` 按位置读 JSON，新建实例的字段顺序照抄导出器。
 - 顶层 `game_objects` 与图层实例按 id 保持同步。
 - **冲突保护**：op 级 `expect`；磁盘漂移不静默覆盖；撤销只追加逆操作不改写历史。
 
 ```bash
 python test/e2e_edit.py    # HTTP 全套（导入/字节一致/apply/409/撤销/漂移/采纳）+ 浏览器拖拽/WS/编译
-python test/smoke_cli.py   # CLI 全命令冒烟
-node test/diff_rooms.ts    # 四个生成器产出 diff→重放→序列化逐字节一致
+python test/smoke_cli.py   # CLI 全命令冒烟 + Rooms.g.cs 生成/自愈
+node test/diff_rooms.ts    # 四个编译快照 diff→重放→序列化逐字节一致
 ```
 
 ## 画面从哪来

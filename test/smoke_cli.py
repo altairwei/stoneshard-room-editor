@@ -4,6 +4,7 @@
 """
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -48,9 +49,10 @@ def svre(*argv, expect_fail=False):
 def main():
     scratch = Path(tempfile.mkdtemp(prefix="svre-cli-"))
     (scratch / "Codes").mkdir()
-    for f in (Path(CFG["modDir"]) / "Codes").iterdir():
-        if f.name.startswith("r_") and f.suffix == ".gml":
-            shutil.copy2(f, scratch / "Codes" / f.name)
+    # import turns a legacy generator-era Codes/r_*.gml artifact into a project; the
+    # golden fixture stands in for one (the mod's own rooms live in rooms/*.compiled.json)
+    golden1 = (ROOT / "test" / "golden" / "r_sv_hut_inside1.json").read_bytes()
+    (scratch / "Codes" / "r_sv_hut_inside1.gml").write_bytes(golden1)
     shutil.copytree(Path(CFG["modDir"]) / "Sprites", scratch / "Sprites")
     shutil.copy2(Path(CFG["modDir"]) / "assets.json", scratch / "assets.json")
 
@@ -73,6 +75,9 @@ def main():
 
         ok, out = svre("import", "r_sv_hut_inside1", "--by", "smoke")
         check(ok and out.get("base"), f"import ({out})")
+        # import turns the legacy artifact into the project's compiled snapshot, verbatim
+        snap = scratch / "rooms" / "r_sv_hut_inside1.compiled.json"
+        check(snap.exists() and snap.read_bytes() == golden1, "import writes rooms/<name>.compiled.json byte-identical")
 
         ok, out = svre("describe", "r_sv_hut_inside1")
         check(ok and "instances" in json.dumps(out), "describe prints the summary")
@@ -108,7 +113,22 @@ def main():
         check(ok, "note removed")
 
         ok, out = svre("compile", "r_sv_hut_inside1")
-        check(ok and out.get("file", "").endswith("r_sv_hut_inside1.gml"), f"compile -> {out.get('file')}")
+        check(ok and out.get("file", "").endswith("r_sv_hut_inside1.compiled.json"), f"compile -> {out.get('file')}")
+
+        # the generated C#: the const's value is the snapshot byte for byte (the snapshot
+        # itself legitimately differs from the golden by the apply/redo above).
+        # read as BYTES: the snapshots are CRLF-styled and read_text would eat the \r
+        rcs = scratch / f"{scratch.name}.Rooms.g.cs"
+        rcsraw = rcs.read_bytes() if rcs.exists() else b""
+        check(b'public const string r_sv_hut_inside1 = """' in rcsraw
+              and b"Msl.AddRoomJson(r_sv_hut_inside1);" in rcsraw, "Rooms.g.cs has the const + RegisterAll call")
+        m = re.search(rb'public const string r_sv_hut_inside1 = ("{3,})\n(.*?)\n\1;', rcsraw, re.S)
+        check(m is not None and m.group(2) == snap.read_bytes(), "the const's value is the snapshot byte for byte")
+        # self-heal: tamper the generated file, recompile, it comes back
+        rcs.write_bytes(rcsraw + b"\n// tampered")
+        ok, out = svre("compile", "r_sv_hut_inside1")
+        check(ok and out.get("roomsCsSynced") is True and b"tampered" not in rcs.read_bytes(),
+              "Rooms.g.cs self-heals on compile")
 
         ok, out = svre("changes", "r_sv_hut_inside1", "--since", "1")
         check(ok and out.get("head") >= 2, "changes lists the log")

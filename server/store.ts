@@ -3,12 +3,14 @@
 // every client what changed. Nothing else writes a project or a compiled room file.
 //
 // On disk, per room, inside the mod:
-//   rooms/<name>.room.json   the project (base + log + notes); written on every change
-//   Codes/<name>.gml         the compiled room MSL loads; written only by compile()
+//   rooms/<name>.room.json       the project (base + log + notes); written on every change
+//   rooms/<name>.compiled.json   the compiled snapshot; written only by compile()/adopt/import
+//   <Mod>.Rooms.g.cs             GENERATED: every snapshot as a const + RegisterAll();
+//                                self-healed from the snapshots (see server/roomsgen.ts)
 //
-// "dirty" = the log has moved past the last compile. "drift" = the compiled file on disk
-// is not what we last compiled (a generator ran, someone hand-edited it): the store never
-// overwrites it silently; adoptExternal() turns the difference into a logged entry.
+// "dirty" = the log has moved past the last compile. "drift" = the compiled snapshot on
+// disk is not what we last compiled (a generator ran, someone hand-edited it): the store
+// never overwrites it silently; adoptExternal() turns the difference into a logged entry.
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -21,6 +23,7 @@ import {
 } from "../src/core/project.ts";
 import { cloneRoom, CELL, LayerType, serializeRoom, styleOf, type Room, type RoomInstance } from "../src/core/room.ts";
 import { manifestPath } from "./modassets.ts";
+import { roomsCsPath, syncRoomsCs } from "./roomsgen.ts";
 import type { SvreConfig } from "./api.ts";
 
 const sha1 = (s: string | Buffer) => crypto.createHash("sha1").update(s).digest("hex");
@@ -67,6 +70,8 @@ export class Store {
   get roomsDir() { return path.join(this.cfg.modDir, "rooms"); }
   get codesDir() { return path.join(this.cfg.modDir, "Codes"); }
   projectPath(name: string) { return path.join(this.roomsDir, `${name}.room.json`); }
+  compiledPath(name: string) { return path.join(this.roomsDir, `${name}.compiled.json`); }
+  // legacy room artifacts (generator era, other modders' mods): import candidates only
   codesPath(name: string) { return path.join(this.codesDir, `${name}.gml`); }
   vanillaPath(name: string) { return path.join(this.cfg.assetsDir, "rooms", `${name}.json`); }
 
@@ -111,7 +116,7 @@ export class Store {
         dirty = this.isDirty(d);
         drift = this.isDrift(d);
       }
-      return { name, hasProject, hasCompiled: fs.existsSync(this.codesPath(name)), dirty, drift, generatedBy: owners.get(`${name}.gml`) ?? [] };
+      return { name, hasProject, hasCompiled: fs.existsSync(this.compiledPath(name)) || fs.existsSync(this.codesPath(name)), dirty, drift, generatedBy: owners.get(`${name}.gml`) ?? [] };
     });
   }
 
@@ -166,8 +171,30 @@ export class Store {
   }
 
   private readCompiled(name: string): string | null {
-    const f = this.codesPath(name);
+    const f = this.compiledPath(name);
     return fs.existsSync(f) ? fs.readFileSync(f, "utf8") : null;
+  }
+
+  // Regenerate <Mod>.Rooms.g.cs from every compiled snapshot. All-or-nothing: a snapshot
+  // whose hash no longer matches its project's compiled marker was tampered with outside
+  // (drift) -- embedding it silently would launder the tampering into the build, so the
+  // whole regeneration is skipped until someone compiles or adopts that room.
+  syncRoomsCs(): { synced: boolean; rooms: string[]; skipped: string[] } {
+    const rooms: { name: string; text: string }[] = [];
+    const skipped: string[] = [];
+    if (fs.existsSync(this.roomsDir))
+      for (const f of fs.readdirSync(this.roomsDir).sort()) {
+        if (!f.endsWith(".compiled.json")) continue;
+        const name = f.slice(0, -".compiled.json".length);
+        if (!fs.existsSync(this.projectPath(name))) continue;
+        const d = this.open(name);
+        if (!d.project.compiled) continue;
+        const text = fs.readFileSync(this.compiledPath(name), "utf8");
+        if (sha1(text) !== d.project.compiled.hash) { skipped.push(name); continue; }
+        rooms.push({ name, text });
+      }
+    if (skipped.length) return { synced: false, rooms: rooms.map((r) => r.name), skipped };
+    return { ...syncRoomsCs(this.cfg.modDir, rooms), skipped };
   }
 
   snapshot(name: string) {
@@ -301,21 +328,22 @@ export class Store {
     const d = this.open(name);
     if (d.problems.length) throw new HttpError(409, `the log does not replay cleanly on the base (${d.problems.length} problem(s)); fix them first`, d.problems);
     if (this.isDrift(d) && !force)
-      throw new HttpError(409, `Codes/${name}.gml changed outside the editor since the last compile; adopt it first (svre adopt ${name}) or pass force`);
+      throw new HttpError(409, `rooms/${name}.compiled.json changed outside the editor since the last compile; adopt it first (svre adopt ${name}) or pass force`);
     const text = serializeRoom(d.room, d.project.style);
-    const file = this.codesPath(name);
+    const file = this.compiledPath(name);
     fs.writeFileSync(`${file}.tmp`, text);
     fs.renameSync(`${file}.tmp`, file);
     d.project.compiled = { rev: headRev(d.project), hash: sha1(text) };
     this.persist(d);
+    const cs = this.syncRoomsCs();
     this.emit({ type: "compiled", room: name, rev: d.project.compiled.rev });
-    return { file: path.relative(this.cfg.modDir, file).replace(/\\/g, "/"), rev: d.project.compiled.rev, findings: this.lintOf(d) };
+    return { file: path.relative(this.cfg.modDir, file).replace(/\\/g, "/"), roomsCs: path.basename(roomsCsPath(this.cfg.modDir)), roomsCsSynced: cs.synced, roomsCsSkipped: cs.skipped, rev: d.project.compiled.rev, findings: this.lintOf(d) };
   }
 
   adoptExternal(name: string, by = "external") {
     const d = this.open(name);
     const disk = this.readCompiled(name);
-    if (disk === null) throw new HttpError(404, `Codes/${name}.gml does not exist`);
+    if (disk === null) throw new HttpError(404, `rooms/${name}.compiled.json does not exist`);
     const target = JSON.parse(disk) as Room;
     let ops: Op[];
     try {
@@ -332,18 +360,22 @@ export class Store {
     }
     d.project.compiled = { rev: headRev(d.project), hash: sha1(disk) };
     this.persist(d);
+    this.syncRoomsCs();
     return { ops: ops.length, rev: headRev(d.project) };
   }
 
   // ---------------- import / create ----------------
 
   // Turn an existing compiled room (made by a generator, by hand, ...) into a project whose
-  // log reproduces it byte for byte. The base is found from the instance ids it still
-  // carries -- GameMaker instance ids are global in a data file.
+  // log reproduces it byte for byte. The source is a legacy Codes/<name>.gml room artifact;
+  // the project's own compiled snapshot becomes rooms/<name>.compiled.json from then on.
+  // The base is found from the instance ids it still carries -- GameMaker instance ids are
+  // global in a data file.
   importRoom(name: string, opts: { base?: string; by?: string }) {
+    if (!/^[A-Za-z_]\w*$/.test(name)) throw new HttpError(400, `${name} is not a valid C# identifier (it becomes a const in <Mod>.Rooms.g.cs)`);
     if (fs.existsSync(this.projectPath(name))) throw new HttpError(409, `${name} already has a project`);
-    const text = this.readCompiled(name);
-    if (text === null) throw new HttpError(404, `Codes/${name}.gml does not exist`);
+    const text = fs.existsSync(this.codesPath(name)) ? fs.readFileSync(this.codesPath(name), "utf8") : null;
+    if (text === null) throw new HttpError(404, `Codes/${name}.gml does not exist (import turns a legacy compiled artifact into a project; for a vanilla base use create)`);
     const target = JSON.parse(text) as Room;
     const baseName = opts.base ?? this.guessBase(target);
     if (!baseName) throw new HttpError(409, "could not tell which vanilla room this came from; pass base");
@@ -363,8 +395,13 @@ export class Store {
     const d: Doc = { name, project, projectHash: "", base, baseChanged: false, room: compile(base, project, true).room, problems: [], redo: new Map(), selection: new Map() };
     if (serializeRoom(d.room, project.style) !== text) throw new HttpError(500, "import does not compile back to the same bytes; refusing");
     project.compiled = { rev: 1, hash: sha1(text) };
+    const file = this.compiledPath(name);
+    fs.mkdirSync(this.roomsDir, { recursive: true });
+    fs.writeFileSync(`${file}.tmp`, text);
+    fs.renameSync(`${file}.tmp`, file);
     this.docs.set(name, d);
     this.persist(d);
+    this.syncRoomsCs();
     this.emit({ type: "created", room: name });
     return { name, base: baseName, ops: ops.length };
   }
@@ -383,7 +420,7 @@ export class Store {
   // every room needs to work (camera, controllers, starters/doors are yours to place).
   createRoom(name: string, opts: { base: string; keep?: "all" | "controllers"; by?: string }) {
     if (!/^r_[A-Za-z0-9_]+$/.test(name)) throw new HttpError(400, "room names look like r_something");
-    if (fs.existsSync(this.projectPath(name)) || fs.existsSync(this.codesPath(name))) throw new HttpError(409, `${name} already exists`);
+    if (fs.existsSync(this.projectPath(name)) || fs.existsSync(this.codesPath(name)) || fs.existsSync(this.compiledPath(name))) throw new HttpError(409, `${name} already exists`);
     if (!fs.existsSync(this.vanillaPath(opts.base))) throw new HttpError(404, `no vanilla room ${opts.base}`);
     const base = JSON.parse(fs.readFileSync(this.vanillaPath(opts.base), "utf8")) as Room;
     const ops: Op[] = [{ op: "room", set: { name }, expect: { name: base.name } }];
