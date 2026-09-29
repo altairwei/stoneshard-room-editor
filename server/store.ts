@@ -20,6 +20,7 @@ import {
   type Entry, type Note, type Project, type ReplayProblem,
 } from "../src/core/project.ts";
 import { cloneRoom, CELL, LayerType, serializeRoom, styleOf, type Room, type RoomInstance } from "../src/core/room.ts";
+import { manifestPath } from "./modassets.ts";
 import type { SvreConfig } from "./api.ts";
 
 const sha1 = (s: string | Buffer) => crypto.createHash("sha1").update(s).digest("hex");
@@ -72,25 +73,26 @@ export class Store {
   // ---------------- knowledge (for rules) ----------------
 
   knowledge(): Knowledge {
-    if (this.know) return this.know;
-    const objects = JSON.parse(fs.readFileSync(path.join(this.cfg.assetsDir, "objects.json"), "utf8"));
+    if (!this.know) {
+      const objects = JSON.parse(fs.readFileSync(path.join(this.cfg.assetsDir, "objects.json"), "utf8"));
+      const codeText = (name: string) => {
+        for (const p of [path.join(this.codesDir, `${name}.gml`), path.join(this.cfg.sourceDir, `${name}.gml`)])
+          if (fs.existsSync(p)) return fs.readFileSync(p, "utf8");
+        return null;
+      };
+      this.know = { objects, modObjects: new Set<string>(), codeText };
+    }
+    // mod object names come from the manifest the editor owns (assets.json -> generated
+    // C#), not from parsing the mod's C#. Tiny file, re-read per call: agents edit it
+    // between calls, and lint/grid/query must see the current truth.
     const modObjects = new Set<string>();
-    const scan = (dir: string, depth: number) => {
-      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-        if (e.name.startsWith(".") || e.name === "bin" || e.name === "obj" || e.name === "node_modules") continue;
-        const full = path.join(dir, e.name);
-        if (e.isDirectory() && depth < 3) scan(full, depth + 1);
-        else if (e.name.endsWith(".cs"))
-          for (const m of fs.readFileSync(full, "utf8").matchAll(/AddObject\(\s*"([^"]+)"/g)) modObjects.add(m[1]);
-      }
-    };
-    scan(this.cfg.modDir, 0);
-    const codeText = (name: string) => {
-      for (const p of [path.join(this.codesDir, `${name}.gml`), path.join(this.cfg.sourceDir, `${name}.gml`)])
-        if (fs.existsSync(p)) return fs.readFileSync(p, "utf8");
-      return null;
-    };
-    this.know = { objects, modObjects, codeText };
+    const mf = manifestPath(this.cfg.modDir);
+    if (fs.existsSync(mf)) {
+      try {
+        for (const n of Object.keys(JSON.parse(fs.readFileSync(mf, "utf8")).objects ?? {})) modObjects.add(n);
+      } catch { /* a broken manifest is reported by /api/mod-assets warnings */ }
+    }
+    this.know.modObjects = modObjects;
     return this.know;
   }
 

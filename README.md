@@ -101,22 +101,27 @@ node test/diff_rooms.ts    # 四个生成器产出 diff→重放→序列化逐�
 检查器写明，不猜。Step_0 同法：每帧重写 depth 的以 Step 为准（门族 `-y - start_depth`）。
 房间 CC 里改的 `start_depth` 还没读，留给 P3。
 
-**mod 自建资产**由服务器在启动时扫描 mod 目录（`server/modassets.ts`），与原版缓存叠加：
+**mod 自建资产**的单一事实源是 mod 根目录的 **`assets.json`**（编辑器拥有的声明式
+清单），它有两个消费者，结构上不可能漂移：
 
-- `Sprites/<name>_<N>.png`（第 N 帧）/ `<name>.png`（单帧）按名字聚成 sprite；每张 PNG
-  自成一个伪贴图页（页号 ≥ 1,000,000），走与原版完全相同的 Frame/纹理管线。
-- 原点与 margin 默认是 packer 的值（原点 (0,0)、满框 margin，TextureLoader.cs:140-141）；
-  若 mod 的 C# 里用 `local = Msl.GetSprite("name")` 后逐字段赋过
-  `OriginX/OriginY/Margin*`（修原点那套写法），扫描器把这些赋值叠上来。
-- `*.cs` 里的对象注册两种写法都认：命名参数 `Msl.AddObject("o_x", spriteName: ...,
-  parentName: ..., isVisible: ...)` 和属性赋值 `X = Msl.AddObject(...)` /
-  `Msl.GetObject(...)` 后的 `X.ParentId / X.Sprite / X.Visible`。**定义是稀疏的**——
-  只含 C# 显式设的字段，其余字段落回原版同名对象（GetObject 改原版对象的场景不会被
-  默认值盖掉）。
+- 编辑器读取渲染：`server/modassets.ts` 扫 `Sprites/<name>_<N>.png`（第 N 帧；裸
+  `<name>.png` 单帧）得尺寸与帧表，再叠加 assets.json 里的对象注册
+  （sprite/parent/visible/persistent/awake/collision）与 sprite 原点/margin 覆盖。
+  每张 PNG 自成一个伪贴图页（页号 ≥ 1,000,000），走与原版完全相同的 Frame/纹理管线。
+- 游戏注册：同一份 manifest 被确定性地生成成 `<Mod>.Assets.g.cs`（
+  `SvGeneratedAssets.Register()`，命名参数与属性赋值两种风格按字段集选择），
+  mod 的 `PatchMod()` 里手写一行调用，排在 AddRoomJson/AddNewEvent 之前
+  （`RequireObjectInstances` 照旧兜底）。**编辑器自愈**：任何一次扫描（server 启动、
+  `/api/mod-assets`、房间 compile）发现 .g.cs 与 manifest 不一致就重写它；
+  也可显式 `svre assets sync`。
+- 校验随扫描发生：sprite 没有 PNG、parent 不在原版对象表、没写 visible（MSL 默认
+  false）都会进响应的 `warnings`。
 - mod 对象的 Create 事实沿父链取（父链是原版的，`from` 标注保持真实来源）；
   create.json 只扫原版，不猜 mod 对象的运行时行为。
-- 端点：`GET /api/mod-assets`（每次请求重扫，改完 C#/PNG 刷新即可），
+- 端点：`GET /api/mod-assets`（每次请求重扫+自愈）、`POST /api/mod-assets/sync`、
   `GET /mod-assets/pages/<i>.png`（no-store）。
+- 例外通道：需要计算逻辑的注册（非常量）继续手写 C#——编辑器看不到它，这是划好的
+  边界。
 
 ## 已知不在画面里的东西
 

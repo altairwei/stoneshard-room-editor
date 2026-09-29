@@ -1040,8 +1040,8 @@ function inspect() {
     if (n.customDraw) flags.push(`<span class="flag">自定义 Draw：编辑器按默认绘制</span>`);
     if (n.kind === "hidden") flags.push(`<span class="flag info">游戏内不可见</span>`);
     if (n.kind === "collision") flags.push(`<span class="flag info">碰撞戳 ${first.scale_x}×${first.scale_y} 格</span>`);
-    if (!db.objects[obj]) flags.push(`<span class="flag">原版和 mod 里都没有这个对象：AddRoomJson 会静默丢弃这个实例</span>`);
-    else if (db.modObjects.has(obj)) flags.push(`<span class="flag info">mod 对象（C# AddObject 注册，须先于 AddRoomJson）</span>`);
+    if (!db.objects[obj]) flags.push(`<span class="flag">原版和 assets.json 里都没有这个对象：AddRoomJson 会静默丢弃这个实例</span>`);
+    else if (db.modObjects.has(obj)) flags.push(`<span class="flag info">mod 对象（assets.json 注册，生成 C# 先于 AddRoomJson）</span>`);
     facts = `<div class="insp-section kv">
         <div class="k">sprite</div><div class="v">${esc(db.objects[obj]?.sprite ?? "—")}</div>
         <div class="k">格</div><div class="v">${Math.floor(first.x / CELL)}, ${Math.floor(first.y / CELL)}</div>

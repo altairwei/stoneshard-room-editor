@@ -16,12 +16,13 @@
 //   POST /api/doc/<room>/notes   {by, x, y, text} | {remove}
 //   GET|POST /api/doc/<room>/selection  {by, ids}
 //   GET  /assets/<path>                     the extracted asset cache (vanilla, from data.win)
-//   GET  /api/mod-assets                    the mod's own sprites/objects (Sprites/*.png + C# scan)
+//   GET  /api/mod-assets                    the mod's own sprites/objects (Sprites/*.png + assets.json)
+//   POST /api/mod-assets/sync               rescan + rewrite <Mod>.Assets.g.cs if it disagrees
 //   GET  /mod-assets/pages/<i>.png          one mod sprite frame (pseudo pages, see modassets.ts)
 import fs from "node:fs";
 import path from "node:path";
 import type { Connect, Plugin } from "vite";
-import { scanModAssets, type ModAssets } from "./modassets.ts";
+import { generatedCsPath, scanModAssets, type ModAssets, type VanillaNames } from "./modassets.ts";
 import { HttpError, Store } from "./store.ts";
 
 export interface SvreConfig {
@@ -66,9 +67,14 @@ export function svreApi(root: string): Plugin {
   const cfg = loadConfig(root);
   let emit: (e: Record<string, unknown>) => void = () => {};
   const store = new Store(cfg, (e) => emit({ ...e, at: new Date().toISOString() }));
+  // vanilla name pools, for manifest validation (object sprites/parents may be vanilla)
+  const vanillaNames: VanillaNames = {
+    objects: new Set(Object.keys(JSON.parse(fs.readFileSync(path.join(cfg.assetsDir, "objects.json"), "utf8")))),
+    sprites: new Set(Object.keys(JSON.parse(fs.readFileSync(path.join(cfg.assetsDir, "sprites.json"), "utf8")))),
+  };
   // the page index a client got from /api/mod-assets must stay valid for the session,
   // so pages are served from the last scan the client could have seen
-  let modScan: ModAssets = scanModAssets(cfg.modDir);
+  let modScan: ModAssets = scanModAssets(cfg.modDir, { vanilla: vanillaNames });
 
   const handler: Connect.NextHandleFunction = async (req, res, next) => {
     const [rawPath, qs] = (req.url ?? "").split("?");
@@ -80,8 +86,12 @@ export function svreApi(root: string): Plugin {
       if (url === "/api/rooms") return send(res, 200, store.listRooms());
       if (url === "/api/vanilla") return send(res, 200, store.searchVanilla(q.q ?? ""));
       if (url === "/api/mod-assets") {
-        modScan = scanModAssets(cfg.modDir);
-        return send(res, 200, { sprites: modScan.sprites, objects: modScan.objects, pages: modScan.pages.length });
+        modScan = scanModAssets(cfg.modDir, { vanilla: vanillaNames });
+        return send(res, 200, { sprites: modScan.sprites, objects: modScan.objects, pages: modScan.pages.length, warnings: modScan.warnings, synced: modScan.synced });
+      }
+      if (url === "/api/mod-assets/sync" && method === "POST") {
+        modScan = scanModAssets(cfg.modDir, { vanilla: vanillaNames });
+        return send(res, 200, { file: path.basename(generatedCsPath(cfg.modDir)), warnings: modScan.warnings, synced: modScan.synced });
       }
       const pm = /^\/mod-assets\/pages\/(\d+)\.png$/.exec(url);
       if (pm) {
@@ -109,7 +119,11 @@ export function svreApi(root: string): Plugin {
           case "undo": return send(res, 200, store.undo(room, body.by));
           case "redo": return send(res, 200, store.redo(room, body.by));
           case "changes": return send(res, 200, store.changes(room, Number(q.since ?? 0)));
-          case "compile": return send(res, 200, store.compileRoom(room, !!body.force));
+          case "compile":
+            // compiling a room means the next pack reads it; make sure the generated
+            // asset registrations are current too (self-heals when assets.json changed)
+            modScan = scanModAssets(cfg.modDir, { vanilla: vanillaNames });
+            return send(res, 200, store.compileRoom(room, !!body.force));
           case "adopt": return send(res, 200, store.adoptExternal(room, body.by));
           case "describe": return send(res, 200, store.describe(room));
           case "lint": return send(res, 200, store.describe(room).findings);

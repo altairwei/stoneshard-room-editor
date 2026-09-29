@@ -21,6 +21,8 @@ the same room in a browser sees these changes land (and you see theirs via `chan
     python cli/svre.py note r_foo X Y "text"        leave a note at a position
     python cli/svre.py note rm r_foo ID             remove one
     python cli/svre.py select r_foo ID [ID...]      show others what you're looking at
+    python cli/svre.py assets                       the mod asset manifest: objects, sprites, warnings
+    python cli/svre.py assets sync                  rescan + rewrite <Mod>.Assets.g.cs if stale
     python cli/svre.py render r_foo out.png [--zoom 2] [--focus x,y] [--grid] [--labels]
     python cli/svre.py serve                        start the dev server (if not running)
 
@@ -250,6 +252,16 @@ def main():
     elif cmd == "select":
         out(call("POST", f"/api/doc/{rest[0]}/selection", {"by": arg_value(rest, "--by", "agent"),
                                                            "ids": [int(x) for x in rest[1:] if x.isdigit()]}))
+    elif cmd == "assets":
+        if rest and rest[0] == "sync":
+            out(call("POST", "/api/mod-assets/sync", {}))
+        else:
+            r = call("GET", "/api/mod-assets")
+            print(f"sprites: {len(r['sprites'])}  objects: {len(r['objects'])}  pages: {r['pages']}  .g.cs rewritten: {r.get('synced')}")
+            for name, o in sorted(r["objects"].items()):
+                print(f"  {name:<28} sprite={o.get('sprite')}  parent={o.get('parent')}  visible={o.get('visible')}")
+            for w in r.get("warnings", []):
+                print(f"warning: {w}", file=sys.stderr)
     elif cmd == "render":
         render(rest)
     else:

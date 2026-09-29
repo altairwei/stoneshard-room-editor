@@ -80,10 +80,10 @@ def main():
     for f in SRC_CODES.iterdir():
         if f.name.startswith("r_") and f.suffix == ".gml":
             shutil.copy2(f, scratch / "Codes" / f.name)
-    # mod assets: the editor reads Sprites/*.png + the C# registrations
+    # mod assets: the editor reads Sprites/*.png + the assets.json manifest (which it
+    # also compiles to <Mod>.Assets.g.cs -- no C# parsing anywhere)
     shutil.copytree(Path(CFG["modDir"]) / "Sprites", scratch / "Sprites")
-    for f in Path(CFG["modDir"]).glob("*.cs"):
-        shutil.copy2(f, scratch / f.name)
+    shutil.copy2(Path(CFG["modDir"]) / "assets.json", scratch / "assets.json")
     target = scratch / "Codes" / f"{ROOM}.gml"
     original = target.read_bytes()
 
@@ -234,7 +234,7 @@ def main():
 
             print("mod assets in the editor")
             sp = pg.evaluate("svre.spriteOf('s_sv_house01')")
-            check(sp == {"w": 442, "h": 312, "ox": 0, "oy": 234, "frames": 2}, f"mod sprite def incl. the C# origin fixup ({sp})")
+            check(sp == {"w": 442, "h": 312, "ox": 0, "oy": 234, "frames": 2}, f"mod sprite def incl. the manifest origin override ({sp})")
             # placement goes to the active layer, and clicking the canvas sets that to
             # whatever was hit (the prelude's drag can leave it on the in-game-hidden
             # Colissions) -- so pick a visible instances layer first, like a human would
