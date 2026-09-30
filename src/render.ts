@@ -198,7 +198,10 @@ export async function buildScene(db: AssetDb, room: Room): Promise<RoomScene> {
           new Graphics()
             .rect(0, 0, CELL, CELL)
             .fill({ color: 0xff3040, alpha: 0.38 })
-            .stroke({ color: 0xff5060, width: 1, alpha: 0.9, pixelLine: true }),
+            // inner stroke: a scaled middle stroke would inflate getBounds by
+            // scale/2 px per side, lying about the stamp's true 26px footprint
+            // (pixi v8 alignment: 1 = inner, 0 = outer -- measured, not documented)
+            .stroke({ color: 0xff5060, width: 1, alpha: 0.9, pixelLine: true, alignment: 1 }),
         );
       } else if (spriteName) {
         view = await spriteView(db, spriteName, inst.image_index);
