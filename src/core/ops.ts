@@ -20,7 +20,9 @@
 // `relayer` doubles as the reorder op: with layer = the instance's own layer and a
 // `before` anchor it just moves the instance inside its layer's array. Array order is
 // creation order in-game, and creation order breaks same-depth draw ties (later = on
-// top), so this is how "bring forward / send backward" is expressed.
+// top), so this is how "bring forward / send backward" is expressed. The mirror keeps
+// pace: a same-layer reorder re-seats the twin next to the same neighbour, so the
+// game_objects tie-break order never disagrees with the layer array.
 import { INSTANCE_KEYS, LayerType, findInstance, layerIndexByName, type Room, type RoomInstance } from "./room.ts";
 
 export type InstFields = Partial<Omit<RoomInstance, "instance_id">>;
@@ -161,6 +163,15 @@ export function applyOp(room: Room, op: Op): Op {
       fromList.splice(at.index, 1);
       const bi = op.before != null ? toList.findIndex((i) => i.instance_id === op.before) : -1;
       insertBefore(toList, at.inst, bi);
+      // keep the game_objects twin glued to the same neighbour: same-depth draw ties
+      // break by creation order (= game_objects order), so a reorder that left the twin
+      // behind would draw one way in the editor and the other way in game.
+      const gi = twinIndex(room, op.id);
+      if (gi >= 0) {
+        const [twin] = room.game_objects.splice(gi, 1);
+        const gNext = bi >= 0 ? toList[bi + 1]?.instance_id ?? null : null;
+        insertBefore(room.game_objects, twin, gNext != null ? twinIndex(room, gNext) : -1);
+      }
       return { op: "relayer", id: op.id, layer: fromName, before: next, expect: { layer: op.layer } };
     }
 

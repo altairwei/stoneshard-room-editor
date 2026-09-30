@@ -786,7 +786,8 @@ def main():
             check(len(arr6) == len(arr) and arr6[-1] == A and arr6[-2] == C, f"row drag reordered the layer array (front-most now #{A})")
             check(d6["log"][-1]["label"].startswith("调整顺序"), f"reorder labelled ({d6['log'][-1]['label']})")
             # the canvas draw order (pixi's own children array) must flip with the array:
-            # same layer_depth => same zIndex, and the stable sort breaks ties by array order
+            # same layer_depth, and the same-depth tie breaks by creation order -- the
+            # game_objects index, which relayer keeps in sync with the layer array
             zo = {e["id"]: e["ord"] for e in pg.evaluate("svre.drawOrder()")}
             check(zo.get(A, -1) > zo.get(C, -1), f"canvas draw order flipped with the array (#{A} above #{C})")
             pg.keyboard.press("Control+z")
@@ -796,6 +797,49 @@ def main():
             check(arr7 == arr, "Ctrl+Z restores the layer order")
             zo7 = {e["id"]: e["ord"] for e in pg.evaluate("svre.drawOrder()")}
             check(zo7.get(A, -1) < zo7.get(C, -1), "canvas draw order restored with the array")
+
+            print("same-depth ties follow creation order, not the layer array")
+            # two bushes at the same y share depth (-y + 18): the later creation must
+            # draw above the earlier; reordering them in the layer must flip the canvas
+            # (relayer syncs game_objects, which is the tie-break source). A visible
+            # layer, or the bushes would classify into the hidden band instead.
+            fg_name = next(L["layer_name"] for L in d0["room"]["layers"]
+                           if L["layer_name"] == "ForegroundInstances")
+            st, d8 = call("POST", f"/api/doc/{ROOM}/apply", {"by": "agent-test", "label": "钉住顺序测试 A", "ops": [
+                {"op": "add", "layer": fg_name, "inst": {"x": 26, "y": 26, "object_definition": "o_bush01", "instance_id": 999001,
+                 "creation_code": None, "scale_x": 1, "scale_y": 1, "color": 4294967295, "rotation": 0, "pre_create_code": None, "image_speed": 1, "image_index": 0}},
+                {"op": "add", "layer": fg_name, "inst": {"x": 52, "y": 26, "object_definition": "o_bush01", "instance_id": 999002,
+                 "creation_code": None, "scale_x": 1, "scale_y": 1, "color": 4294967295, "rotation": 0, "pre_create_code": None, "image_speed": 1, "image_index": 0}},
+            ]})
+            check(st == 200, f"two same-depth bushes added ({st})")
+            # ws -> refetch -> rebuild is async; poll until the nodes exist
+            ok_add = True
+            try:
+                pg.wait_for_function("svre.kindOf(999001) && svre.kindOf(999002)", timeout=10000)
+            except Exception:
+                ok_add = False
+            check(ok_add, "bush nodes rebuilt on the canvas")
+            za = pg.evaluate("svre.viewInfo(999001) && svre.viewInfo(999001).z")
+            zb = pg.evaluate("svre.viewInfo(999002) && svre.viewInfo(999002).z")
+            check(za is not None and zb is not None and zb > za,
+                  f"later creation draws above at equal depth ({zb} > {za})")
+            # reorder: 999002 before 999001 in the same layer -> game_objects follows,
+            # so its zIndex epsilon must drop below 999001's
+            st, d9 = call("POST", f"/api/doc/{ROOM}/apply", {"by": "agent-test", "label": "调整顺序 o_bush01", "ops": [
+                {"op": "relayer", "id": 999002, "layer": fg_name, "before": 999001, "expect": {"layer": fg_name}},
+            ]})
+            check(st == 200, f"relayer applied ({st})")
+            pg.wait_for_timeout(800)
+            za2 = pg.evaluate("svre.viewInfo(999001) && svre.viewInfo(999001).z")
+            zb2 = pg.evaluate("svre.viewInfo(999002) && svre.viewInfo(999002).z")
+            check(zb2 is not None and za2 is not None and zb2 < za2,
+                  f"reorder flips the same-depth tie ({zb2} < {za2})")
+            st, d10 = call("GET", f"/api/doc/{ROOM}")
+            go = [g["instance_id"] for g in d10["room"]["game_objects"]]
+            check(go.index(999002) < go.index(999001), "game_objects mirrors the reorder")
+            call("POST", f"/api/doc/{ROOM}/undo", {"by": "agent-test"})
+            call("POST", f"/api/doc/{ROOM}/undo", {"by": "agent-test"})
+            pg.wait_for_timeout(400)
 
             print("compile from the page")
             pg.keyboard.press("Control+s")

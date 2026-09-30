@@ -6,6 +6,11 @@
 //   draw order                 depth, highest first. An instance starts at its layer's
 //                              depth; if its Create chain assigns depth (o_barrier's
 //                              `-y + 18` and friends) that wins -- create.json.
+//                              Same depth ties break by creation order (later = on top):
+//                              the room's top-level game_objects list is that order, NOT
+//                              the per-layer array. (r_Osbrook's house lights prove it:
+//                              game_objects puts them after the house; the Houses layer
+//                              array does not, and the game draws the glow over the wall.)
 //   drawn at all               object `visible` (or a Create override) AND layer
 //                              is_visible. Hidden things are still shown, faded, when
 //                              the "hidden" overlay is on -- they are half the room
@@ -124,6 +129,10 @@ export async function buildScene(db: AssetDb, room: Room): Promise<RoomScene> {
   const root = new Container();
   root.sortableChildren = true;
   const nodes: InstanceNode[] = [];
+  // creation order breaks same-depth draw ties (later = on top); the room's
+  // game_objects list is that order, layer arrays are not.
+  const creationOrder = new Map(room.game_objects.map((g, i) => [g.instance_id, i]));
+  const TIE = 1e-4; // index epsilon: a same-depth pair can never outrank a 1px depth gap
   // the grid is a background, not an overlay: it must sit above the room's flat colour
   // fills (the void around interiors -- those are opaque, so below them it would be
   // invisible) but below every sprite, tile and instance, so it never covers game art.
@@ -226,6 +235,10 @@ export async function buildScene(db: AssetDb, room: Room): Promise<RoomScene> {
         kind = "marker";
         view = markerView(obj.replace(/^o_/, ""));
       }
+      // a sprite view of an invisible object belongs to the hidden band: visible=false
+      // means "the game skips its Draw", so it is an overlay, not part of the picture.
+      // (o_barrier's `-y+18` facts must not drag these into the art band.)
+      if (kind === "drawn" && !vis) kind = "hidden";
 
       view.position.set(inst.x, inst.y);
       if (kind !== "marker") {
@@ -237,8 +250,10 @@ export async function buildScene(db: AssetDb, room: Room): Promise<RoomScene> {
         (view.children[0] as Sprite).tint = rgb;
         view.alpha = alpha;
       }
-      // overlays sit above the game picture, in a fixed order
-      view.zIndex = kind === "drawn" ? -depth : 1e8 + (kind === "hidden" ? 0 : kind === "collision" ? 1 : 2);
+      // overlays sit above the game picture, in a fixed order; same-depth drawn art
+      // falls back to creation order (game_objects), which is how the game breaks ties
+      const tie = (creationOrder.get(inst.instance_id) ?? 0) * TIE;
+      view.zIndex = kind === "drawn" ? -depth + tie : 1e8 + (kind === "hidden" ? 0 : kind === "collision" ? 1 : 2);
       minArtZ = Math.min(minArtZ, view.zIndex);
 
       const node: InstanceNode = {
