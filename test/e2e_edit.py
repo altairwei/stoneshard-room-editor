@@ -742,11 +742,17 @@ def main():
             arr6 = [i["instance_id"] for i in next(L for L in d6["room"]["layers"] if L["layer_name"] == coll_name)["layer_data"]["instances"]]
             check(len(arr6) == len(arr) and arr6[-1] == A and arr6[-2] == C, f"row drag reordered the layer array (front-most now #{A})")
             check(d6["log"][-1]["label"].startswith("调整顺序"), f"reorder labelled ({d6['log'][-1]['label']})")
+            # the canvas draw order (pixi's own children array) must flip with the array:
+            # same layer_depth => same zIndex, and the stable sort breaks ties by array order
+            zo = {e["id"]: e["ord"] for e in pg.evaluate("svre.drawOrder()")}
+            check(zo.get(A, -1) > zo.get(C, -1), f"canvas draw order flipped with the array (#{A} above #{C})")
             pg.keyboard.press("Control+z")
             pg.wait_for_timeout(600)
             st, d7 = call("GET", f"/api/doc/{ROOM}")
             arr7 = [i["instance_id"] for i in next(L for L in d7["room"]["layers"] if L["layer_name"] == coll_name)["layer_data"]["instances"]]
             check(arr7 == arr, "Ctrl+Z restores the layer order")
+            zo7 = {e["id"]: e["ord"] for e in pg.evaluate("svre.drawOrder()")}
+            check(zo7.get(A, -1) < zo7.get(C, -1), "canvas draw order restored with the array")
 
             print("compile from the page")
             pg.keyboard.press("Control+s")

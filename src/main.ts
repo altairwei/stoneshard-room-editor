@@ -1591,7 +1591,10 @@ function pick(sx: number, sy: number): InstanceNode | null {
     if (!n.view.visible) continue;
     const b = n.view.getBounds();
     if (sx >= b.x && sx < b.x + b.width && sy >= b.y && sy < b.y + b.height)
-      if (!best || n.view.zIndex > best.view.zIndex) best = n;
+      // ties go to the LATER node: pixi's stable sort draws later children on top,
+      // so the same rule here keeps clicks consistent with the picture (and relayer
+      // reorders flip both). With `>` the first node kept the tie -- the bottom one.
+      if (!best || n.view.zIndex >= best.view.zIndex) best = n;
   }
   return best;
 }
@@ -2042,6 +2045,16 @@ const whoText = (by?: string) => (by === BY ? "你" : by ? `${by}` : "有人");
   },
   kindOf(id: number) { return nodeById.get(id)?.kind ?? null; },
   visOf(id: number) { return nodeById.get(id)?.view.visible ?? null; },
+  // the canvas's live draw order, bottom-to-top: pixi's own children array (sorted
+  // in place at render time) mapped back to instance ids, with the view's zIndex
+  drawOrder() {
+    if (!scene) return [];
+    const ord = new Map(scene.root.children.map((c, i) => [c, i]));
+    return scene.nodes
+      .filter((n) => ord.has(n.view))
+      .map((n) => ({ id: n.inst.instance_id, z: n.view.zIndex, ord: ord.get(n.view)! }))
+      .sort((a, b) => a.ord - b.ord);
+  },
   toolKind() { return tool.kind; },
   instRowCount() { return document.querySelectorAll("#inst-list li.inst").length; },
   gateOf(id: number) { return resizeGate.get(id) ?? null; },
@@ -2088,6 +2101,10 @@ const whoText = (by?: string) => (by === BY ? "你" : by ? `${by}` : "有人");
       if (n.kind === "marker" || !n.view.visible) continue;
       if (!(await computeResizeGate(n))) continue;
       const b = n.view.getBounds();
+      // the follow-up click lands on the centre: only offer a rectangle that the
+      // pick at that point would actually select -- a later sibling covering the
+      // centre would win the click and the test would resize the wrong instance
+      if (pick(b.x + b.width / 2, b.y + b.height / 2) !== n) continue;
       return { id: n.inst.instance_id, object: n.inst.object_definition, x: b.x + b.width, y: b.y + b.height / 2, bounds: { x: b.x, y: b.y, w: b.width, h: b.height } };
     }
     return null;
