@@ -34,9 +34,9 @@ export const ICONS: Record<string, string> = {
   zoomOut: S(`<circle cx="7" cy="7" r="4.6"/><path d="M10.3 10.3 14 14M5 7h4"/>`),
   fit: S(`<path d="M2 5.5V2h3.5M10.5 2H14v3.5M14 10.5V14h-3.5M5.5 14H2v-3.5"/>`),
   chevron: S(`<path d="M4 6l4 4 4-4"/>`),
-  // paint bucket, tipped and dripping (collision painting)
-  bucket: S(
-    `<path d="M7.4 2.5l5.1 5.1-4.9 4.9a1.9 1.9 0 0 1-2.7 0L2.6 10.2a1.9 1.9 0 0 1 0-2.7z"/><path d="M6.3 5.4l6.3 6.3"/><path d="M13.6 11.4s1.3 1.6 1.3 2.4a1.3 1.3 0 1 1-2.6 0c0-.8 1.3-2.4 1.3-2.4z"/>`,
+  // half-filled rectangle (collision rectangle drawing)
+  rect: S(
+    `<rect x="2.5" y="2.5" width="11" height="11" fill="currentColor" fill-opacity="0.3" stroke="none"/><rect x="2.5" y="2.5" width="11" height="11"/>`,
   ),
   // brick wall (projectile barrier painting)
   wall: S(

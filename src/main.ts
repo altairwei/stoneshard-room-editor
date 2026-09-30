@@ -86,8 +86,8 @@ type Tool =
   | { kind: "hand" }
   | { kind: "note" }
   | { kind: "place"; object: string } // palette pick, single clicks
-  | { kind: "collision" } // paint/erase o_hut_wall cells like a bucket/eraser
-  | { kind: "barrier" } // same brush, for o_projectileBarrier (blocks arrows/thrown)
+  | { kind: "collision" } // drag out an o_hut_wall rectangle (vanilla idiom: 78% are scaled rects)
+  | { kind: "barrier" } // paint/erase o_projectileBarrier cells like a bucket/eraser
   | { kind: "zone"; object: string } // drag out a scaled plain-box object (trigger, camera, surface…)
   | { kind: "marker"; object: string }; // click to drop a functional marker (starter, light…)
 let tool: Tool = { kind: "select" };
@@ -97,7 +97,8 @@ let markerObject = "o_position_starter";
 let zoneObjectsCache: Promise<string[]> | null = null;
 let markerObjectsCache: string[] | null = null;
 // o_hut_wall is THE walk-grid collision stamp: the only room object that writes
-// o_controller.newgrid; sprite s_handmadeCollision 26×26 at origin (0,0).
+// o_controller.newgrid; sprite s_handmadeCollision 26×26 at origin (0,0). Vanilla
+// places it as scaled rectangles (78% of 28361 instances), so the C tool drags rects.
 const COLLISION_PAINT = "o_hut_wall";
 // o_projectileBarrier is the same kind of self-destructing grid stamper for the
 // wallgrid (blocks projectiles; Alarm_0 stamps value 2 over its footprint); vanilla
@@ -884,12 +885,12 @@ function setTool(t: Tool) {
   if (t.kind === "zone") zoneObject = t.object;
   if (t.kind === "marker") markerObject = t.object;
   ghostLayer.removeChildren().forEach((c) => c.destroy({ children: true }));
-  const names = { select: "选择", hand: "抓手", note: "便签", place: "放置", collision: "碰撞涂刷", barrier: "屏障涂刷", zone: "区域", marker: "标记" } as const;
+  const names = { select: "选择", hand: "抓手", note: "便签", place: "放置", collision: "碰撞矩形", barrier: "屏障涂刷", zone: "区域", marker: "标记" } as const;
   $("s-tool").textContent =
     t.kind === "place" ? `放置 ${t.object}（单击放置，Esc 结束）`
     : t.kind === "hand" ? "抓手（拖动平移）"
     : t.kind === "note" ? "便签（单击留便签）"
-    : t.kind === "collision" ? "碰撞涂刷（拖动刷格 · Alt+拖动擦除 · Esc 结束）"
+    : t.kind === "collision" ? "碰撞矩形（拖出矩形 · Esc 结束）"
     : t.kind === "barrier" ? "屏障涂刷（拖动刷格 · Alt+拖动擦除 · Esc 结束）"
     : t.kind === "zone" ? `区域 ${t.object}（拖出矩形，Esc 结束）`
     : t.kind === "marker" ? `标记 ${t.object}（单击放置，Esc 结束）`
@@ -1031,9 +1032,12 @@ function renderToolExtras() {
     s.textContent = text;
     box.appendChild(s);
   };
-  if (tool.kind === "collision" || tool.kind === "barrier") {
-    const object = tool.kind === "barrier" ? BARRIER_PAINT : COLLISION_PAINT;
-    hint(`${object} · 拖动=涂刷 · Alt+拖动=擦除 · → ${layerNameOf(layerFor(object))}`);
+  if (tool.kind === "collision") {
+    hint(`${COLLISION_PAINT} · 拖出矩形 · → ${layerNameOf(layerFor(COLLISION_PAINT))}`);
+    return;
+  }
+  if (tool.kind === "barrier") {
+    hint(`${BARRIER_PAINT} · 拖动=涂刷 · Alt+拖动=擦除 · → ${layerNameOf(layerFor(BARRIER_PAINT))}`);
     return;
   }
   if (tool.kind === "zone") {
@@ -1091,9 +1095,9 @@ function paintCells(d: { ax: number; ay: number; bx: number; by: number }) {
   return { cx0, cy0, cx1, cy1 };
 }
 
-function zoneCommit(d: { ax: number; ay: number; bx: number; by: number; moved: boolean }) {
-  if (!doc || tool.kind !== "zone") return;
-  const object = tool.object;
+function zoneCommit(d: { ax: number; ay: number; bx: number; by: number; moved: boolean; object: string }) {
+  if (!doc) return;
+  const object = d.object;
   const { L, T, R, B } = zoneRect(d);
   const spr = db.objects[object]?.sprite;
   const def = spr ? db.sprites[spr] : undefined;
@@ -1107,7 +1111,8 @@ function zoneCommit(d: { ax: number; ay: number; bx: number; by: number; moved: 
     x = Math.round(L - lb.x * scale_x);
     y = Math.round(T - lb.y * scale_y);
   }
-  commit(`区域 ${object} ${R - L}×${B - T}`, [
+  const label = object === COLLISION_PAINT ? `碰撞矩形 ${R - L}×${B - T}` : `区域 ${object} ${R - L}×${B - T}`;
+  commit(label, [
     { op: "add", layer: layerNameOf(layerFor(object)), inst: { object_definition: object, x, y, scale_x, scale_y } as RoomInstance },
   ]).then(selectPlaced);
 }
@@ -1277,7 +1282,7 @@ type Drag =
   | { mode: "pan"; sx: number; sy: number; wx: number; wy: number; button: number; moved: boolean }
   | { mode: "move"; sx: number; sy: number; ids: number[]; orig: { id: number; x: number; y: number; tx: number; ty: number }[]; moved: boolean }
   | { mode: "resize"; sx: number; sy: number; id: number; handle: string; lb: { x: number; y: number; w: number; h: number }; box: { x: number; y: number; w: number; h: number }; orig: { x: number; y: number; scale_x: number; scale_y: number }; moved: boolean }
-  | { mode: "zone"; ax: number; ay: number; bx: number; by: number; moved: boolean }
+  | { mode: "zone"; ax: number; ay: number; bx: number; by: number; moved: boolean; object: string }
   | { mode: "paint"; ax: number; ay: number; bx: number; by: number; moved: boolean; object: string }
   | { mode: "marquee"; sx: number; sy: number; ex: number; ey: number; additive: boolean; moved: boolean };
 let drag: Drag | null = null;
@@ -1363,9 +1368,11 @@ function wireViewport(host: HTMLElement) {
     }
     if (tool.kind === "zone" || tool.kind === "collision" || tool.kind === "barrier") {
       const w = toWorld(sx, sy);
-      drag = tool.kind === "zone"
-        ? { mode: "zone", ax: w.x, ay: w.y, bx: w.x, by: w.y, moved: false }
-        : { mode: "paint", ax: w.x, ay: w.y, bx: w.x, by: w.y, moved: false, object: tool.kind === "barrier" ? BARRIER_PAINT : COLLISION_PAINT };
+      // the target object freezes into the drag: switching tools mid-drag can't cross wires
+      if (tool.kind === "barrier")
+        drag = { mode: "paint", ax: w.x, ay: w.y, bx: w.x, by: w.y, moved: false, object: BARRIER_PAINT };
+      else
+        drag = { mode: "zone", ax: w.x, ay: w.y, bx: w.x, by: w.y, moved: false, object: tool.kind === "collision" ? COLLISION_PAINT : tool.object };
       drawOverlay();
       return;
     }
@@ -1466,14 +1473,14 @@ function wireViewport(host: HTMLElement) {
     }
     if (drag?.mode === "zone" || drag?.mode === "paint") {
       const d = drag;
-      const t = tool; // a const, so narrowing survives the DOM calls below
       const w = toWorld(sx, sy);
       d.bx = w.x;
       d.by = w.y;
       if (!d.moved && (Math.abs(w.x - d.ax) + Math.abs(w.y - d.ay)) * zoom > 4) d.moved = true;
-      if (d.mode === "zone" && t.kind === "zone") {
+      if (d.mode === "zone") {
         const r = zoneRect(d);
-        $("s-hover").textContent = `区域 ${r.R - r.L}×${r.B - r.T} → ${layerNameOf(layerFor(t.object))}`;
+        const what = d.object === COLLISION_PAINT ? "碰撞矩形" : `区域 ${d.object}`;
+        $("s-hover").textContent = `${what} ${r.R - r.L}×${r.B - r.T} → ${layerNameOf(layerFor(d.object))}`;
       } else if (d.mode === "paint") {
         const c = paintCells(d);
         const what = paintLabel(d.object);
@@ -1651,12 +1658,13 @@ function drawOverlay() {
   // drawing-tool previews: the zone rect / paint span mid-drag, or the starting cell
   // under the cursor when a drawing tool is idle
   if (doc && !renderMode) {
-    if (drag?.mode === "zone" && tool.kind === "zone") {
+    if (drag?.mode === "zone") {
       const r = zoneRect(drag);
+      const color = drag.object === COLLISION_PAINT ? 0xff3040 : 0x40c0ff;
       overlay
         .rect(world.x + r.L * zoom, world.y + r.T * zoom, (r.R - r.L) * zoom, (r.B - r.T) * zoom)
-        .fill({ color: 0x40c0ff, alpha: 0.1 })
-        .stroke({ color: 0x40c0ff, width: 1 });
+        .fill({ color, alpha: 0.1 })
+        .stroke({ color, width: 1 });
     } else if (drag?.mode === "paint") {
       const c = paintCells(drag);
       if (c.cx1 >= c.cx0 && c.cy1 >= c.cy0) {
