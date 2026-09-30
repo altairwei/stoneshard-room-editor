@@ -170,7 +170,6 @@ const toggles = {
 
 const room = () => doc!.room;
 const snapOn = () => toggles.snap.checked && !altHeld;
-const snapDelta = (d: number) => (snapOn() ? Math.round(d / CELL) * CELL : Math.round(d));
 const snapPoint = (v: number) => (snapOn() ? Math.floor(v / CELL) * CELL : Math.round(v));
 const instsOf = (ids: Iterable<number>) =>
   [...ids].map((id) => findInstance(room(), id)).filter((a): a is NonNullable<typeof a> => !!a);
@@ -1259,7 +1258,7 @@ function drawRulers() {
 
 type Drag =
   | { mode: "pan"; sx: number; sy: number; wx: number; wy: number; button: number; moved: boolean }
-  | { mode: "move"; sx: number; sy: number; ids: number[]; orig: { id: number; x: number; y: number }[]; dx: number; dy: number; moved: boolean }
+  | { mode: "move"; sx: number; sy: number; ids: number[]; orig: { id: number; x: number; y: number; tx: number; ty: number }[]; moved: boolean }
   | { mode: "resize"; sx: number; sy: number; id: number; handle: string; lb: { x: number; y: number; w: number; h: number }; box: { x: number; y: number; w: number; h: number }; orig: { x: number; y: number; scale_x: number; scale_y: number }; moved: boolean }
   | { mode: "zone"; ax: number; ay: number; bx: number; by: number; moved: boolean }
   | { mode: "paint"; ax: number; ay: number; bx: number; by: number; moved: boolean }
@@ -1366,8 +1365,8 @@ function wireViewport(host: HTMLElement) {
       renderLayerList();
       syncInstSelection(true);
       inspect();
-      const orig = instsOf(selection).map((a) => ({ id: a.inst.instance_id, x: a.inst.x, y: a.inst.y }));
-      drag = { mode: "move", sx, sy, ids: orig.map((o) => o.id), orig, dx: 0, dy: 0, moved: false };
+      const orig = instsOf(selection).map((a) => ({ id: a.inst.instance_id, x: a.inst.x, y: a.inst.y, tx: a.inst.x, ty: a.inst.y }));
+      drag = { mode: "move", sx, sy, ids: orig.map((o) => o.id), orig, moved: false };
       postSelection();
     } else {
       drag = { mode: "marquee", sx, sy, ex: sx, ey: sy, additive: e.shiftKey || e.ctrlKey, moved: false };
@@ -1411,14 +1410,19 @@ function wireViewport(host: HTMLElement) {
       const rdx = (sx - d.sx) / zoom, rdy = (sy - d.sy) / zoom;
       if (!d.moved && Math.abs(sx - d.sx) + Math.abs(sy - d.sy) < 4) return;
       d.moved = true;
-      d.dx = snapDelta(rdx);
-      d.dy = snapDelta(rdy);
-      // live preview: move the views, not the data (the ops are sent on release)
+      // snap the final resting place, not the delta: a start that's slightly off the
+      // grid still lands exactly on a cell corner (Alt / toggle off = free whole pixels)
+      const on = snapOn();
       for (const o of d.orig) {
+        o.tx = on ? Math.round((o.x + rdx) / CELL) * CELL : o.x + Math.round(rdx);
+        o.ty = on ? Math.round((o.y + rdy) / CELL) * CELL : o.y + Math.round(rdy);
         const n = nodeById.get(o.id);
-        if (n) n.view.position.set(o.x + d.dx, o.y + d.dy);
+        if (n) n.view.position.set(o.tx, o.ty);
       }
-      $("s-hover").textContent = `移动 Δ${d.dx}, ${d.dy}${snapOn() ? "（吸附 26px，按住 Alt 自由）" : ""}`;
+      const f = d.orig[0];
+      $("s-hover").textContent = d.orig.length === 1
+        ? `移动 → ${f.tx}, ${f.ty}${on ? "（吸附格点，Alt 自由）" : ""}`
+        : `移动 ${d.orig.length} 个实例${on ? "（各自吸附格点）" : ""}`;
       drawOverlay();
       return;
     }
@@ -1506,17 +1510,15 @@ function wireViewport(host: HTMLElement) {
         set: { x: v.x, y: v.y, scale_x: v.scale_x, scale_y: v.scale_y },
         expect: { ...d.orig },
       }]).then((ok) => { if (!ok) refreshScene(); });
-    } else if (d.mode === "move" && d.moved && (d.dx || d.dy)) {
-      const ops: Op[] = d.orig.map((o) => ({
-        op: "set",
-        id: o.id,
-        set: { x: o.x + d.dx, y: o.y + d.dy },
-        expect: { x: o.x, y: o.y },
-      }));
-      const what = d.orig.length === 1 ? String(findInstance(room(), d.orig[0].id)?.inst.object_definition ?? "") : `${d.orig.length} 个实例`;
-      commit(`移动 ${what}`, ops).then((ok) => { if (!ok) refreshScene(); });
     } else if (d.mode === "move" && d.moved) {
-      refreshScene(); // snapped back to zero: restore the previewed views
+      const ops: Op[] = d.orig
+        .filter((o) => o.tx !== o.x || o.ty !== o.y)
+        .map((o) => ({ op: "set", id: o.id, set: { x: o.tx, y: o.ty }, expect: { x: o.x, y: o.y } }));
+      if (!ops.length) refreshScene(); // snapped back to the start: restore the previewed views
+      else {
+        const what = d.orig.length === 1 ? String(findInstance(room(), d.orig[0].id)?.inst.object_definition ?? "") : `${d.orig.length} 个实例`;
+        commit(`移动 ${what}`, ops).then((ok) => { if (!ok) refreshScene(); });
+      }
     } else if (d.mode === "marquee") {
       if (!d.additive) selection.clear();
       if (d.moved) {
@@ -1993,6 +1995,19 @@ const whoText = (by?: string) => (by === BY ? "你" : by ? `${by}` : "有人");
   toolKind() { return tool.kind; },
   instRowCount() { return document.querySelectorAll("#inst-list li.inst").length; },
   gateOf(id: number) { return resizeGate.get(id) ?? null; },
+  // a stage-local point where canvas pick() returns this instance, or null if it's
+  // fully covered by higher-z overlays (collision stamps, hidden boxes, markers)
+  pickPoint(id: number) {
+    const n = nodeById.get(id);
+    if (!n) return null;
+    const b = n.view.getBounds();
+    for (let fy = 0.1; fy < 1; fy += 0.1)
+      for (let fx = 0.1; fx < 1; fx += 0.1) {
+        const x = b.x + b.width * fx, y = b.y + b.height * fy;
+        if (pick(x, y) === n) return { x, y };
+      }
+    return null;
+  },
   handlePoint(id: number, handle = "e") {
     const n = nodeById.get(id);
     if (!n || !resizeGate.get(id)) return null;

@@ -360,6 +360,94 @@ def main():
                 pg.evaluate("svre.focus(364, 338, 2)")  # back over the room for the later fixed-coordinate steps
                 pg.wait_for_timeout(200)
 
+            print("move snaps the landing spot, not the delta")
+            # an instance that starts off the grid must land exactly on a cell corner
+            # when snap is on (the old delta-snap carried the initial deviation along).
+            # the canvas pick ranks collision/hidden overlays above drawn art, and two
+            # giant o_hut_wall stamps (270x702 each) plus the wood surfaces blanket every
+            # 66x71 chest-sized spot in this room -- so hide the overlay GM layers via the
+            # 层组 eyes (editor-local, what a user does to work under the clutter) first
+            st, dl = call("GET", f"/api/doc/{ROOM}")
+            layers0 = dl["room"]["layers"]
+            coll_idx = next(i for i, L in enumerate(layers0)
+                            if any(j["object_definition"] == "o_hut_wall" for j in L["layer_data"].get("instances", [])))
+            hide_idx = [i for i, L in enumerate(layers0) if L["layer_name"] in ("StaticCamera", "Controllers", "Surfaces")]
+            hide_idx.append(coll_idx)
+            pg.click(".tabs button[data-tab=layers]")
+            for li in hide_idx:
+                pg.click(f"#layer-list .eye[data-eye='{li}']")
+            pg.wait_for_timeout(300)
+            vis_overlays = pg.evaluate("(() => { let n = 0; for (const L of svre.doc.room.layers) for (const i of (L.layer_data.instances ?? [])) if (svre.kindOf(i.instance_id) !== 'drawn' && svre.visOf(i.instance_id)) n++; return n; })()")
+            check(vis_overlays <= 2, f"hiding 层组 leaves at most the foreground ladder overlay ({vis_overlays} visible)")
+            st, r = call("POST", f"/api/doc/{ROOM}/apply", {
+                "by": "agent-test", "label": "放个没对齐的箱子",
+                "ops": [{"op": "add", "layer": "ForegroundInstances",
+                         "inst": {"object_definition": "o_chest", "x": 391, "y": 402}}]})
+            mid = r["ids"][0] if st == 200 else None
+            check(mid is not None, "added an off-grid instance (391,402)")
+            if mid:
+                cur = (391, 402)
+                spawn = None
+                for cx, cy in [(18, 14), (19, 15), (20, 16), (21, 13), (18, 18), (20, 20),
+                               (22, 22), (16, 20), (14, 20), (12, 20), (12, 12), (22, 12)]:
+                    sx, sy = cx * 26 + 3, cy * 26 + 2
+                    st, r = call("POST", f"/api/doc/{ROOM}/apply", {
+                        "by": "agent-test",
+                        "ops": [{"op": "set", "id": mid, "set": {"x": sx, "y": sy},
+                                 "expect": {"x": cur[0], "y": cur[1]}}]})
+                    if st != 200:
+                        continue
+                    cur = (sx, sy)
+                    try:
+                        pg.wait_for_function(
+                            f"(() => {{ const r = svre.doc.room; for (const L of r.layers) for (const i of (L.layer_data.instances ?? [])) if (i.instance_id === {mid}) return i.x === {sx} && i.y === {sy}; return false; }})()",
+                            timeout=8000)
+                    except Exception:
+                        continue
+                    if pg.evaluate(f"svre.pickPoint({mid})"):
+                        spawn = (cx, cy)
+                        break
+                check(spawn is not None, f"found a grabbable spawn cell (at {spawn})")
+                if spawn:
+                    cx, cy = spawn
+                    sx, sy = cx * 26 + 3, cy * 26 + 2
+                    pg.evaluate(f"svre.focus({sx + 13}, {sy + 13}, 2)")
+                    pg.wait_for_timeout(250)
+                    gp = pg.evaluate(f"svre.pickPoint({mid})")
+                    box = pg.locator("#stage").bounding_box()
+                    grabbed = None
+                    if gp:
+                        gx, gy = box["x"] + gp["x"], box["y"] + gp["y"]
+                        pg.mouse.move(gx, gy)
+                        pg.mouse.down()
+                        if pg.evaluate("svre.selection") == [mid]:
+                            grabbed = (gx, gy)
+                        else:
+                            pg.mouse.up()
+                            pg.keyboard.press("Escape")
+                    check(grabbed is not None, "the drag grabbed the chest")
+                    if grabbed:
+                        ex, ey = (cx + 1) * 26, cy * 26
+                        pg.mouse.move(grabbed[0] + 30, grabbed[1] + 3, steps=3)
+                        pg.mouse.move(grabbed[0] + 60, grabbed[1] + 6, steps=3)  # +30,+3 world px at zoom 2
+                        pg.mouse.up()
+                        pg.wait_for_timeout(600)
+                        st, dd = call("GET", f"/api/doc/{ROOM}")
+                        mir = find_inst(dd, mid)
+                        check(mir["x"] == ex and mir["y"] == ey,
+                              f"off-grid start snapped to the nearest cell corner ({mir['x']},{mir['y']} -> {ex},{ey})")
+                        pg.keyboard.press("Control+z")
+                        pg.wait_for_timeout(500)
+                st, r = call("POST", f"/api/doc/{ROOM}/apply", {
+                    "by": "agent-test",
+                    "ops": [{"op": "delete", "id": mid, "expect": {"object_definition": "o_chest"}}]})
+                check(st == 200, "off-grid instance removed again")
+                for li in hide_idx:
+                    pg.click(f"#layer-list .eye[data-eye='{li}']")
+                pg.wait_for_timeout(200)
+                pg.evaluate("svre.focus(364, 338, 2)")
+                pg.wait_for_timeout(200)
+
             art = pg.evaluate("svre.pickTarget()")
             if art:
                 check(pg.evaluate(f"svre.gateOf({art['id']})") is not True, "drawn art gets no resize handles")
