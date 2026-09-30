@@ -1277,26 +1277,41 @@ function handleAt(n: InstanceNode, sx: number, sy: number): string | null {
   return null;
 }
 
-// fixed edges come from the box at drag start; the moving edge follows the pointer
-// (snapped). New scale keeps the sprite's sign; x/y shift with the edges.
+// The game draws these rectangles as whole 26px cells: scale_x/scale_y are cell counts
+// and stay integers in every vanilla room. So with 吸附 on, a driven axis quantizes to a
+// whole number of cells and the origin settles on the nearest grid corner, absorbing any
+// initial deviation; Alt / toggle off follows the pointer one pixel at a time.
+// New scale keeps the sprite's sign; x/y shift with the edges.
 function resizeCompute(d: Extract<Drag, { mode: "resize" }>, wx: number, wy: number) {
-  // edges snap to the 26px grid like zone-drawing and moving, whatever the sprite's
-  // frame size; the 吸附 toggle off (or Alt held) frees them to whole pixels
-  const unit = snapOn() ? CELL : 1;
-  const snapE = (v: number) => Math.round(v / unit) * unit;
-  let L = d.box.x, T = d.box.y, R = L + d.box.w, B = T + d.box.h;
-  // snap absorbs any initial deviation on the axes the handle drives: the pinned
-  // edge settles on the nearest grid line too, so the finished box is fully aligned
-  if (d.handle.includes("e") || d.handle.includes("w")) { L = snapE(L); R = snapE(R); }
-  if (d.handle.includes("n") || d.handle.includes("s")) { T = snapE(T); B = snapE(B); }
-  if (d.handle.includes("e")) R = Math.max(L + unit, snapE(wx));
-  if (d.handle.includes("w")) L = Math.min(R - unit, snapE(wx));
-  if (d.handle.includes("s")) B = Math.max(T + unit, snapE(wy));
-  if (d.handle.includes("n")) T = Math.min(B - unit, snapE(wy));
   const gx = Math.sign(d.orig.scale_x) || 1, gy = Math.sign(d.orig.scale_y) || 1;
-  const scale_x = (gx * (R - L)) / d.lb.w, scale_y = (gy * (B - T)) / d.lb.h;
+  const L0 = d.box.x, T0 = d.box.y, R0 = L0 + d.box.w, B0 = T0 + d.box.h;
+  let x = d.orig.x, y = d.orig.y, scale_x = d.orig.scale_x, scale_y = d.orig.scale_y;
+  if (snapOn()) {
+    if (d.handle.includes("e")) {
+      scale_x = gx * Math.max(1, Math.round((wx - L0) / d.lb.w));
+      x = Math.round((L0 - d.lb.x * scale_x) / CELL) * CELL;
+    } else if (d.handle.includes("w")) {
+      scale_x = gx * Math.max(1, Math.round((R0 - wx) / d.lb.w));
+      x = Math.round((R0 - (d.lb.x + d.lb.w) * scale_x) / CELL) * CELL;
+    }
+    if (d.handle.includes("s")) {
+      scale_y = gy * Math.max(1, Math.round((wy - T0) / d.lb.h));
+      y = Math.round((T0 - d.lb.y * scale_y) / CELL) * CELL;
+    } else if (d.handle.includes("n")) {
+      scale_y = gy * Math.max(1, Math.round((B0 - wy) / d.lb.h));
+      y = Math.round((B0 - (d.lb.y + d.lb.h) * scale_y) / CELL) * CELL;
+    }
+    return { x, y, scale_x, scale_y, w: Math.abs(scale_x) * d.lb.w, h: Math.abs(scale_y) * d.lb.h };
+  }
+  let L = L0, T = T0, R = R0, B = B0;
+  if (d.handle.includes("e")) R = Math.max(L + 1, Math.round(wx));
+  if (d.handle.includes("w")) L = Math.min(R - 1, Math.round(wx));
+  if (d.handle.includes("s")) B = Math.max(T + 1, Math.round(wy));
+  if (d.handle.includes("n")) T = Math.min(B - 1, Math.round(wy));
+  scale_x = (gx * (R - L)) / d.lb.w;
+  scale_y = (gy * (B - T)) / d.lb.h;
   // origins can sit off-cell (oCameraStatic is centred), which leaves x/y fractional
-  // when an edge is pinned to the grid -- the room format stores integers
+  // when an edge is pinned to a pixel -- the room format stores integers
   return { x: Math.round(L - d.lb.x * scale_x), y: Math.round(T - d.lb.y * scale_y), scale_x, scale_y, w: R - L, h: B - T };
 }
 
@@ -1405,7 +1420,7 @@ function wireViewport(host: HTMLElement) {
       const v = resizeCompute(d, w.x, w.y);
       n.view.scale.set(v.scale_x, v.scale_y);
       n.view.position.set(v.x, v.y);
-      $("s-hover").textContent = `调整尺寸 ${Math.round(v.w)}×${Math.round(v.h)}${snapOn() ? `（吸附 ${CELL}px，Alt 自由）` : ""}`;
+      $("s-hover").textContent = `调整尺寸 ${Math.round(v.w)}×${Math.round(v.h)}${snapOn() ? "（吸附整格，Alt 自由）" : ""}`;
       drawOverlay();
       return;
     }
