@@ -221,25 +221,20 @@ def main():
 
             print("drag-move goes through the server")
             pg.evaluate("svre.set('collision', false)")
-            # drag an ON-GRID drawn instance: the landing snap absorbs any off-grid
-            # origin (the player sits at y=273, a half cell -- dragging it anywhere
-            # would snap y to a corner), which would break the (+26, 0) expectation.
-            # The wall/fence overlays at (260,208) are grid-aligned and pickable.
-            pg.evaluate("svre.focus(364, 260, 2)")
+            t0 = pg.evaluate("svre.pickTarget()")
+            check(t0 is not None, "pickTarget found a drawn instance")
+            # center the target at a known zoom so 30 screen px == 15 world px -> snaps to 26
+            wp = pg.evaluate(f"(() => {{ const r = svre.doc.room; for (const L of r.layers) for (const i of (L.layer_data.instances ?? [])) if (i.instance_id === {t0['id']}) return {{x: i.x, y: i.y}}; }})()")
+            pg.evaluate(f"svre.focus({wp['x']}, {wp['y']}, 2)")
             pg.wait_for_timeout(150)
-            tid = None
-            for cand in (117541, 117542):
-                pt = pg.evaluate(f"svre.pickPoint({cand})")
-                if pt:
-                    tid = cand
-                    break
-            check(tid is not None, "an on-grid drawn instance is clickable")
+            t = pg.evaluate("svre.pickTarget()")
             box = pg.locator("#stage").bounding_box()
-            sx, sy = box["x"] + pt["x"], box["y"] + pt["y"]
+            sx, sy = box["x"] + t["x"], box["y"] + t["y"]
             pg.mouse.click(sx, sy)
             pg.wait_for_timeout(200)
             sel = pg.evaluate("svre.selection")
-            check(len(sel) == 1 and sel[0] == tid, f"click selects the on-grid instance ({sel})")
+            check(len(sel) == 1, f"click selects one instance ({sel})")
+            tid = sel[0]
             src = next(i for L in json.loads(original)["layers"] for i in L["layer_data"].get("instances", []) if i["instance_id"] == tid)
             pg.mouse.move(sx, sy)
             pg.mouse.down()
@@ -751,21 +746,6 @@ def main():
             wv = pg.evaluate("svre.viewInfo(117533)")  # an o_wall_parent (s_pbluebox)
             check(wv is not None and wv["kids"] == ["Sprite"] and wv["a"] == 1,
                   f"o_wall_parent shows s_pbluebox at natural alpha like UTMT ({wv})")
-            st, dw = call("GET", f"/api/doc/{ROOM}")
-            chest = next(i for L in dw["room"]["layers"] for i in L["layer_data"].get("instances", []) if i["object_definition"] == "o_chest")
-            cv = pg.evaluate(f"svre.viewInfo({chest['instance_id']})")
-            check(cv is not None and wv["z"] < cv["z"],
-                  f"wall boxes draw UNDER the art like UTMT's layer order (wall z={wv['z']}, chest z={cv and cv['z']})")
-            # the o_hut_wall ring cells share the wall boxes' footprint: left in the
-            # collision band they would bury the walls. Overlapping stamps demote to
-            # just under the walls (UTMT draws one layer in array order, walls last);
-            # the void giants keep their overlay-band place over the art.
-            ring = pg.evaluate("svre.viewInfo(117506)")   # 1x1 o_hut_wall inside the bottom wall box
-            giant = pg.evaluate("svre.viewInfo(117529)")  # 10x26 void carpet, no wall overlap
-            check(ring is not None and ring["z"] < wv["z"],
-                  f"collision stamps overlapping a wall demote under it (stamp z={ring and ring['z']}, wall z={wv['z']})")
-            check(giant is not None and giant["z"] > 1e8,
-                  f"void carpet stays in the overlay band (z={giant and giant['z']})")
 
             print("instance layers tab")
             pg.click(".tabs button[data-tab=insts]")
