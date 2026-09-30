@@ -458,7 +458,8 @@ function applyVisibility() {
     if (n.kind === "collision") on &&= toggles.collision.checked;
     if (n.kind === "marker") on &&= toggles.markers.checked;
     n.view.visible = on;
-    if (n.kind === "hidden") n.view.alpha = 0.45;
+    // no alpha fudging: hidden-band sprites render at their natural alpha, same
+    // as UTMT shows them (s_pbluebox is alpha-196 by itself, sprite0 fully opaque)
   }
   scene.gridLayer.visible = toggles.grid.checked;
   notesLayer.visible = toggles.notes.checked;

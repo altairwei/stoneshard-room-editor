@@ -732,8 +732,8 @@ def main():
                     ok_kind = False
                 check(ok_kind, "barrier marker joins the hidden overlay band")
                 vi = pg.evaluate(f"svre.viewInfo({bmid})")
-                check(vi is not None and vi["kids"] == ["Sprite"] and vi["a"] == 0.45,
-                      f"marker view = real sprite, faded, no label/diamond ({vi})")
+                check(vi is not None and vi["kids"] == ["Sprite"] and vi["a"] == 1,
+                      f"marker view = real sprite at natural alpha, no label/diamond ({vi})")
                 # the spot sits under a giant o_hut_wall: the collision band outranks
                 # the hidden band in pick, like for every covered object
                 check(pg.evaluate(f"svre.pickPoint({bmid})") is None, "collision stamps outrank it in pick (band order)")
@@ -742,6 +742,10 @@ def main():
                 pg.evaluate("svre.set('collision', true)")
                 st, r = call("POST", f"/api/doc/{ROOM}/undo", {"by": "agent-test"})
                 check(st == 200, "agent undo removed the barrier marker")
+
+            wv = pg.evaluate("svre.viewInfo(117533)")  # an o_wall_parent (s_pbluebox)
+            check(wv is not None and wv["kids"] == ["Sprite"] and wv["a"] == 1,
+                  f"o_wall_parent shows s_pbluebox at natural alpha like UTMT ({wv})")
 
             print("instance layers tab")
             pg.click(".tabs button[data-tab=insts]")
