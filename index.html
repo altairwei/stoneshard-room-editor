@@ -21,14 +21,14 @@
       <span id="opt-tool">选择</span>
       <span id="opt-extra"></span>
       <div class="sep"></div>
-      <label class="itoggle" title="吸附：拖动与放置按 26px 格对齐；按住 Alt 临时自由 (S)"><input type="checkbox" id="t-snap" checked /><i data-icon="snap"></i></label>
-      <label class="itoggle" title="隐形对象 (Shift+H)"><input type="checkbox" id="t-hidden" checked /><i data-icon="eye"></i></label>
-      <label class="itoggle" title="碰撞格"><input type="checkbox" id="t-collision" checked /><i data-icon="collision"></i></label>
-      <label class="itoggle" title="标记点"><input type="checkbox" id="t-markers" /><i data-icon="markers"></i></label>
-      <label class="itoggle" title="网格 (G)"><input type="checkbox" id="t-grid" /><i data-icon="grid"></i></label>
-      <label class="itoggle" title="便签"><input type="checkbox" id="t-notes" checked /><i data-icon="note"></i></label>
+      <label class="itoggle" title="吸附：拖动与放置按 26px 格对齐；按住 Alt 临时自由 (S)"><input type="checkbox" id="t-snap" checked /><i data-icon="snap"></i><span class="txt">吸附</span></label>
+      <label class="itoggle" title="隐形对象 (Shift+H)"><input type="checkbox" id="t-hidden" checked /><i data-icon="eye"></i><span class="txt">隐形</span></label>
+      <label class="itoggle" title="碰撞格"><input type="checkbox" id="t-collision" checked /><i data-icon="collision"></i><span class="txt">碰撞</span></label>
+      <label class="itoggle" title="标记点"><input type="checkbox" id="t-markers" /><i data-icon="markers"></i><span class="txt">标记</span></label>
+      <label class="itoggle" title="网格 (G)"><input type="checkbox" id="t-grid" /><i data-icon="grid"></i><span class="txt">网格</span></label>
+      <label class="itoggle" title="便签"><input type="checkbox" id="t-notes" checked /><i data-icon="note"></i><span class="txt">便签</span></label>
       <span class="spacer"></span>
-      <button id="b-zoom-out" class="icon-btn" data-icon="zoomOut" title="缩小 (-)"></button>
+      <button id="b-zoom-out" class="icon-btn" title="缩小 (-)"><i data-icon="zoomOut"></i><span class="txt">缩小</span></button>
       <select id="zoom-preset" title="缩放">
         <option value="" id="zoom-cur" hidden>100%</option>
         <option value="25">25%</option>
@@ -40,7 +40,7 @@
         <option value="800">800%</option>
         <option value="fit">适配窗口</option>
       </select>
-      <button id="b-zoom-in" class="icon-btn" data-icon="zoomIn" title="放大 (+)"></button>
+      <button id="b-zoom-in" class="icon-btn" title="放大 (+)"><i data-icon="zoomIn"></i><span class="txt">放大</span></button>
       <div class="sep"></div>
       <button id="b-fit" title="适配窗口 (F / Ctrl+0)">适配</button>
       <button id="b-1x" title="实际像素 (1 / Ctrl+1)">1:1</button>
@@ -48,16 +48,16 @@
     <div id="banner" hidden></div>
     <main>
       <nav id="toolbox">
-        <button data-tool="select" class="on" data-icon="select" title="选择 (V)" aria-pressed="true"></button>
-        <button data-tool="hand" data-icon="hand" title="抓手 (H)：拖动平移；空格临时切换" aria-pressed="false"></button>
-        <button data-tool="place" data-icon="place" title="放置 (P)：在「对象」页签挑选，单击放入" aria-pressed="false"></button>
+        <button data-tool="select" class="on" title="选择 (V)" aria-pressed="true"><i data-icon="select"></i><span class="txt">选择</span></button>
+        <button data-tool="hand" title="抓手 (H)：拖动平移；空格临时切换" aria-pressed="false"><i data-icon="hand"></i><span class="txt">抓手</span></button>
+        <button data-tool="place" title="放置 (P)：在「对象」页签挑选，单击放入" aria-pressed="false"><i data-icon="place"></i><span class="txt">放置</span></button>
         <div class="tsep"></div>
-        <button data-tool="collision" data-icon="rect" title="碰撞矩形 (C)：拖出 o_hut_wall 碰撞矩形（边吸附格线，尺寸恒为整数格；按住 Alt 自由调整）；单击：光标所在格" aria-pressed="false"></button>
-        <button data-tool="barrier" data-icon="wall" title="屏障涂刷 (B)：拖动涂刷 o_projectileBarrier 屏障格（阻挡箭矢与投掷物）；Alt+拖动擦除" aria-pressed="false"></button>
-        <button data-tool="zone" data-icon="zone" title="区域 (T)：拖出一个矩形（Trigger/相机/表面等纯色盒功能对象），在选项栏换对象" aria-pressed="false"></button>
-        <button data-tool="marker" data-icon="markers" title="标记 (M)：单击放出生点/灯光等功能标记，在选项栏换对象" aria-pressed="false"></button>
+        <button data-tool="collision" title="碰撞矩形 (C)：拖出 o_hut_wall 碰撞矩形（边吸附格线，尺寸恒为整数格；按住 Alt 自由调整）；单击：光标所在格" aria-pressed="false"><i data-icon="rect"></i><span class="txt">碰撞</span></button>
+        <button data-tool="barrier" title="屏障涂刷 (B)：拖动涂刷 o_projectileBarrier 屏障格（阻挡箭矢与投掷物）；Alt+拖动擦除" aria-pressed="false"><i data-icon="wall"></i><span class="txt">屏障</span></button>
+        <button data-tool="zone" title="区域 (T)：拖出一个矩形（Trigger/相机/表面等纯色盒功能对象），在选项栏换对象" aria-pressed="false"><i data-icon="zone"></i><span class="txt">区域</span></button>
+        <button data-tool="marker" title="标记 (M)：单击放出生点/灯光等功能标记，在选项栏换对象" aria-pressed="false"><i data-icon="markers"></i><span class="txt">标记</span></button>
         <div class="tsep"></div>
-        <button data-tool="note" data-icon="note" title="便签 (N)：单击在那个位置留便签" aria-pressed="false"></button>
+        <button data-tool="note" title="便签 (N)：单击在那个位置留便签" aria-pressed="false"><i data-icon="note"></i><span class="txt">便签</span></button>
       </nav>
       <div id="canvas-area">
         <div id="ruler-corner"></div>

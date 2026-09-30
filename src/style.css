@@ -85,6 +85,15 @@ button.primary:hover { background: linear-gradient(#4a97ea, #3380d2); }
 .itoggle i { display: grid; place-items: center; width: 100%; height: 100%; }
 .itoggle svg { width: 14px; height: 14px; display: block; }
 #zoom-preset { width: 76px; text-align: right; background: #1e1e21; border-color: var(--line); padding: 3px 4px; }
+/* 视口够宽时顶栏的图标按钮同时显示文本（窄窗口保持纯图标） */
+.itoggle .txt, .icon-btn .txt { display: none; }
+@media (min-width: 1360px) {
+  #options .itoggle { width: auto; padding: 0 7px; grid-auto-flow: column; gap: 5px; }
+  #options .icon-btn { width: auto; padding: 0 7px; display: inline-flex; align-items: center; gap: 5px; }
+  #options .itoggle .txt, #options .icon-btn .txt {
+    display: block; font-size: 11px; white-space: nowrap; color: inherit;
+  }
+}
 /* tool-specific extras (object pickers, paint hints) next to the tool name */
 #opt-extra { display: flex; align-items: center; gap: 8px; min-width: 0; overflow: hidden; }
 #opt-extra select {
@@ -122,7 +131,21 @@ main {
   box-shadow: inset 0 0 0 1px rgba(108, 182, 255, .45);
 }
 #toolbox button svg { width: 17px; height: 17px; display: block; }
+#toolbox button i { display: inline-flex; }
+#toolbox button .txt { display: none; }
 #toolbox .tsep { width: 18px; height: 1px; background: var(--line); margin: 3px 0; flex: none; }
+/* 视口够宽时左侧工具栏加宽为「图标+文字」整宽行（窄窗口保持 40px 纯图标栏） */
+@media (min-width: 1360px) {
+  main { grid-template-columns: 76px minmax(0, 1fr) var(--dock-w); }
+  #toolbox { align-items: stretch; padding: 6px 4px; }
+  #toolbox button {
+    width: auto; display: flex; align-items: center; justify-content: flex-start;
+    gap: 6px; padding: 0 6px;
+  }
+  #toolbox button svg { width: 15px; height: 15px; flex: none; }
+  #toolbox button .txt { display: block; font-size: 12px; white-space: nowrap; }
+  #toolbox .tsep { width: auto; margin: 2px 6px; }
+}
 
 /* ---------------- canvas area + rulers ---------------- */
 #canvas-area {
