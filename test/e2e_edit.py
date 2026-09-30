@@ -273,7 +273,7 @@ def main():
                 check(hp is not None, "east handle exists")
                 g = pg.evaluate(f"svre.geom({sel[0]})")
                 obj_w = g["lb"]["w"]
-                right0 = g["box"]["x"] + g["box"]["w"]
+                left0, right0 = g["box"]["x"], g["box"]["x"] + g["box"]["w"]
                 hx, hy = box["x"] + hp["x"], box["y"] + hp["y"]
                 pg.mouse.move(hx, hy)
                 pg.mouse.down()
@@ -286,10 +286,13 @@ def main():
                 last = doc6["log"][-1]
                 check(last["by"] == "human" and "调整" in last["label"], f"resize logged as a human entry ({last['label']!r})")
                 check(mir["y"] == srcr["y"] and mir["scale_y"] == srcr["scale_y"], "resize leaves y/scale_y alone")
-                check(abs(mir["x"] - srcr["x"]) <= 26, "x may shift to keep the far edge pinned (centred origins)")
+                check(abs(mir["x"] - srcr["x"]) <= 26, "x shifts as the edges settle on the grid (centred origins)")
                 grew = (mir["scale_x"] - srcr["scale_x"]) * obj_w
-                # the moving edge snaps to the grid: nearest cell edge to (start + 30 world px)
-                expected = round((right0 + 30) / 26) * 26 - right0
+                # both edges snap now: west hops to the nearest cell line (absorbing any
+                # initial deviation), east lands at the line nearest (start + 30 world px).
+                # int(v/26 + .5) mirrors JS Math.round for these positive values
+                snap26 = lambda v: int(v / 26 + 0.5) * 26
+                expected = (snap26(right0 + 30) - snap26(left0)) - (right0 - left0)
                 check(abs(grew - expected) < 1e-3 and expected >= 26, f"east drag grew the box by one snapped cell ({grew}px)")
                 pg.keyboard.press("Control+z")
                 pg.wait_for_timeout(500)
@@ -334,9 +337,14 @@ def main():
                         pg.wait_for_timeout(600)
                         st, dd = call("GET", f"/api/doc/{ROOM}")
                         mir = find_inst(dd, gid)
-                        edge = g0["box"]["x"] + mir["scale_x"] * g0["lb"]["w"]
-                        check(abs(edge / 26 - round(edge / 26)) < 1e-6 and edge > right0,
-                              f"snap on: the dragged edge lands on a cell line ({right0} -> {edge})")
+                        # fresh west: the pinned edge snaps too, and the integer origin
+                        # leaves up to 0.5px of rounding dust on the edges
+                        west = mir["x"] + mir["scale_x"] * g0["lb"]["x"]
+                        edge = west + mir["scale_x"] * g0["lb"]["w"]
+                        snap26 = lambda v: int(v / 26 + 0.5) * 26
+                        near_grid = lambda v: abs(v - snap26(v)) <= 0.51
+                        check(near_grid(west) and near_grid(edge) and edge > right0,
+                              f"snap on: both edges land on cell lines ({west:.1f}..{edge:.1f}, was {g0['box']['x']:.1f}..{right0:.1f})")
                         pg.keyboard.press("Control+z")
                         pg.wait_for_timeout(500)
                         pg.keyboard.down("Alt")
@@ -348,10 +356,40 @@ def main():
                         pg.wait_for_timeout(600)
                         st, dd = call("GET", f"/api/doc/{ROOM}")
                         mir = find_inst(dd, gid)
-                        edge = g0["box"]["x"] + mir["scale_x"] * g0["lb"]["w"]
-                        check(abs(edge - round(right0 + 30)) < 1, f"Alt frees the edge to the raw pixel ({edge})")
+                        west = mir["x"] + mir["scale_x"] * g0["lb"]["x"]
+                        edge = west + mir["scale_x"] * g0["lb"]["w"]
+                        check(abs(edge - int(right0 + 30 + 0.5)) < 1, f"Alt frees the edge to the raw pixel ({edge})")
                         pg.keyboard.press("Control+z")
                         pg.wait_for_timeout(500)
+                        # an off-grid start: snap absorbs the deviation on the pinned
+                        # edge too, so the finished box is fully grid-aligned
+                        st, r = call("POST", f"/api/doc/{ROOM}/apply", {
+                            "by": "agent-test",
+                            "ops": [{"op": "set", "id": gid, "set": {"x": 55, "y": 57}, "expect": {"x": 52, "y": 52}}]})
+                        check(st == 200, "box pushed off the grid (55,57)")
+                        try:
+                            pg.wait_for_function(
+                                f"(() => {{ const r = svre.doc.room; for (const L of r.layers) for (const i of (L.layer_data.instances ?? [])) if (i.instance_id === {gid}) return i.x === 55; return false; }})()",
+                                timeout=8000)
+                            hp2 = pg.evaluate(f"svre.handlePoint({gid}, 'e')")
+                        except Exception:
+                            hp2 = None
+                        check(hp2 is not None, "off-grid box still offers the east handle")
+                        if hp2:
+                            pg.mouse.move(box["x"] + hp2["x"], box["y"] + hp2["y"])
+                            pg.mouse.down()
+                            pg.mouse.move(box["x"] + hp2["x"] + 60, box["y"] + hp2["y"], steps=5)
+                            pg.mouse.up()
+                            pg.wait_for_timeout(600)
+                            st, dd = call("GET", f"/api/doc/{ROOM}")
+                            mir = find_inst(dd, gid)
+                            west = mir["x"] + mir["scale_x"] * g0["lb"]["x"]
+                            east = west + mir["scale_x"] * g0["lb"]["w"]
+                            on_grid = lambda v: abs(v - snap26(v)) <= 0.51
+                            check(on_grid(west) and on_grid(east) and east > west and abs(west - 52) < 1,
+                                  f"resize absorbed the deviation: both edges on grid lines ({west:.1f}..{east:.1f})")
+                            pg.keyboard.press("Control+z")
+                            pg.wait_for_timeout(500)
                         pg.keyboard.press("Escape")
                 st, r = call("POST", f"/api/doc/{ROOM}/apply", {
                     "by": "agent-test",

@@ -1278,13 +1278,17 @@ function handleAt(n: InstanceNode, sx: number, sy: number): string | null {
 }
 
 // fixed edges come from the box at drag start; the moving edge follows the pointer
-// (snapped). New scale keeps the sprite's sign; x/y shift so the fixed edges stay put.
+// (snapped). New scale keeps the sprite's sign; x/y shift with the edges.
 function resizeCompute(d: Extract<Drag, { mode: "resize" }>, wx: number, wy: number) {
   // edges snap to the 26px grid like zone-drawing and moving, whatever the sprite's
   // frame size; the 吸附 toggle off (or Alt held) frees them to whole pixels
   const unit = snapOn() ? CELL : 1;
   const snapE = (v: number) => Math.round(v / unit) * unit;
   let L = d.box.x, T = d.box.y, R = L + d.box.w, B = T + d.box.h;
+  // snap absorbs any initial deviation on the axes the handle drives: the pinned
+  // edge settles on the nearest grid line too, so the finished box is fully aligned
+  if (d.handle.includes("e") || d.handle.includes("w")) { L = snapE(L); R = snapE(R); }
+  if (d.handle.includes("n") || d.handle.includes("s")) { T = snapE(T); B = snapE(B); }
   if (d.handle.includes("e")) R = Math.max(L + unit, snapE(wx));
   if (d.handle.includes("w")) L = Math.min(R - unit, snapE(wx));
   if (d.handle.includes("s")) B = Math.max(T + unit, snapE(wy));
