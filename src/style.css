@@ -71,7 +71,7 @@ button.primary:hover { background: linear-gradient(#4a97ea, #3380d2); }
 #b-compile svg { width: 13px; height: 13px; display: block; }
 .dirty-dot { color: var(--warn); font-size: 9px; margin-left: 1px; }
 
-/* ---------------- tool options bar ---------------- */
+/* tool options bar sits flush under the app bar */
 #options {
   display: flex; align-items: center; gap: 5px; height: 34px; padding: 0 10px; flex: none;
   background: var(--bg-2); border-bottom: 1px solid var(--line-2);
@@ -113,16 +113,18 @@ button.primary:hover { background: linear-gradient(#4a97ea, #3380d2); }
 /* ---------------- main grid ---------------- */
 main {
   flex: 1; min-height: 0;
-  display: grid; grid-template-columns: 40px minmax(0, 1fr) var(--dock-w);
+  display: grid; grid-template-columns: 58px minmax(0, 1fr) var(--dock-w);
 }
 
-/* ---------------- toolbox ---------------- */
+/* ---------------- toolbox ----------------
+   图标在下、两字标签在上（垂直堆叠），栏宽恒定，任何视口都显示文字。 */
 #toolbox {
   background: var(--bg-2); border-right: 1px solid var(--line-2);
-  display: flex; flex-direction: column; align-items: center; padding: 6px 0; gap: 3px;
+  display: flex; flex-direction: column; align-items: stretch; padding: 6px 4px; gap: 2px;
 }
 #toolbox button {
-  width: 30px; height: 30px; padding: 0; display: grid; place-items: center;
+  width: auto; padding: 5px 0 4px;
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
   background: transparent; border: 1px solid transparent; border-radius: 7px; color: var(--muted);
 }
 #toolbox button:hover { background: var(--hover); color: var(--text); }
@@ -130,22 +132,10 @@ main {
   background: rgba(108, 182, 255, .15); color: var(--accent);
   box-shadow: inset 0 0 0 1px rgba(108, 182, 255, .45);
 }
-#toolbox button svg { width: 17px; height: 17px; display: block; }
+#toolbox button svg { width: 16px; height: 16px; display: block; }
 #toolbox button i { display: inline-flex; }
-#toolbox button .txt { display: none; }
-#toolbox .tsep { width: 18px; height: 1px; background: var(--line); margin: 3px 0; flex: none; }
-/* 视口够宽时左侧工具栏加宽为「图标+文字」整宽行（窄窗口保持 40px 纯图标栏） */
-@media (min-width: 1360px) {
-  main { grid-template-columns: 76px minmax(0, 1fr) var(--dock-w); }
-  #toolbox { align-items: stretch; padding: 6px 4px; }
-  #toolbox button {
-    width: auto; display: flex; align-items: center; justify-content: flex-start;
-    gap: 6px; padding: 0 6px;
-  }
-  #toolbox button svg { width: 15px; height: 15px; flex: none; }
-  #toolbox button .txt { display: block; font-size: 12px; white-space: nowrap; }
-  #toolbox .tsep { width: auto; margin: 2px 6px; }
-}
+#toolbox button .txt { display: block; font-size: 11px; line-height: 1; white-space: nowrap; }
+#toolbox .tsep { width: auto; height: 1px; background: var(--line); margin: 3px 6px; flex: none; }
 
 /* ---------------- canvas area + rulers ---------------- */
 #canvas-area {
