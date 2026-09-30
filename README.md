@@ -51,7 +51,7 @@ npm run dev         # http://localhost:5178/?room=r_sv_hut_inside1
 |---|---|
 | 工具箱（画布左沿）：V 选择 · H 抓手 · P 放置 · C 碰撞涂刷 · T 区域 · M 标记 · N 便签 | 便签工具单击 = 留便签，拖动 = 平移；P 没选过对象时先开「对象」页签 |
 | C 碰撞涂刷：拖动 / Alt+拖动 | 往碰撞层刷/擦 o_hut_wall 格（红色戳，26px 一格，去重；单击刷光标下那格） |
-| B 屏障涂刷：拖动 / Alt+拖动 | 刷/擦 o_projectileBarrier 屏障格（琥珀色戳，挡箭/投掷物；与碰撞格按家族分别去重，可共存同格） |
+| B 屏障涂刷：拖动 / Alt+拖动 | 刷/擦 o_projectileBarrier 屏障格（挡箭/投掷物；按原版 sprite 显示，与 UTMT 一致；与碰撞格按家族分别去重，可共存同格） |
 | T 区域：拖动 | 拖出一个纯色盒功能对象（oCameraStatic、trigger、surface……与尺寸手柄同一套像素判据，选项栏下拉换对象）；边吸附格线，单击 = 光标下那格 |
 | M 标记：单击 | 放出生点/灯光/路标等功能标记（选项栏下拉换对象），吸附格点 |
 | 功能对象的落点图层 | 自动归位：已有同类的层 → o_hut_wall 进碰撞层 → o_projectileBarrier 进 Projectiles 层（没有则碰撞层） → 相机盒进相机层 → c_zone 进 Surfaces → 当前层 |
