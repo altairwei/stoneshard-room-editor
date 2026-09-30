@@ -39,7 +39,15 @@ export interface RoomScene {
   boundsLayer: Graphics;
 }
 
-const COLLISION_SPRITES = new Set(["s_handmadeCollision"]);
+// Self-destructing grid stampers draw as flat stamps instead of their invisible sprite:
+// o_hut_wall (s_handmadeCollision) writes o_controller.newgrid, o_projectileBarrier
+// (s_torchishka2) writes wallgrid, then both instance_destroy. The colour tells walk
+// collision (red) from projectile barrier (amber). Keyed by sprite: each of these
+// sprites belongs to exactly one object.
+const STAMP_SPRITES = new Map<string, { fill: number; line: number }>([
+  ["s_handmadeCollision", { fill: 0xff3040, line: 0xff5060 }],
+  ["s_torchishka2", { fill: 0xe89a2c, line: 0xffc268 }],
+]);
 
 function resolveDepth(db: AssetDb, obj: string, inst: RoomInstance, layer: RoomLayer): [number, string] {
   const d = db.createOf(obj)?.depth;
@@ -191,17 +199,18 @@ export async function buildScene(db: AssetDb, room: Room): Promise<RoomScene> {
 
       let kind: NodeKind = "marker";
       let view: Container | null = null;
-      if (spriteName && COLLISION_SPRITES.has(spriteName)) {
+      const stamp = spriteName ? STAMP_SPRITES.get(spriteName) : undefined;
+      if (stamp) {
         kind = "collision";
         view = new Container();
         view.addChild(
           new Graphics()
             .rect(0, 0, CELL, CELL)
-            .fill({ color: 0xff3040, alpha: 0.38 })
+            .fill({ color: stamp.fill, alpha: 0.38 })
             // inner stroke: a scaled middle stroke would inflate getBounds by
             // scale/2 px per side, lying about the stamp's true 26px footprint
             // (pixi v8 alignment: 1 = inner, 0 = outer -- measured, not documented)
-            .stroke({ color: 0xff5060, width: 1, alpha: 0.9, pixelLine: true, alignment: 1 }),
+            .stroke({ color: stamp.line, width: 1, alpha: 0.9, pixelLine: true, alignment: 1 }),
         );
       } else if (spriteName) {
         view = await spriteView(db, spriteName, inst.image_index);

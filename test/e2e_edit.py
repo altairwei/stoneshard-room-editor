@@ -622,6 +622,63 @@ def main():
             stamps2 = {(i["x"] // 26, i["y"] // 26) for L in d2["room"]["layers"] for i in L["layer_data"].get("instances", []) if i["object_definition"] == "o_hut_wall"}
             check(stamps2 == taken, "Alt+drag erased the painted span")
 
+            # barrier brush (B): same idiom over o_projectileBarrier; dedup/erase are
+            # per object family, so barrier cells and collision cells coexist
+            btaken = {(i["x"] // 26, i["y"] // 26) for L in d0["room"]["layers"] for i in L["layer_data"].get("instances", []) if i["object_definition"] == "o_projectileBarrier"}
+            span4 = {(spot[0] + dx, spot[1] + dy) for dx in (0, 1) for dy in (0, 1)}
+            check(not (span4 & btaken), "the paint span is free of existing barriers")
+
+            pg.click("#toolbox button[data-tool=barrier]")
+            check(pg.evaluate("svre.toolKind()") == "barrier", "barrier tool armed")
+            pg.mouse.move(box["x"] + p0["x"], box["y"] + p0["y"])
+            pg.mouse.down()
+            pg.mouse.move(box["x"] + p1["x"], box["y"] + p1["y"], steps=5)
+            pg.mouse.up()
+            pg.wait_for_timeout(700)
+            st, db1 = call("GET", f"/api/doc/{ROOM}")
+            barr1 = {(i["x"] // 26, i["y"] // 26) for L in db1["room"]["layers"] for i in L["layer_data"].get("instances", []) if i["object_definition"] == "o_projectileBarrier"}
+            check(barr1 - btaken == span4, f"barrier brush painted a 2x2 span ({sorted(barr1 - btaken)})")
+            blay = next((L["layer_name"] for L in db1["room"]["layers"] for i in L["layer_data"].get("instances", []) if (i["x"] // 26, i["y"] // 26) == spot and i["object_definition"] == "o_projectileBarrier"), None)
+            check(blay == coll_name, f"no Projectiles layer: barriers fell back to the collision layer ({blay})")
+            check(db1["log"][-1]["label"] == "涂刷屏障 4 格", f"barrier commit labelled ({db1['log'][-1]['label']})")
+
+            # collision cells are not blocked by barrier cells on the same span
+            pg.click("#toolbox button[data-tool=collision]")
+            pg.mouse.move(box["x"] + p0["x"], box["y"] + p0["y"])
+            pg.mouse.down()
+            pg.mouse.move(box["x"] + p1["x"], box["y"] + p1["y"], steps=5)
+            pg.mouse.up()
+            pg.wait_for_timeout(700)
+            st, db2 = call("GET", f"/api/doc/{ROOM}")
+            stamps_b = {(i["x"] // 26, i["y"] // 26) for L in db2["room"]["layers"] for i in L["layer_data"].get("instances", []) if i["object_definition"] == "o_hut_wall"}
+            check(stamps_b == taken | span4, "collision painted over barrier cells (per-family dedup)")
+
+            # barrier erase removes only barriers; collision erase then restores baseline
+            pg.click("#toolbox button[data-tool=barrier]")
+            pg.keyboard.down("Alt")
+            pg.mouse.move(box["x"] + p0["x"], box["y"] + p0["y"])
+            pg.mouse.down()
+            pg.mouse.move(box["x"] + p1["x"], box["y"] + p1["y"], steps=5)
+            pg.mouse.up()
+            pg.keyboard.up("Alt")
+            pg.wait_for_timeout(700)
+            st, db3 = call("GET", f"/api/doc/{ROOM}")
+            barr3 = {(i["x"] // 26, i["y"] // 26) for L in db3["room"]["layers"] for i in L["layer_data"].get("instances", []) if i["object_definition"] == "o_projectileBarrier"}
+            stamps3 = {(i["x"] // 26, i["y"] // 26) for L in db3["room"]["layers"] for i in L["layer_data"].get("instances", []) if i["object_definition"] == "o_hut_wall"}
+            check(barr3 == btaken and stamps3 == taken | span4, "Alt+drag erased only the barrier span")
+
+            pg.click("#toolbox button[data-tool=collision]")
+            pg.keyboard.down("Alt")
+            pg.mouse.move(box["x"] + p0["x"], box["y"] + p0["y"])
+            pg.mouse.down()
+            pg.mouse.move(box["x"] + p1["x"], box["y"] + p1["y"], steps=5)
+            pg.mouse.up()
+            pg.keyboard.up("Alt")
+            pg.wait_for_timeout(700)
+            st, db4 = call("GET", f"/api/doc/{ROOM}")
+            stamps4 = {(i["x"] // 26, i["y"] // 26) for L in db4["room"]["layers"] for i in L["layer_data"].get("instances", []) if i["object_definition"] == "o_hut_wall"}
+            check(stamps4 == taken, "collision span erased, back to baseline")
+
             pg.click("#toolbox button[data-tool=zone]")
             try:
                 pg.wait_for_function("!document.querySelector('#opt-extra select')?.disabled", timeout=20000)

@@ -38,6 +38,10 @@ export const ICONS: Record<string, string> = {
   bucket: S(
     `<path d="M7.4 2.5l5.1 5.1-4.9 4.9a1.9 1.9 0 0 1-2.7 0L2.6 10.2a1.9 1.9 0 0 1 0-2.7z"/><path d="M6.3 5.4l6.3 6.3"/><path d="M13.6 11.4s1.3 1.6 1.3 2.4a1.3 1.3 0 1 1-2.6 0c0-.8 1.3-2.4 1.3-2.4z"/>`,
   ),
+  // brick wall (projectile barrier painting)
+  wall: S(
+    `<rect x="2" y="3" width="12" height="10"/><path d="M2 6.3h12M2 9.7h12M8 3v3.3M5 6.3v3.4M11 6.3v3.4M8 9.7V13"/>`,
+  ),
   // rectangle-draw: dashed rect with corner points (zones, trigger boxes)
   zone: S(
     `<rect x="3" y="3.5" width="10" height="9" stroke-dasharray="2.4 1.8"/><path d="M3 3.5h.01M13 3.5h.01M3 12.5h.01M13 12.5h.01" stroke-width="2.4"/>`,

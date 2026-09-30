@@ -87,6 +87,7 @@ type Tool =
   | { kind: "note" }
   | { kind: "place"; object: string } // palette pick, single clicks
   | { kind: "collision" } // paint/erase o_hut_wall cells like a bucket/eraser
+  | { kind: "barrier" } // same brush, for o_projectileBarrier (blocks arrows/thrown)
   | { kind: "zone"; object: string } // drag out a scaled plain-box object (trigger, camera, surface…)
   | { kind: "marker"; object: string }; // click to drop a functional marker (starter, light…)
 let tool: Tool = { kind: "select" };
@@ -98,6 +99,12 @@ let markerObjectsCache: string[] | null = null;
 // o_hut_wall is THE walk-grid collision stamp: the only room object that writes
 // o_controller.newgrid; sprite s_handmadeCollision 26×26 at origin (0,0).
 const COLLISION_PAINT = "o_hut_wall";
+// o_projectileBarrier is the same kind of self-destructing grid stamper for the
+// wallgrid (blocks projectiles; Alarm_0 stamps value 2 over its footprint); vanilla
+// keeps them on a "Projectiles" layer, half of them 1×1 cells.
+const BARRIER_PAINT = "o_projectileBarrier";
+// paint tools write one of these two objects; everything user-facing picks the label
+const paintLabel = (object: string) => (object === BARRIER_PAINT ? "屏障" : "碰撞");
 const hiddenInsts = new Set<number>(); // per-instance editor-local hide (the eyes in the 图层 tab)
 let dragRowId: number | null = null; // instance row mid-drag in the 图层 tab
 let clipboard: { layerName: string | null; inst: RoomInstance }[] = [];
@@ -877,12 +884,13 @@ function setTool(t: Tool) {
   if (t.kind === "zone") zoneObject = t.object;
   if (t.kind === "marker") markerObject = t.object;
   ghostLayer.removeChildren().forEach((c) => c.destroy({ children: true }));
-  const names = { select: "选择", hand: "抓手", note: "便签", place: "放置", collision: "碰撞涂刷", zone: "区域", marker: "标记" } as const;
+  const names = { select: "选择", hand: "抓手", note: "便签", place: "放置", collision: "碰撞涂刷", barrier: "屏障涂刷", zone: "区域", marker: "标记" } as const;
   $("s-tool").textContent =
     t.kind === "place" ? `放置 ${t.object}（单击放置，Esc 结束）`
     : t.kind === "hand" ? "抓手（拖动平移）"
     : t.kind === "note" ? "便签（单击留便签）"
     : t.kind === "collision" ? "碰撞涂刷（拖动刷格 · Alt+拖动擦除 · Esc 结束）"
+    : t.kind === "barrier" ? "屏障涂刷（拖动刷格 · Alt+拖动擦除 · Esc 结束）"
     : t.kind === "zone" ? `区域 ${t.object}（拖出矩形，Esc 结束）`
     : t.kind === "marker" ? `标记 ${t.object}（单击放置，Esc 结束）`
     : "选择";
@@ -961,6 +969,12 @@ function layerFor(object: string): number {
     if ((L.layer_data.instances as RoomInstance[]).some((x) => x.object_definition === object)) return i;
   const byName = (re: RegExp) => instLayers.find(({ L }) => re.test(L.layer_name ?? ""))?.i ?? -1;
   if (object === COLLISION_PAINT) { const i = byName(/coli/i); if (i >= 0) return i; } // vanilla spells it "Colissions"
+  if (object === BARRIER_PAINT) { // vanilla home is a "Projectiles" layer, else it shares the collision layer
+    const i = byName(/projectile/i);
+    if (i >= 0) return i;
+    const j = byName(/coli/i);
+    if (j >= 0) return j;
+  }
   if (/^oCamera/.test(object)) { const i = byName(/camera/i); if (i >= 0) return i; }
   if (db.parentChain(object).includes("c_zone")) { const i = byName(/surface/i); if (i >= 0) return i; }
   if (r.layers[activeLayer]?.layer_type === LayerType.Instances) return activeLayer;
@@ -1017,8 +1031,9 @@ function renderToolExtras() {
     s.textContent = text;
     box.appendChild(s);
   };
-  if (tool.kind === "collision") {
-    hint(`${COLLISION_PAINT} · 拖动=涂刷 · Alt+拖动=擦除 · → ${layerNameOf(layerFor(COLLISION_PAINT))}`);
+  if (tool.kind === "collision" || tool.kind === "barrier") {
+    const object = tool.kind === "barrier" ? BARRIER_PAINT : COLLISION_PAINT;
+    hint(`${object} · 拖动=涂刷 · Alt+拖动=擦除 · → ${layerNameOf(layerFor(object))}`);
     return;
   }
   if (tool.kind === "zone") {
@@ -1097,32 +1112,34 @@ function zoneCommit(d: { ax: number; ay: number; bx: number; by: number; moved: 
   ]).then(selectPlaced);
 }
 
-function paintCommit(d: { ax: number; ay: number; bx: number; by: number }, erase: boolean) {
+function paintCommit(d: { ax: number; ay: number; bx: number; by: number; object: string }, erase: boolean) {
   if (!doc) return;
   const { cx0, cy0, cx1, cy1 } = paintCells(d);
   if (cx1 < cx0 || cy1 < cy0) { drawOverlay(); return; }
+  const object = d.object, what = paintLabel(object);
+  // dedup/erase are per object family: barrier cells and walk-collision cells coexist
   const stamps: RoomInstance[] = [];
   for (const L of room().layers)
     if (L.layer_type === LayerType.Instances)
-      for (const i of L.layer_data.instances as RoomInstance[]) if (i.object_definition === COLLISION_PAINT) stamps.push(i);
+      for (const i of L.layer_data.instances as RoomInstance[]) if (i.object_definition === object) stamps.push(i);
   const inRect = (i: RoomInstance) => {
     const cx = Math.floor(i.x / CELL), cy = Math.floor(i.y / CELL);
     return cx >= cx0 && cx <= cx1 && cy >= cy0 && cy <= cy1;
   };
   if (erase) {
     const hits = stamps.filter(inRect);
-    if (!hits.length) { $("s-hover").textContent = "这里没有碰撞格可擦"; drawOverlay(); return; }
-    commit(`擦除碰撞 ${hits.length} 格`, hits.map((i) => ({ op: "delete", id: i.instance_id, expect: { object_definition: i.object_definition, x: i.x, y: i.y } })));
+    if (!hits.length) { $("s-hover").textContent = `这里没有${what}格可擦`; drawOverlay(); return; }
+    commit(`擦除${what} ${hits.length} 格`, hits.map((i) => ({ op: "delete", id: i.instance_id, expect: { object_definition: i.object_definition, x: i.x, y: i.y } })));
     return;
   }
   const taken = new Set(stamps.map((i) => `${Math.floor(i.x / CELL)},${Math.floor(i.y / CELL)}`));
-  const layer = layerNameOf(layerFor(COLLISION_PAINT));
+  const layer = layerNameOf(layerFor(object));
   const ops: Op[] = [];
   for (let cx = cx0; cx <= cx1; cx++)
     for (let cy = cy0; cy <= cy1; cy++)
-      if (!taken.has(`${cx},${cy}`)) ops.push({ op: "add", layer, inst: { object_definition: COLLISION_PAINT, x: cx * CELL, y: cy * CELL } as RoomInstance });
-  if (!ops.length) { $("s-hover").textContent = "这些格已有碰撞"; drawOverlay(); return; }
-  commit(`涂刷碰撞 ${ops.length} 格`, ops);
+      if (!taken.has(`${cx},${cy}`)) ops.push({ op: "add", layer, inst: { object_definition: object, x: cx * CELL, y: cy * CELL } as RoomInstance });
+  if (!ops.length) { $("s-hover").textContent = `这些格已有${what}`; drawOverlay(); return; }
+  commit(`涂刷${what} ${ops.length} 格`, ops);
 }
 
 // ================= viewport & pointer =================
@@ -1261,7 +1278,7 @@ type Drag =
   | { mode: "move"; sx: number; sy: number; ids: number[]; orig: { id: number; x: number; y: number; tx: number; ty: number }[]; moved: boolean }
   | { mode: "resize"; sx: number; sy: number; id: number; handle: string; lb: { x: number; y: number; w: number; h: number }; box: { x: number; y: number; w: number; h: number }; orig: { x: number; y: number; scale_x: number; scale_y: number }; moved: boolean }
   | { mode: "zone"; ax: number; ay: number; bx: number; by: number; moved: boolean }
-  | { mode: "paint"; ax: number; ay: number; bx: number; by: number; moved: boolean }
+  | { mode: "paint"; ax: number; ay: number; bx: number; by: number; moved: boolean; object: string }
   | { mode: "marquee"; sx: number; sy: number; ex: number; ey: number; additive: boolean; moved: boolean };
 let drag: Drag | null = null;
 
@@ -1344,9 +1361,11 @@ function wireViewport(host: HTMLElement) {
       placeAt(w.x, w.y);
       return;
     }
-    if (tool.kind === "zone" || tool.kind === "collision") {
+    if (tool.kind === "zone" || tool.kind === "collision" || tool.kind === "barrier") {
       const w = toWorld(sx, sy);
-      drag = { mode: tool.kind === "zone" ? "zone" : "paint", ax: w.x, ay: w.y, bx: w.x, by: w.y, moved: false };
+      drag = tool.kind === "zone"
+        ? { mode: "zone", ax: w.x, ay: w.y, bx: w.x, by: w.y, moved: false }
+        : { mode: "paint", ax: w.x, ay: w.y, bx: w.x, by: w.y, moved: false, object: tool.kind === "barrier" ? BARRIER_PAINT : COLLISION_PAINT };
       drawOverlay();
       return;
     }
@@ -1402,7 +1421,7 @@ function wireViewport(host: HTMLElement) {
     $("s-cell").textContent = `格 ${Math.floor(cursorWorld.x / CELL)}, ${Math.floor(cursorWorld.y / CELL)}`;
     drawRulers();
     if (tool.kind === "place" || tool.kind === "marker") moveGhost();
-    else if ((tool.kind === "zone" || tool.kind === "collision") && !drag) drawOverlay(); // idle cursor cell
+    else if ((tool.kind === "zone" || tool.kind === "collision" || tool.kind === "barrier") && !drag) drawOverlay(); // idle cursor cell
 
     if (drag?.mode === "pan") {
       if (Math.abs(e.clientX - drag.sx) + Math.abs(e.clientY - drag.sy) > 4) drag.moved = true;
@@ -1457,7 +1476,8 @@ function wireViewport(host: HTMLElement) {
         $("s-hover").textContent = `区域 ${r.R - r.L}×${r.B - r.T} → ${layerNameOf(layerFor(t.object))}`;
       } else if (d.mode === "paint") {
         const c = paintCells(d);
-        $("s-hover").textContent = `${altHeld ? "擦除" : "涂刷"}碰撞 ${c.cx1 - c.cx0 + 1}×${c.cy1 - c.cy0 + 1} 格${altHeld ? "" : "（Alt 擦除）"}`;
+        const what = paintLabel(d.object);
+        $("s-hover").textContent = `${altHeld ? "擦除" : "涂刷"}${what} ${c.cx1 - c.cx0 + 1}×${c.cy1 - c.cy0 + 1} 格${altHeld ? "" : "（Alt 擦除）"}`;
       }
       drawOverlay();
       return;
@@ -1468,7 +1488,7 @@ function wireViewport(host: HTMLElement) {
       drawOverlay();
       return;
     }
-    const h = tool.kind === "hand" || tool.kind === "zone" || tool.kind === "collision" ? null : pick(sx, sy);
+    const h = tool.kind === "hand" || tool.kind === "zone" || tool.kind === "collision" || tool.kind === "barrier" ? null : pick(sx, sy);
     if (h?.inst.instance_id !== hovered) {
       hovered = h?.inst.instance_id ?? null;
       $("s-hover").textContent = h ? `${h.inst.object_definition}  #${h.inst.instance_id}  @${h.inst.x},${h.inst.y}  depth ${h.depth}  [${h.layer.layer_name}]` : "—";
@@ -1640,17 +1660,19 @@ function drawOverlay() {
     } else if (drag?.mode === "paint") {
       const c = paintCells(drag);
       if (c.cx1 >= c.cx0 && c.cy1 >= c.cy0) {
-        const color = altHeld ? 0xffb454 : 0xff3040;
+        const base = drag.object === BARRIER_PAINT ? 0xe89a2c : 0xff3040;
+        const color = altHeld ? (drag.object === BARRIER_PAINT ? 0xffe9b0 : 0xffb454) : base;
         overlay
           .rect(world.x + c.cx0 * CELL * zoom, world.y + c.cy0 * CELL * zoom, (c.cx1 - c.cx0 + 1) * CELL * zoom, (c.cy1 - c.cy0 + 1) * CELL * zoom)
           .fill({ color, alpha: 0.16 })
           .stroke({ color, width: 1.5 });
       }
-    } else if ((tool.kind === "zone" || tool.kind === "collision") && rulerCursor) {
+    } else if ((tool.kind === "zone" || tool.kind === "collision" || tool.kind === "barrier") && rulerCursor) {
       const cx = Math.floor(cursorWorld.x / CELL), cy = Math.floor(cursorWorld.y / CELL);
+      const color = tool.kind === "collision" ? 0xff3040 : tool.kind === "barrier" ? 0xe89a2c : 0x40c0ff;
       overlay
         .rect(world.x + cx * CELL * zoom + 0.5, world.y + cy * CELL * zoom + 0.5, CELL * zoom - 1, CELL * zoom - 1)
-        .stroke({ color: tool.kind === "collision" ? 0xff3040 : 0x40c0ff, width: 1, alpha: 0.75 });
+        .stroke({ color, width: 1, alpha: 0.75 });
     }
   }
   drawRulers();
@@ -1740,6 +1762,7 @@ function wireKeys(host: HTMLElement) {
     if (k === "h") { toggles.hidden.checked = !toggles.hidden.checked; applyVisibility(); return; } // Shift+H
     if (k === "p") { pickTool("place"); return; }
     if (k === "c") { pickTool("collision"); return; }
+    if (k === "b") { pickTool("barrier"); return; }
     if (k === "t") { pickTool("zone"); return; }
     if (k === "m") { pickTool("marker"); return; }
     if (k === "n") { pickTool("note"); return; }
@@ -1860,7 +1883,7 @@ function inspect() {
     const flags: string[] = [];
     if (n.customDraw) flags.push(`<span class="flag">自定义 Draw：编辑器按默认绘制</span>`);
     if (n.kind === "hidden") flags.push(`<span class="flag info">游戏内不可见</span>`);
-    if (n.kind === "collision") flags.push(`<span class="flag info">碰撞戳 ${first.scale_x}×${first.scale_y} 格</span>`);
+    if (n.kind === "collision") flags.push(`<span class="flag info">${paintLabel(obj)}戳 ${first.scale_x}×${first.scale_y} 格</span>`);
     if (!db.objects[obj]) flags.push(`<span class="flag">原版和 assets.json 里都没有这个对象：AddRoomJson 会静默丢弃这个实例</span>`);
     else if (db.modObjects.has(obj)) flags.push(`<span class="flag info">mod 对象（assets.json 注册，生成 C# 先于 AddRoomJson）</span>`);
     facts = `<div class="insp-section kv">
