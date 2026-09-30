@@ -55,6 +55,7 @@ npm run dev         # http://localhost:5178/?room=r_sv_hut_inside1
 | T 区域：拖动 | 拖出一个纯色盒功能对象（oCameraStatic、trigger、surface……与尺寸手柄同一套像素判据，选项栏下拉换对象）；边吸附格线，单击 = 光标下那格 |
 | M 标记：单击 | 放出生点/灯光/路标等功能标记（选项栏下拉换对象），吸附格点 |
 | o_barrier_marker 的呈现 | 它可见且 sprite 是纯绿方块，但游戏里总被它注释的 -y 墙体盖住看不见 → 画布按**隐形对象**处理：真实绿色 sprite 按原样显示（默认显示、Shift+H 可关）、可点选、可八柄 resize——不用菱形替代。被碰撞格压住时先关「碰撞格」再点（通用带状优先级） |
+| o_wall_parent / o_wall_transparent 的呈现 | 隐形墙体逻辑盒（s_pbluebox 蓝盒）按 **UTMT 的图层数组序**合成：钉在所有美术之下、底色填充之上（与网格同带），不再浮在画面上。同足迹的 o_hut_wall 碰撞格降级到墙盒之下（UTMT 同层数组序里墙盒在后 = 在上）；其余碰撞毯仍在美术之上当辅助。在 r_sv_hut_inside2 这类房间里它们被室内 bg sprite 的烘焙暗边整个盖住——画布上看不到是对的，UTMT 里同样看不到 |
 | 功能对象的落点图层 | 自动归位：已有同类的层 → o_hut_wall 进碰撞层 → o_projectileBarrier 进 Projectiles 层（没有则碰撞层） → 相机盒进相机层 → c_zone 进 Surfaces → 当前层 |
 | 「图层」页签（默认） | 每个实例一行 = Photoshop 意义的图层：缩略图、id、位置、Create 深度徽标；拖动行调遮挡顺序（同组 = 同层调序，跨组 = 换层，拖到组头 = 该层最前）；眼睛 = 编辑器内隐藏（不进游戏）；单击选中，双击聚焦 |
 | 「层组」页签 | GameMaker 图层（分组）：放置目标层与整层显隐 |

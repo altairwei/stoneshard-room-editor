@@ -2046,6 +2046,24 @@ const whoText = (by?: string) => (by === BY ? "你" : by ? `${by}` : "有人");
   },
   kindOf(id: number) { return nodeById.get(id)?.kind ?? null; },
   visOf(id: number) { return nodeById.get(id)?.view.visible ?? null; },
+  // deep render-state dump for one instance: ancestor visibility chain, effective
+  // alpha, world bounds, and the view's slot in the root's (sorted) children array
+  // -- built to chase "z says it should draw but the pixels say it doesn't"
+  debugView(id: number) {
+    const n = nodeById.get(id);
+    if (!n || !scene) return null;
+    const vis: boolean[] = [];
+    let wa = 1;
+    for (let c: Container | null = n.view; c; c = c.parent) { vis.push(c.visible); wa *= c.alpha; }
+    const b = n.view.getBounds();
+    return { vis, wa: Math.round(wa * 1000) / 1000, b: [b.x, b.y, b.width, b.height].map((v) => Math.round(v * 10) / 10), ord: scene.root.children.indexOf(n.view), n: scene.root.children.length };
+  },
+  // every top-level child of the scene root in render order (fills and the grid
+  // included -- drawOrder only covers instance nodes)
+  debugRoot() {
+    if (!scene) return null;
+    return scene.root.children.map((c, i) => ({ i, z: c.zIndex, t: c.constructor.name, v: c.visible }));
+  },
   // view internals for render-fidelity pins: child classes of the node's view
   // (a sprite view holds a Sprite, the fallback marker diamond a Graphics + Text)
   viewInfo(id: number) {

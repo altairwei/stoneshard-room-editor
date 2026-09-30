@@ -27,6 +27,13 @@ export type NodeKind = "drawn" | "hidden" | "collision" | "marker";
 // by default, which would hide it exactly like before.
 export const MARKER_OVERLAY_OBJECTS = new Set(["o_barrier_marker"]);
 
+// invisible wall-logic boxes (both visible=false, both s_pbluebox): UTMT composites
+// layers in array order, which puts these BELOW the room's art layers. The hidden
+// overlay band floated them over the picture and tinted the whole interior, which
+// is what looked wrong. They get pinned to the grid's zone after the build loop:
+// above the backdrop fill, below every piece of art. Kind stays "hidden" (Shift+H).
+export const UNDERLAY_OBJECTS = new Set(["o_wall_parent", "o_wall_transparent"]);
+
 export interface InstanceNode {
   kind: NodeKind;
   layerIndex: number;
@@ -130,6 +137,11 @@ export async function buildScene(db: AssetDb, room: Room): Promise<RoomScene> {
   // A conflicting z (a fill in front of art) resolves to under everything.
   let maxFillZ = -1e9;
   let minArtZ = 1e9;
+  // underlay views get their z pinned after the loop (see UNDERLAY_OBJECTS)
+  const underlayViews: Container[] = [];
+  // collision stamps too: any that overlap an underlay wall gets demoted below it
+  // after the loop (the ring cells trace the same footprint as the wall boxes)
+  const collisionViews: Container[] = [];
 
   // preload every page the room touches, so the scene appears in one go
   const frames: Frame[] = [];
@@ -239,7 +251,9 @@ export async function buildScene(db: AssetDb, room: Room): Promise<RoomScene> {
       }
       // overlays sit above the game picture, in a fixed order
       view.zIndex = kind === "drawn" ? -depth : 1e8 + (kind === "hidden" ? 0 : kind === "collision" ? 1 : 2);
-      minArtZ = Math.min(minArtZ, view.zIndex);
+      if (UNDERLAY_OBJECTS.has(obj)) underlayViews.push(view);
+      else minArtZ = Math.min(minArtZ, view.zIndex);
+      if (kind === "collision") collisionViews.push(view);
 
       const node: InstanceNode = {
         kind, layerIndex: li, instIndex: ii, layer, inst, depth, depthWhy, visibleWhy,
@@ -247,6 +261,24 @@ export async function buildScene(db: AssetDb, room: Room): Promise<RoomScene> {
       };
       nodes.push(node);
       root.addChild(view);
+    }
+  }
+
+  // underlay: the grid's zone -- above the backmost fill, below the backmost art
+  const underlayZ = Math.min(maxFillZ + 0.5, minArtZ - 0.5);
+  for (const v of underlayViews) v.zIndex = underlayZ;
+  // the o_hut_wall ring cells trace the exact footprint of the wall boxes; left in
+  // the overlay band they bury the walls (UTMT draws one layer in array order, the
+  // walls last = on top). Demote overlapping stamps to just under the walls so the
+  // teal strips UTMT shows survive; the rest of the carpet stays over the art as
+  // the collision aid. Toggles are untouched: Shift+H hides the walls and the red
+  // ring shows again, the collision toggle still governs the demoted stamps.
+  if (underlayViews.length) {
+    const box = (v: Container) => ({ x: v.x, y: v.y, w: v.children[0].width * Math.abs(v.scale.x), h: v.children[0].height * Math.abs(v.scale.y) });
+    const walls = underlayViews.map(box);
+    for (const v of collisionViews) {
+      const b = box(v);
+      if (walls.some((w) => b.x < w.x + w.w && b.x + b.w > w.x && b.y < w.y + w.h && b.y + b.h > w.y)) v.zIndex = underlayZ - 0.25;
     }
   }
 
