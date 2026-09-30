@@ -709,6 +709,40 @@ def main():
             pg.wait_for_timeout(500)
             pg.keyboard.press("Escape")
 
+            print("barrier marker renders with its real sprite")
+            # o_barrier_marker is visible=true (sprite0: a uniform green square) but
+            # buried under the -y walls it annotates -- the canvas shows it in the
+            # hidden overlay band (faded, default-visible) with its real sprite
+            # NOTE: by must differ from the page's own author ("human") -- the page
+            # ignores WS echoes of its own author, so an HTTP "human" apply would
+            # never rebuild the canvas
+            st, r = call("POST", f"/api/doc/{ROOM}/apply", {
+                "by": "agent-test", "label": "放个屏障标记",
+                "ops": [{"op": "add", "layer": "ForegroundInstances",
+                         "inst": {"object_definition": "o_barrier_marker", "x": 52, "y": 52,
+                                  "scale_x": 2, "scale_y": 3}}]})
+            bmid = r["ids"][0] if st == 200 else None
+            check(bmid is not None, "added an o_barrier_marker")
+            if bmid:
+                # ws -> refetch -> rebuild, polled like the other async chains here
+                try:
+                    pg.wait_for_function(f"svre.kindOf({bmid}) === 'hidden'", timeout=10000)
+                    ok_kind = True
+                except Exception:
+                    ok_kind = False
+                check(ok_kind, "barrier marker joins the hidden overlay band")
+                vi = pg.evaluate(f"svre.viewInfo({bmid})")
+                check(vi is not None and vi["kids"] == ["Sprite"] and vi["a"] == 0.45,
+                      f"marker view = real sprite, faded, no label/diamond ({vi})")
+                # the spot sits under a giant o_hut_wall: the collision band outranks
+                # the hidden band in pick, like for every covered object
+                check(pg.evaluate(f"svre.pickPoint({bmid})") is None, "collision stamps outrank it in pick (band order)")
+                pg.evaluate("svre.set('collision', false)")
+                check(pg.evaluate(f"svre.pickPoint({bmid})") is not None, "clickable once the collision band is off (documented workflow)")
+                pg.evaluate("svre.set('collision', true)")
+                st, r = call("POST", f"/api/doc/{ROOM}/undo", {"by": "agent-test"})
+                check(st == 200, "agent undo removed the barrier marker")
+
             print("instance layers tab")
             pg.click(".tabs button[data-tab=insts]")
             pg.wait_for_timeout(200)

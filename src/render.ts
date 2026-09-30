@@ -19,6 +19,14 @@ import { CELL, LayerType, gmColor, type Room, type RoomInstance, type RoomLayer 
 
 export type NodeKind = "drawn" | "hidden" | "collision" | "marker";
 
+// o_barrier_marker is visible=true with a real sprite (sprite0: a uniform green
+// square), but it exists to annotate fade walls and sits under their -y art -- in
+// game you never see it, and the same depth rules buried it on the canvas. Show it
+// in the hidden overlay band (faded, visible by default, resize handles kept) with
+// its real sprite, not a stand-in. NOT the marker band: the markers toggle is off
+// by default, which would hide it exactly like before.
+export const MARKER_OVERLAY_OBJECTS = new Set(["o_barrier_marker"]);
+
 export interface InstanceNode {
   kind: NodeKind;
   layerIndex: number;
@@ -195,7 +203,10 @@ export async function buildScene(db: AssetDb, room: Room): Promise<RoomScene> {
 
       let kind: NodeKind = "marker";
       let view: Container | null = null;
-      if (spriteName && COLLISION_SPRITES.has(spriteName)) {
+      if (MARKER_OVERLAY_OBJECTS.has(obj)) {
+        kind = "hidden";
+        view = spriteName ? await spriteView(db, spriteName, inst.image_index) : markerView(obj.replace(/^o_/, ""));
+      } else if (spriteName && COLLISION_SPRITES.has(spriteName)) {
         kind = "collision";
         view = new Container();
         view.addChild(

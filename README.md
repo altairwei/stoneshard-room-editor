@@ -54,6 +54,7 @@ npm run dev         # http://localhost:5178/?room=r_sv_hut_inside1
 | B 屏障涂刷：拖动 / Alt+拖动 | 刷/擦 o_projectileBarrier 屏障格（挡箭/投掷物；按原版 sprite 显示，与 UTMT 一致；与碰撞格按家族分别去重，可共存同格） |
 | T 区域：拖动 | 拖出一个纯色盒功能对象（oCameraStatic、trigger、surface……与尺寸手柄同一套像素判据，选项栏下拉换对象）；边吸附格线，单击 = 光标下那格 |
 | M 标记：单击 | 放出生点/灯光/路标等功能标记（选项栏下拉换对象），吸附格点 |
+| o_barrier_marker 的呈现 | 它可见且 sprite 是纯绿方块，但游戏里总被它注释的 -y 墙体盖住看不见 → 画布按**隐形对象**处理：真实绿色 sprite 淡出（默认显示、Shift+H 可关）、可点选、可八柄 resize——不用菱形替代。被碰撞格压住时先关「碰撞格」再点（通用带状优先级） |
 | 功能对象的落点图层 | 自动归位：已有同类的层 → o_hut_wall 进碰撞层 → o_projectileBarrier 进 Projectiles 层（没有则碰撞层） → 相机盒进相机层 → c_zone 进 Surfaces → 当前层 |
 | 「图层」页签（默认） | 每个实例一行 = Photoshop 意义的图层：缩略图、id、位置、Create 深度徽标；拖动行调遮挡顺序（同组 = 同层调序，跨组 = 换层，拖到组头 = 该层最前）；眼睛 = 编辑器内隐藏（不进游戏）；单击选中，双击聚焦 |
 | 「层组」页签 | GameMaker 图层（分组）：放置目标层与整层显隐 |

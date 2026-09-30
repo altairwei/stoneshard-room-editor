@@ -2045,6 +2045,13 @@ const whoText = (by?: string) => (by === BY ? "你" : by ? `${by}` : "有人");
   },
   kindOf(id: number) { return nodeById.get(id)?.kind ?? null; },
   visOf(id: number) { return nodeById.get(id)?.view.visible ?? null; },
+  // view internals for render-fidelity pins: child classes of the node's view
+  // (a sprite view holds a Sprite, the fallback marker diamond a Graphics + Text)
+  viewInfo(id: number) {
+    const n = nodeById.get(id);
+    if (!n) return null;
+    return { z: n.view.zIndex, a: n.view.alpha, kids: n.view.children.map((c) => c.constructor.name) };
+  },
   // the canvas's live draw order, bottom-to-top: pixi's own children array (sorted
   // in place at render time) mapped back to instance ids, with the view's zIndex
   drawOrder() {
