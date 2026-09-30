@@ -223,7 +223,7 @@ export function scanModAssets(modDir: string, opts: { vanilla?: VanillaNames } =
     if (o.parent && !manifest.objects[o.parent] && !vanilla?.objects.has(o.parent))
       warnings.push(`assets.json: ${name} 的 parent ${o.parent} 不在原版对象表里`);
     if (o.visible === undefined)
-      warnings.push(`assets.json: ${name} 没写 visible（MSL 的 AddObject 默认 false，多半要 true）`);
+      warnings.push(`assets.json: ${name} 没写 visible（MSL 的 AddObject 默认 false，通常应为 true）`);
   }
 
   // the generated C# self-heals: rewrite it whenever it disagrees with the manifest, so

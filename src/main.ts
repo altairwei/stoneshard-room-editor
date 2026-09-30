@@ -266,7 +266,7 @@ async function refreshRooms(selectAfter?: string) {
   const sel = $<HTMLSelectElement>("room-select");
   sel.innerHTML = rooms
     .map((r) => {
-      const marks = `${r.hasProject ? "" : " · 未导入"}${r.dirty ? " ●" : ""}${r.drift ? " ⚠漂移" : ""}`;
+      const marks = `${r.hasProject ? "" : " · 未导入"}${r.dirty ? " ●" : ""}${r.drift ? " ⚠ 漂移" : ""}`;
       return `<option value="${esc(r.name)}">${esc(r.name)}${marks}</option>`;
     })
     .join("");
@@ -281,13 +281,13 @@ async function openRoom(name: string, opts: { silent?: boolean } = {}) {
   const entry = rooms.find((r) => r.name === name);
   if (entry && !entry.hasProject) {
     // a compiled room with no project yet: offer to adopt it into a project
-    if (opts.silent || !confirm(`${name} 还没有工程。从 Codes/${name}.gml 导入（基底自动推断）？`)) {
+    if (opts.silent || !confirm(`房间 ${name} 尚未导入。是否从 Codes/${name}.gml 创建工程？基底将自动推断。`)) {
       $<HTMLSelectElement>("room-select").value = doc?.name ?? "";
       return;
     }
     try {
       const r = await api("/api/import", "POST", { name, by: BY });
-      toast(`已导入 ${name}：基底 ${r.base}，${r.ops} 个操作`);
+      toast(`已导入 ${name}：基底 ${r.base}，${r.ops} 条操作`);
     } catch (e) {
       alert(`导入失败：${(e as Error).message}`);
       $<HTMLSelectElement>("room-select").value = doc?.name ?? "";
@@ -366,7 +366,7 @@ async function commitNow(label: string, ops: Op[]): Promise<boolean> {
     return true;
   } catch (e) {
     if (e instanceof ApiError && e.status === 409) {
-      toast(`冲突：${e.message} — 已刷新到最新状态`);
+      toast(`冲突：${e.message}，已刷新到最新状态`);
       await syncDoc();
       return false;
     }
@@ -392,13 +392,13 @@ async function compileDoc() {
   try {
     const r = await api(`/api/doc/${doc.name}/compile`, "POST", {});
     lintFindings = r.findings ?? [];
-    toast(`已编译 ${r.file}（rev ${r.rev}） → ${r.roomsCs}${lintFindings.length ? ` · ⚠ ${lintFindings.length} 条规则提示` : ""}`);
+    toast(`已编译 ${r.file}（r${r.rev}），已同步 ${r.roomsCs}${lintFindings.length ? ` · ⚠ ${lintFindings.length} 条检查警告` : ""}`);
     await syncDoc();
   } catch (e) {
     if (e instanceof ApiError && e.status === 409) {
       if (Array.isArray(e.detail)) {
-        alert(`日志在基底上重放不通过，先修这些问题：\n\n${(e.detail as ReplayProblem[]).map((p) => `rev ${p.rev}: ${p.message}`).join("\n")}`);
-      } else if (confirm(`${e.message}\n\n确定 = 采纳磁盘上的外部改动（记成一条 external 日志）\n取消 = 不动`)) {
+        alert(`日志无法在基底上完整重放，请先处理以下问题：\n\n${(e.detail as ReplayProblem[]).map((p) => `r${p.rev}：${p.message}`).join("\n")}`);
+      } else if (confirm(`${e.message}\n\n「确定」采纳磁盘上的外部改动（记入一条 external 日志）；「取消」不做改动。`)) {
         await adoptDoc();
         await compileDoc();
       }
@@ -410,7 +410,7 @@ async function adoptDoc() {
   if (!doc) return;
   try {
     const r = await api(`/api/doc/${doc.name}/adopt`, "POST", { by: "external" });
-    toast(r.ops ? `已采纳外部改动：${r.ops} 个操作记入日志` : "磁盘文件与当前状态一致");
+    toast(r.ops ? `已采纳外部改动：${r.ops} 条操作已记入日志` : "磁盘文件与当前状态一致");
     await syncDoc();
     await refreshRooms(doc.name);
   } catch (e) {
@@ -479,9 +479,9 @@ function updateChrome() {
   document.title = `${dirty ? "● " : ""}${room().name} — SV Room Editor`;
   const counts = scene!.nodes.reduce<Record<string, number>>((a, n) => ((a[n.kind] = (a[n.kind] ?? 0) + 1), a), {});
   $("load-state").innerHTML =
-    `${esc(room().name)} · rev ${doc.rev}${doc.compiledRev !== null ? ` → 编译于 ${doc.compiledRev}` : " · 从未编译"}` +
+    `${esc(room().name)} · r${doc.rev}${doc.compiledRev !== null ? ` · 编译于 r${doc.compiledRev}` : " · 从未编译"}` +
     ` · ${room().width}×${room().height} · 可见 ${counts.drawn ?? 0} · 隐形 ${counts.hidden ?? 0} · 碰撞 ${counts.collision ?? 0} · 标记 ${counts.marker ?? 0}` +
-    (lintFindings.length ? ` · <span style="color:var(--warn)" title="${esc(lintFindings.map((f) => f.message).join("\n"))}">⚠ ${lintFindings.length} 条规则提示</span>` : "");
+    (lintFindings.length ? ` · <span style="color:var(--warn)" title="${esc(lintFindings.map((f) => f.message).join("\n"))}">⚠ ${lintFindings.length} 条检查警告</span>` : "");
 
   // badge = entries arrived since the history tab was last open
   const unseen = doc.log.filter((e) => e.rev > lastSeenRev).length;
@@ -492,13 +492,13 @@ function updateChrome() {
   const banner = $("banner");
   let html = "";
   if (doc.drift)
-    html = `⚠ 磁盘上的 rooms/${esc(doc.name)}.compiled.json 在上次编译后被外部改过（生成器？手工？）。编译前要么采纳它，要么强制覆盖。<button data-act="adopt">采纳外部改动</button>`;
+    html = `⚠ 磁盘上的 rooms/${esc(doc.name)}.compiled.json 在上次编译后被外部修改（生成器或手工编辑）。编译前请先采纳，或强制覆盖。<button data-act="adopt">采纳外部改动</button>`;
   else if (doc.baseChanged)
-    html = `⚠ 基底房间变了（游戏更新？）。日志仍照常重放${doc.problems.length ? `，但有 ${doc.problems.length} 个操作对不上` : ""}。`;
+    html = `⚠ 基底房间已变更（可能是游戏更新）。日志仍会照常重放${doc.problems.length ? `，但有 ${doc.problems.length} 条操作无法对应` : ""}。`;
   else if (doc.problems.length)
-    html = `⚠ ${doc.problems.length} 个日志条目在基底上重放失败，编译会被拒绝。`;
+    html = `⚠ ${doc.problems.length} 条日志无法在基底上重放，编译将被拒绝。`;
   else if (entry?.generatedBy.length)
-    html = `这个房间曾被 ${esc(entry.generatedBy.join("、"))} 生成。工程已接管内容——别再跑生成器，它会盖掉编译产物。`;
+    html = `此房间曾由 ${esc(entry.generatedBy.join("、"))} 生成。工程已接管其内容，请勿再运行生成器，否则会覆盖编译产物。`;
   banner.hidden = !html;
   banner.innerHTML = html;
   banner.querySelector('button[data-act="adopt"]')?.addEventListener("click", adoptDoc);
@@ -515,7 +515,7 @@ function renderLayerList() {
       const inst = L.layer_type === LayerType.Instances;
       const n = inst ? L.layer_data.instances.length : "";
       const cls = [layerOff.has(i) ? "off" : "", i === activeLayer ? "active" : "", inst ? "" : "nonedit"].join(" ");
-      return `<li data-i="${i}" class="${cls}" title="${inst ? "单击设为当前图层（新对象放这里）" : "非实例图层，只读"}">
+      return `<li data-i="${i}" class="${cls}" title="${inst ? "单击设为当前图层（新对象将放入此层）" : "非实例图层，只读"}">
         <span class="eye" data-eye="${i}" title="显示/隐藏">${layerOff.has(i) ? ICONS.eyeOff : ICONS.eye}</span>
         <span class="name">${esc(L.layer_name)}${L.is_visible ? "" : ' <span class="tag">游戏内隐藏</span>'}</span>
         <span class="meta">${typeName[L.layer_type] ?? L.layer_type} ${n} · d${L.layer_depth}</span></li>`;
@@ -557,18 +557,18 @@ function renderInstList() {
     const insts = (L.layer_data.instances as RoomInstance[]).slice().reverse(); // front-most first
     const shown = insts.filter((inst) => !q || (inst.object_definition ?? "").toLowerCase().includes(q) || String(inst.instance_id).includes(q));
     if (q && !shown.length) continue;
-    rows.push(`<li class="grp${i === activeLayer ? " active" : ""}" data-gi="${i}" title="单击设为放置目标层；把实例拖到这一行 = 移到该层最前">
+    rows.push(`<li class="grp${i === activeLayer ? " active" : ""}" data-gi="${i}" title="单击设为放置目标层；将实例拖到此行即移至该层最前">
       <span class="gname">${esc(L.layer_name)}</span><span class="gmeta">d${L.layer_depth} · ${insts.length}</span></li>`);
     for (const inst of shown) {
       const n = nodeById.get(inst.instance_id);
       const obj = inst.object_definition ?? "";
       const badge = n && n.depth !== L.layer_depth ? `<span class="depth-badge" title="${esc(n.depthWhy)}">d${n.depth}</span>` : "";
       rows.push(`<li class="inst${selection.has(inst.instance_id) ? " sel" : ""}${hiddenInsts.has(inst.instance_id) ? " off" : ""}"
-        data-id="${inst.instance_id}" draggable="true" title="${esc(obj)} #${inst.instance_id}&#10;${esc(n?.depthWhy ?? "")}&#10;拖动调整遮挡顺序（同组 = 同层调序，跨组 = 换层）">
+        data-id="${inst.instance_id}" draggable="true" title="${esc(obj)} #${inst.instance_id}&#10;${esc(n?.depthWhy ?? "")}&#10;拖动调整遮挡顺序（组内为同层调序，跨组为更换图层）">
         <span class="grip">${ICONS.grip}</span>${thumbHtml(db, obj, inst.image_index, 28)}
         <div class="itext"><div class="iname">${esc(obj)} <span class="iid">#${inst.instance_id}</span>${badge}</div>
         <div class="imeta">@${inst.x},${inst.y}${inst.scale_x !== 1 || inst.scale_y !== 1 ? ` · ${inst.scale_x}×${inst.scale_y}` : ""}</div></div>
-        <span class="eye" data-eye="${inst.instance_id}" title="编辑器内隐藏（不进游戏）">${hiddenInsts.has(inst.instance_id) ? ICONS.eyeOff : ICONS.eye}</span></li>`);
+        <span class="eye" data-eye="${inst.instance_id}" title="编辑器内隐藏（不影响游戏）">${hiddenInsts.has(inst.instance_id) ? ICONS.eyeOff : ICONS.eye}</span></li>`);
     }
   }
   const list = $("inst-list");
@@ -764,9 +764,9 @@ function renderHistory() {
     .reverse()
     .map((e) => {
       const time = e.at.slice(11, 19);
-      return `<li data-rev="${e.rev}" class="${e.undoOf !== undefined ? "undo" : ""}" title="点击高亮这次改动碰到的实例">
+      return `<li data-rev="${e.rev}" class="${e.undoOf !== undefined ? "undo" : ""}" title="点击高亮本次改动涉及的实例">
         <div class="h-top">${whoBadge(e.by)}<span class="h-label">${esc(e.label || "(未命名)")}</span><span class="h-meta">r${e.rev} · ${time}</span></div>
-        <div class="h-meta">${e.ops} 个操作${e.ids.length ? ` · id ${e.ids.slice(0, 8).join(",")}${e.ids.length > 8 ? "…" : ""}` : ""}</div>
+        <div class="h-meta">${e.ops} 条操作${e.ids.length ? ` · id ${e.ids.slice(0, 8).join(",")}${e.ids.length > 8 ? "…" : ""}` : ""}</div>
         ${e.note ? `<div class="h-note">${esc(e.note)}</div>` : ""}</li>`;
     })
     .join("");
@@ -828,7 +828,7 @@ function rescaleNotes() {
 
 async function addNoteAt(wx: number, wy: number) {
   if (!doc) return;
-  const text = prompt(`便签 @ ${Math.round(wx)},${Math.round(wy)}（人类和 agent 都会看到）`, "");
+  const text = prompt(`便签（${Math.round(wx)}, ${Math.round(wy)}）：人类和 agent 均可见`, "");
   if (!text?.trim()) return;
   await api(`/api/doc/${doc.name}/notes`, "POST", { by: BY, x: Math.round(wx), y: Math.round(wy), text: text.trim() });
   doc = await api(`/api/doc/${doc.name}`);
@@ -943,7 +943,7 @@ function placeAt(wx: number, wy: number) {
   const li = tool.kind === "marker" ? layerFor(object) : activeLayer;
   const L = room().layers[li];
   if (L?.layer_type !== LayerType.Instances) {
-    alert("先在「层组」页签里选一个实例图层");
+    alert("请先在「层组」页签中选择一个实例图层");
     return;
   }
   const verb = tool.kind === "marker" ? "标记" : "放置";
@@ -1034,21 +1034,21 @@ function renderToolExtras() {
     box.appendChild(s);
   };
   if (tool.kind === "collision") {
-    hint(`${COLLISION_PAINT} · 拖出矩形 · → ${layerNameOf(layerFor(COLLISION_PAINT))}`);
+    hint(`${COLLISION_PAINT} · 拖出矩形 · 放入 ${layerNameOf(layerFor(COLLISION_PAINT))} 层`);
     return;
   }
   if (tool.kind === "barrier") {
-    hint(`${BARRIER_PAINT} · 拖动=涂刷 · Alt+拖动=擦除 · → ${layerNameOf(layerFor(BARRIER_PAINT))}`);
+    hint(`${BARRIER_PAINT} · 拖动涂刷，Alt+拖动擦除 · 放入 ${layerNameOf(layerFor(BARRIER_PAINT))} 层`);
     return;
   }
   if (tool.kind === "zone") {
     const cur0 = tool.object; // const: `tool` is a mutable module var, closures un-narrow it
     const sel = document.createElement("select");
-    sel.title = "画哪个对象：纯色盒 sprite 的功能对象（与尺寸手柄同一套像素判据）";
+    sel.title = "选择要绘制的对象：具有纯色盒 sprite 的功能对象（与尺寸手柄同一套像素判据）";
     sel.innerHTML = `<option>${esc(cur0)}</option>`;
     sel.disabled = true;
     box.appendChild(sel);
-    hint(`拖出矩形 · → ${layerNameOf(layerFor(cur0))}`);
+    hint(`拖出矩形 · 放入 ${layerNameOf(layerFor(cur0))} 层`);
     void zoneObjects().then((names) => {
       if (!names.includes(cur0)) names.unshift(cur0);
       sel.innerHTML = names.map((n) => `<option ${n === cur0 ? "selected" : ""}>${esc(n)}</option>`).join("");
@@ -1062,11 +1062,11 @@ function renderToolExtras() {
     const names = markerObjects();
     if (!names.includes(cur0)) names.unshift(cur0);
     const sel = document.createElement("select");
-    sel.title = "放哪个标记：出生点 / 灯光 / 区域标记等功能对象";
+    sel.title = "选择要放置的标记：出生点、灯光、区域标记等功能对象";
     sel.innerHTML = names.map((n) => `<option ${n === cur0 ? "selected" : ""}>${esc(n)}</option>`).join("");
     sel.onchange = () => setTool({ kind: "marker", object: sel.value });
     box.appendChild(sel);
-    hint(`单击放置 · → ${layerNameOf(layerFor(cur0))}`);
+    hint(`单击放置 · 放入 ${layerNameOf(layerFor(cur0))} 层`);
   }
 }
 
@@ -1134,7 +1134,7 @@ function paintCommit(d: { ax: number; ay: number; bx: number; by: number; object
   };
   if (erase) {
     const hits = stamps.filter(inRect);
-    if (!hits.length) { $("s-hover").textContent = `这里没有${what}格可擦`; drawOverlay(); return; }
+    if (!hits.length) { $("s-hover").textContent = `此处没有可擦除的${what}格`; drawOverlay(); return; }
     commit(`擦除${what} ${hits.length} 格`, hits.map((i) => ({ op: "delete", id: i.instance_id, expect: { object_definition: i.object_definition, x: i.x, y: i.y } })));
     return;
   }
@@ -1144,7 +1144,7 @@ function paintCommit(d: { ax: number; ay: number; bx: number; by: number; object
   for (let cx = cx0; cx <= cx1; cx++)
     for (let cy = cy0; cy <= cy1; cy++)
       if (!taken.has(`${cx},${cy}`)) ops.push({ op: "add", layer, inst: { object_definition: object, x: cx * CELL, y: cy * CELL } as RoomInstance });
-  if (!ops.length) { $("s-hover").textContent = `这些格已有${what}`; drawOverlay(); return; }
+  if (!ops.length) { $("s-hover").textContent = `所选格子已存在${what}`; drawOverlay(); return; }
   commit(`涂刷${what} ${ops.length} 格`, ops);
 }
 
@@ -1447,7 +1447,7 @@ function wireViewport(host: HTMLElement) {
       const v = resizeCompute(d, w.x, w.y);
       n.view.scale.set(v.scale_x, v.scale_y);
       n.view.position.set(v.x, v.y);
-      $("s-hover").textContent = `调整尺寸 ${Math.round(v.w)}×${Math.round(v.h)}${snapOn() ? "（吸附整格，Alt 自由）" : ""}`;
+      $("s-hover").textContent = `调整尺寸 ${Math.round(v.w)}×${Math.round(v.h)}${snapOn() ? "（已吸附整格，按住 Alt 自由调整）" : ""}`;
       drawOverlay();
       return;
     }
@@ -1485,7 +1485,7 @@ function wireViewport(host: HTMLElement) {
       } else if (d.mode === "paint") {
         const c = paintCells(d);
         const what = paintLabel(d.object);
-        $("s-hover").textContent = `${altHeld ? "擦除" : "涂刷"}${what} ${c.cx1 - c.cx0 + 1}×${c.cy1 - c.cy0 + 1} 格${altHeld ? "" : "（Alt 擦除）"}`;
+        $("s-hover").textContent = `${altHeld ? "擦除" : "涂刷"}${what} ${c.cx1 - c.cx0 + 1}×${c.cy1 - c.cy0 + 1} 格${altHeld ? "" : "（按住 Alt 擦除）"}`;
       }
       drawOverlay();
       return;
@@ -1866,7 +1866,7 @@ function inspect() {
   const at = doc ? instsOf(selection) : [];
   syncInstSelection(false);
   if (!doc || at.length === 0) {
-    body.innerHTML = `<span class="muted">点选一个实例；Shift 加选，空白处拖动框选。<br><br>工具：V 选择 · H 抓手 · P 放置 · C 碰撞涂刷 · T 区域 · M 标记 · N 便签。<br>「图层」页签里每个实例一行，拖动调整遮挡顺序。</span>`;
+    body.innerHTML = `<span class="muted">单击选择实例；Shift 加选，空白处拖动框选。<br><br>工具：V 选择 · H 抓手 · P 放置 · C 碰撞涂刷 · T 区域 · M 标记 · N 便签。<br>「图层」页签中每个实例一行，拖动调整遮挡顺序。</span>`;
     return;
   }
   const insts = at.map((a) => a.inst);
@@ -1895,7 +1895,7 @@ function inspect() {
     const flags: string[] = [];
     if (n.customDraw) flags.push(`<span class="flag">自定义 Draw：编辑器按默认绘制</span>`);
     if (n.kind === "hidden") flags.push(`<span class="flag info">游戏内不可见</span>`);
-    if (n.kind === "collision") flags.push(`<span class="flag info">${paintLabel(obj)}戳 ${first.scale_x}×${first.scale_y} 格</span>`);
+    if (n.kind === "collision") flags.push(`<span class="flag info">${paintLabel(obj)} ${first.scale_x}×${first.scale_y} 格</span>`);
     if (!db.objects[obj]) flags.push(`<span class="flag">原版和 assets.json 里都没有这个对象：AddRoomJson 会静默丢弃这个实例</span>`);
     else if (db.modObjects.has(obj)) flags.push(`<span class="flag info">mod 对象（assets.json 注册，生成 C# 先于 AddRoomJson）</span>`);
     facts = `<div class="insp-section kv">
@@ -1967,8 +1967,8 @@ async function openNewDialog() {
   $("nd-ok").onclick = async (e) => {
     e.preventDefault();
     const name = nameInp.value.trim();
-    if (!/^r_[A-Za-z0-9_]+$/.test(name)) { alert("房间名形如 r_sv_something"); return; }
-    if (!baseSel.value) { alert("选一个原版房间做基底"); return; }
+    if (!/^r_[A-Za-z0-9_]+$/.test(name)) { alert("房间名格式不正确，应形如 r_sv_something"); return; }
+    if (!baseSel.value) { alert("请选择一个原版房间作为基底"); return; }
     try {
       await api("/api/create", "POST", { name, base: baseSel.value, keep: $<HTMLSelectElement>("nd-keep").value, by: BY });
     } catch (err) {
@@ -1992,7 +1992,7 @@ function wireWs() {
     switch (e.type) {
       case "change":
         if (e.entry?.by === BY) break; // our own commit already replayed it
-        toast(`${whoText(e.entry?.by)}：${e.entry?.label ?? "改了房间"}（r${e.entry?.rev}）`);
+        toast(`${whoText(e.entry?.by)}：${e.entry?.label ?? "修改了房间"}（r${e.entry?.rev}）`);
         await syncDoc();
         break;
       case "undo":
@@ -2007,7 +2007,7 @@ function wireWs() {
         break;
       case "notes":
         if (e.by === BY) break;
-        toast(`${whoText(e.by)} 改了便签`);
+        toast(`${whoText(e.by)} 修改了便签`);
         doc = await api(`/api/doc/${doc.name}`);
         renderHistory();
         drawNotes();
@@ -2018,7 +2018,7 @@ function wireWs() {
         drawOverlay();
         break;
       case "reloaded":
-        toast("工程文件在磁盘上变了（git？另一个服务？），已重新加载");
+        toast("工程文件在磁盘上发生变化（git 操作或其他服务），已重新加载");
         await syncDoc();
         break;
     }

@@ -353,7 +353,7 @@ export class Store {
     }
     if (!verifyDiff(d.room, target, ops)) throw new HttpError(500, "diff did not reproduce the file; refusing");
     if (ops.length) {
-      const entry: Entry = { rev: d.project.nextRev++, by, at: now(), label: `编辑器外的改动（${ops.length} 个操作）`, ops };
+      const entry: Entry = { rev: d.project.nextRev++, by, at: now(), label: `编辑器外的改动（${ops.length} 条操作）`, ops };
       d.project.log.push(entry);
       d.room = target;
       this.emit({ type: "change", room: name, entry: summarize(entry) });
@@ -535,7 +535,7 @@ function defaultLabel(ops: Op[]): string {
     const k = o.op === "relayer" && (o.expect as { layer?: string } | undefined)?.layer === o.layer ? "reorder" : o.op;
     kinds[k] = (kinds[k] ?? 0) + 1;
   }
-  const zh: Record<string, string> = { add: "添加", delete: "删除", set: "修改", relayer: "换图层", reorder: "调整顺序", room: "改房间属性", layer: "改图层属性" };
+  const zh: Record<string, string> = { add: "添加", delete: "删除", set: "修改", relayer: "更换图层", reorder: "调整顺序", room: "修改房间属性", layer: "修改图层属性" };
   return Object.entries(kinds).map(([k, n]) => `${zh[k] ?? k} ${n}`).join("，");
 }
 
