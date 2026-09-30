@@ -120,11 +120,11 @@ main {
    图标在下、两字标签在上（垂直堆叠），栏宽恒定，任何视口都显示文字。 */
 #toolbox {
   background: var(--bg-2); border-right: 1px solid var(--line-2);
-  display: flex; flex-direction: column; align-items: stretch; padding: 6px 4px; gap: 2px;
+  display: flex; flex-direction: column; align-items: stretch; padding: 7px 4px; gap: 4px;
 }
 #toolbox button {
-  width: auto; padding: 5px 0 4px;
-  display: flex; flex-direction: column; align-items: center; gap: 3px;
+  width: auto; padding: 6px 0 5px;
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
   background: transparent; border: 1px solid transparent; border-radius: 7px; color: var(--muted);
 }
 #toolbox button:hover { background: var(--hover); color: var(--text); }
@@ -135,7 +135,7 @@ main {
 #toolbox button svg { width: 16px; height: 16px; display: block; }
 #toolbox button i { display: inline-flex; }
 #toolbox button .txt { display: block; font-size: 11px; line-height: 1; white-space: nowrap; }
-#toolbox .tsep { width: auto; height: 1px; background: var(--line); margin: 3px 6px; flex: none; }
+#toolbox .tsep { width: auto; height: 1px; background: var(--line); margin: 1px 8px; flex: none; }
 
 /* ---------------- canvas area + rulers ---------------- */
 #canvas-area {
