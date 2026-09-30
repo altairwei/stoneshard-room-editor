@@ -221,20 +221,25 @@ def main():
 
             print("drag-move goes through the server")
             pg.evaluate("svre.set('collision', false)")
-            t0 = pg.evaluate("svre.pickTarget()")
-            check(t0 is not None, "pickTarget found a drawn instance")
-            # center the target at a known zoom so 30 screen px == 15 world px -> snaps to 26
-            wp = pg.evaluate(f"(() => {{ const r = svre.doc.room; for (const L of r.layers) for (const i of (L.layer_data.instances ?? [])) if (i.instance_id === {t0['id']}) return {{x: i.x, y: i.y}}; }})()")
-            pg.evaluate(f"svre.focus({wp['x']}, {wp['y']}, 2)")
+            # drag an ON-GRID drawn instance: the landing snap absorbs any off-grid
+            # origin (the player sits at y=273, a half cell -- dragging it anywhere
+            # would snap y to a corner), which would break the (+26, 0) expectation.
+            # The wall/fence overlays at (260,208) are grid-aligned and pickable.
+            pg.evaluate("svre.focus(364, 260, 2)")
             pg.wait_for_timeout(150)
-            t = pg.evaluate("svre.pickTarget()")
+            tid = None
+            for cand in (117541, 117542):
+                pt = pg.evaluate(f"svre.pickPoint({cand})")
+                if pt:
+                    tid = cand
+                    break
+            check(tid is not None, "an on-grid drawn instance is clickable")
             box = pg.locator("#stage").bounding_box()
-            sx, sy = box["x"] + t["x"], box["y"] + t["y"]
+            sx, sy = box["x"] + pt["x"], box["y"] + pt["y"]
             pg.mouse.click(sx, sy)
             pg.wait_for_timeout(200)
             sel = pg.evaluate("svre.selection")
-            check(len(sel) == 1, f"click selects one instance ({sel})")
-            tid = sel[0]
+            check(len(sel) == 1 and sel[0] == tid, f"click selects the on-grid instance ({sel})")
             src = next(i for L in json.loads(original)["layers"] for i in L["layer_data"].get("instances", []) if i["instance_id"] == tid)
             pg.mouse.move(sx, sy)
             pg.mouse.down()
