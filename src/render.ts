@@ -20,7 +20,7 @@
 // spawns, depth changed outside Create.
 import { Container, Graphics, Sprite, Text } from "pixi.js";
 import type { AssetDb, Frame } from "./assets";
-import { CELL, LayerType, gmColor, type Room, type RoomInstance, type RoomLayer } from "./core/room.ts";
+import { allInstances, CELL, LayerType, gmColor, type Room, type RoomInstance, type RoomLayer } from "./core/room.ts";
 
 export type NodeKind = "drawn" | "hidden" | "collision" | "marker";
 
@@ -131,7 +131,15 @@ export async function buildScene(db: AssetDb, room: Room): Promise<RoomScene> {
   const nodes: InstanceNode[] = [];
   // creation order breaks same-depth draw ties (later = on top); the room's
   // game_objects list is that order, layer arrays are not.
-  const creationOrder = new Map(room.game_objects.map((g, i) => [g.instance_id, i]));
+  const creationOrder = new Map<number, number>();
+  {
+    // game_objects is the source of truth for creation order (MSL imports it
+    // positionally). Rooms that came in via a diff replay may not have one --
+    // derive creation order from the layer arrays in that case, which is what
+    // AddRoomJson ends up with for a GMS1-style file anyway.
+    if (room.game_objects?.length) room.game_objects.forEach((g, i) => creationOrder.set(g.instance_id, i));
+    else for (const e of allInstances(room)) creationOrder.set(e.inst.instance_id, creationOrder.size);
+  }
   const TIE = 1e-4; // index epsilon: a same-depth pair can never outrank a 1px depth gap
   // the grid is a background, not an overlay: it must sit above the room's flat colour
   // fills (the void around interiors -- those are opaque, so below them it would be
