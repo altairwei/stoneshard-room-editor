@@ -233,11 +233,11 @@ main {
 
 /* ---------------- palette ---------------- */
 .palette-head { position: sticky; top: 0; z-index: 1; padding: 8px; background: var(--panel); border-bottom: 1px solid var(--line-2); }
-#palette-q {
+#palette-q, #insts-q {
   width: 100%; background: #1e1e21; color: var(--text);
   border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; font: inherit;
 }
-#palette-q:focus { outline: none; border-color: var(--accent-strong); box-shadow: 0 0 0 2px rgba(108, 182, 255, .18); }
+#palette-q:focus, #insts-q:focus { outline: none; border-color: var(--accent-strong); box-shadow: 0 0 0 2px rgba(108, 182, 255, .18); }
 #palette-families { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
 #palette-families button { padding: 2px 9px; font-size: 11px; border-radius: 10px; background: #1e1e21; }
 #palette-families button.on { background: #24517e; border-color: #3d7ec2; color: #fff; }
