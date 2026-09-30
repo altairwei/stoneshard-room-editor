@@ -157,8 +157,9 @@ main {
   display: flex; flex-direction: column; min-height: 0;
 }
 .dock-panel { display: flex; flex-direction: column; min-height: 0; }
-#p-props { flex: 0 1 auto; max-height: 52%; border-bottom: 1px solid var(--line-2); }
-#p-props.collapsed { flex: none; max-height: none; }
+/* 属性面板固定高度，不随选中对象的内容多少起伏 */
+#p-props { flex: none; height: 45%; border-bottom: 1px solid var(--line-2); }
+#p-props.collapsed { height: auto; }
 .dock-head {
   display: flex; align-items: center; gap: 6px; height: 28px; padding: 0 8px; flex: none;
   font-size: 11px; font-weight: 600; letter-spacing: .07em; color: var(--muted);
