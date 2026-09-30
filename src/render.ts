@@ -1,16 +1,18 @@
-// Draw a room the way the game draws it.
+// Draw a room the way UTMT draws it.
 //
 // What decides the picture, and where the editor gets it from:
 //   position/scale/frame/tint  the room JSON
 //   sprite, origin, trim       sprites.json (texture-page rects, straight from data.win)
-//   draw order                 depth, highest first. An instance starts at its layer's
-//                              depth; if its Create chain assigns depth (o_barrier's
-//                              `-y + 18` and friends) that wins -- create.json.
-//                              Same depth ties break by creation order (later = on top):
-//                              the room's top-level game_objects list is that order, NOT
-//                              the per-layer array. (r_Osbrook's house lights prove it:
-//                              game_objects puts them after the house; the Houses layer
-//                              array does not, and the game draws the glow over the wall.)
+//   draw order                 UTMT's static rule: layer depth first, then position in
+//                              the layer's instance array (later in the array = on top).
+//                              Runtime `depth = -y` code (o_barrier, c_nightlight…) is
+//                              NOT simulated: this is a placement tool, and what you are
+//                              placing must stay visible or you cannot aim it (a window
+//                              light over a house, say). The runtime depth is still
+//                              computed and shown in the inspector as information.
+//                              Vanilla rooms keep the two orders manually aligned
+//                              (lights listed after their house AND within the -y
+//                              crossover window), so this matches the game there too.
 //   drawn at all               object `visible` (or a Create override) AND layer
 //                              is_visible. Hidden things are still shown, faded, when
 //                              the "hidden" overlay is on -- they are half the room
@@ -20,7 +22,7 @@
 // spawns, depth changed outside Create.
 import { Container, Graphics, Sprite, Text } from "pixi.js";
 import type { AssetDb, Frame } from "./assets";
-import { allInstances, CELL, LayerType, gmColor, type Room, type RoomInstance, type RoomLayer } from "./core/room.ts";
+import { CELL, LayerType, gmColor, type Room, type RoomInstance, type RoomLayer } from "./core/room.ts";
 
 export type NodeKind = "drawn" | "hidden" | "collision" | "marker";
 
@@ -129,18 +131,6 @@ export async function buildScene(db: AssetDb, room: Room): Promise<RoomScene> {
   const root = new Container();
   root.sortableChildren = true;
   const nodes: InstanceNode[] = [];
-  // creation order breaks same-depth draw ties (later = on top); the room's
-  // game_objects list is that order, layer arrays are not.
-  const creationOrder = new Map<number, number>();
-  {
-    // game_objects is the source of truth for creation order (MSL imports it
-    // positionally). Rooms that came in via a diff replay may not have one --
-    // derive creation order from the layer arrays in that case, which is what
-    // AddRoomJson ends up with for a GMS1-style file anyway.
-    if (room.game_objects?.length) room.game_objects.forEach((g, i) => creationOrder.set(g.instance_id, i));
-    else for (const e of allInstances(room)) creationOrder.set(e.inst.instance_id, creationOrder.size);
-  }
-  const TIE = 1e-4; // index epsilon: a same-depth pair can never outrank a 1px depth gap
   // the grid is a background, not an overlay: it must sit above the room's flat colour
   // fills (the void around interiors -- those are opaque, so below them it would be
   // invisible) but below every sprite, tile and instance, so it never covers game art.
@@ -258,10 +248,11 @@ export async function buildScene(db: AssetDb, room: Room): Promise<RoomScene> {
         (view.children[0] as Sprite).tint = rgb;
         view.alpha = alpha;
       }
-      // overlays sit above the game picture, in a fixed order; same-depth drawn art
-      // falls back to creation order (game_objects), which is how the game breaks ties
-      const tie = (creationOrder.get(inst.instance_id) ?? 0) * TIE;
-      view.zIndex = kind === "drawn" ? -depth + tie : 1e8 + (kind === "hidden" ? 0 : kind === "collision" ? 1 : 2);
+      // overlays sit above the game picture, in a fixed order; drawn art follows the
+      // UTMT rule -- layer depth, then array position. The fraction stays in (0,1), so
+      // it can never outrank a 1-unit layer-depth gap.
+      const tie = (ii + 1) / (insts.length + 1);
+      view.zIndex = kind === "drawn" ? -layer.layer_depth + tie : 1e8 + (kind === "hidden" ? 0 : kind === "collision" ? 1 : 2);
       minArtZ = Math.min(minArtZ, view.zIndex);
 
       const node: InstanceNode = {

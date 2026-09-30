@@ -786,8 +786,7 @@ def main():
             check(len(arr6) == len(arr) and arr6[-1] == A and arr6[-2] == C, f"row drag reordered the layer array (front-most now #{A})")
             check(d6["log"][-1]["label"].startswith("调整顺序"), f"reorder labelled ({d6['log'][-1]['label']})")
             # the canvas draw order (pixi's own children array) must flip with the array:
-            # same layer_depth, and the same-depth tie breaks by creation order -- the
-            # game_objects index, which relayer keeps in sync with the layer array
+            # the draw order IS the layer array order (UTMT semantics, no depth simulation)
             zo = {e["id"]: e["ord"] for e in pg.evaluate("svre.drawOrder()")}
             check(zo.get(A, -1) > zo.get(C, -1), f"canvas draw order flipped with the array (#{A} above #{C})")
             pg.keyboard.press("Control+z")
@@ -798,11 +797,12 @@ def main():
             zo7 = {e["id"]: e["ord"] for e in pg.evaluate("svre.drawOrder()")}
             check(zo7.get(A, -1) < zo7.get(C, -1), "canvas draw order restored with the array")
 
-            print("same-depth ties follow creation order, not the layer array")
-            # two bushes at the same y share depth (-y + 18): the later creation must
-            # draw above the earlier; reordering them in the layer must flip the canvas
-            # (relayer syncs game_objects, which is the tie-break source). A visible
-            # layer, or the bushes would classify into the hidden band instead.
+            print("draw order follows the layer's instance array (UTMT semantics)")
+            # runtime depth=-y is NOT simulated on the canvas: what decides is the
+            # position in the layer's instance array. The two bushes are appended in
+            # creation order (999001, then 999002), so 999002 draws on top; relayering
+            # flips the canvas (relayer also syncs game_objects, the runtime creation
+            # order). A visible layer, or the bushes would classify into the hidden band.
             fg_name = next(L["layer_name"] for L in d0["room"]["layers"]
                            if L["layer_name"] == "ForegroundInstances")
             st, d8 = call("POST", f"/api/doc/{ROOM}/apply", {"by": "agent-test", "label": "钉住顺序测试 A", "ops": [
@@ -822,9 +822,9 @@ def main():
             za = pg.evaluate("svre.viewInfo(999001) && svre.viewInfo(999001).z")
             zb = pg.evaluate("svre.viewInfo(999002) && svre.viewInfo(999002).z")
             check(za is not None and zb is not None and zb > za,
-                  f"later creation draws above at equal depth ({zb} > {za})")
-            # reorder: 999002 before 999001 in the same layer -> game_objects follows,
-            # so its zIndex epsilon must drop below 999001's
+                  f"later in the layer array draws above ({zb} > {za})")
+            # reorder: 999002 before 999001 in the same layer -> its canvas z must drop
+            # below 999001's (game_objects follows along, the runtime creation order)
             st, d9 = call("POST", f"/api/doc/{ROOM}/apply", {"by": "agent-test", "label": "调整顺序 o_bush01", "ops": [
                 {"op": "relayer", "id": 999002, "layer": fg_name, "before": 999001, "expect": {"layer": fg_name}},
             ]})
@@ -833,7 +833,7 @@ def main():
             za2 = pg.evaluate("svre.viewInfo(999001) && svre.viewInfo(999001).z")
             zb2 = pg.evaluate("svre.viewInfo(999002) && svre.viewInfo(999002).z")
             check(zb2 is not None and za2 is not None and zb2 < za2,
-                  f"reorder flips the same-depth tie ({zb2} < {za2})")
+                  f"reorder flips the draw order ({zb2} < {za2})")
             st, d10 = call("GET", f"/api/doc/{ROOM}")
             go = [g["instance_id"] for g in d10["room"]["game_objects"]]
             check(go.index(999002) < go.index(999001), "game_objects mirrors the reorder")

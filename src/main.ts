@@ -538,12 +538,14 @@ function renderLayerList() {
 // ================= instance layers (the real, Photoshop-style 图层) =================
 //
 // Each row is one instance. Groups are GameMaker layers sorted by depth, front-most
-// first; inside a group the array order is reversed, because array order is creation
-// order and creation order breaks same-depth draw ties (created later = drawn on top).
-// Dragging a row between two rows of the same group reorders the array; dragging across
-// groups relayers. Both are the `relayer` op — same-layer relayer IS the reorder op.
-// Rows whose depth code overrides the layer depth (the -y autosorters, baked decals…)
-// carry a badge: their occlusion doesn't come from where they sit in the list.
+// first; inside a group the array order is reversed, because the canvas follows UTMT's
+// static rule: later in the layer array = drawn on top. Dragging a row between two rows
+// of the same group reorders the array; dragging across groups relayers. Both are the
+// `relayer` op — same-layer relayer IS the reorder op.
+// Rows whose runtime depth code overrides the layer order (the -y autosorters, baked
+// decals…) carry a badge: in the GAME their occlusion comes from that code, not from
+// where they sit in this list. The canvas doesn't simulate it -- it stays a placement
+// tool.
 
 function renderInstList() {
   if (!doc || !scene || $("tab-insts").hidden) return;
