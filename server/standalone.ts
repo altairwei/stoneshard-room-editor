@@ -30,10 +30,11 @@ export interface StandaloneOptions {
   staticDir?: string;    // vite build output; non-/api paths fall through to it
   port?: number;         // default 0 = OS-assigned
   host?: string;         // default 127.0.0.1
+  home?: string;         // packaged installs: writable profile dir for config+cache defaults
 }
 
 export async function startSvreServer(opts: StandaloneOptions): Promise<{ port: number; close: () => Promise<void> }> {
-  const { handler, setEmit } = createApi(opts.root);
+  const { handler, setEmit } = createApi(opts.root, { home: opts.home });
 
   // store events -> every subscribed SSE client (the client's wireWs falls back to
   // EventSource when vite's HMR channel is absent, i.e. exactly here)

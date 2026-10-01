@@ -106,7 +106,7 @@ export class Store {
   listRooms() {
     const names = new Set<string>();
     if (fs.existsSync(this.roomsDir)) for (const f of fs.readdirSync(this.roomsDir)) if (f.endsWith(".room.json")) names.add(f.slice(0, -".room.json".length));
-    for (const f of fs.readdirSync(this.codesDir)) if (f.endsWith(".gml") && isRoomFile(path.join(this.codesDir, f))) names.add(f.slice(0, -4));
+    if (fs.existsSync(this.codesDir)) for (const f of fs.readdirSync(this.codesDir)) if (f.endsWith(".gml") && isRoomFile(path.join(this.codesDir, f))) names.add(f.slice(0, -4));
     const owners = generatorsOf(this.cfg.modDir);
     return [...names].sort().map((name) => {
       const hasProject = fs.existsSync(this.projectPath(name));

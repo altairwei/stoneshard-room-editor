@@ -341,6 +341,8 @@ async function init() {
   renderMode = params.get("render") === "1";
   if (renderMode) document.body.classList.add("render");
   hydrateIcons();
+  wireWs(); // connect early: the setup wizard's progress rides this same channel
+  await runSetupIfNeeded(); // first run: workdir + extract wizard; reloads when done
 
   const host = $("stage");
   await app.init({ resizeTo: host, background: renderMode ? 0x0d0e11 : THEME_CANVAS[uiTheme()].voidBg, antialias: false, roundPixels: true, autoDensity: true, resolution: devicePixelRatio });
@@ -390,7 +392,6 @@ async function init() {
   wireViewport(host);
   wireKeys(host);
   wireMenu();
-  wireWs();
   pushMenuState(); // seat the native menu's checkmarks on the boot state
 
   const initial = params.get("room");
@@ -2422,6 +2423,9 @@ interface SvreHost {
   isElectron: boolean;
   onMenu(cb: (id: string) => void): void;
   pushState(s: { theme: UiTheme; zmode: ZMode; tool: Tool["kind"]; toggles: Record<string, boolean> }): void;
+  // first-run wizard pickers; absent in plain browsers (the text inputs suffice there)
+  pickDir?(): Promise<string | null>;
+  pickFile?(): Promise<string | null>;
 }
 const hostBridge = (window as any).svreHost as SvreHost | undefined;
 
@@ -2482,6 +2486,139 @@ function pushMenuState() {
   });
 }
 
+// ================= first-run setup wizard =================
+// The asset cache is never distributed (copyright): every install extracts it from
+// the user's own Stoneshard data file. A degraded backend says so via /api/setup;
+// this wizard walks workdir -> data file -> extract -> version check, then reloads
+// into the healthy backend. In-page UI only (Electron never answers native renderer
+// dialogs -- they would wedge the page).
+interface SetupState {
+  needed: boolean;
+  reasons: string[];
+  running: boolean;
+  current: { modDir: string; assetsDir: string; vanillaWin: string };
+  detected: { path: string; kind: "vallina" | "data"; source: string }[];
+  utmtCli: string | null;
+  expected: { game: string; objects: number; sprites: number; rooms: number } | null;
+}
+
+const setupLog: string[] = [];
+
+async function runSetupIfNeeded() {
+  const st: SetupState = await api("/api/setup");
+  if (!st.needed) return;
+  $("load-state").textContent = "等待首次运行设置…";
+  const dlg = $<HTMLDialogElement>("setup-dialog");
+  dlg.addEventListener("cancel", (e) => e.preventDefault()); // Esc must not dismiss
+  const steps = { moddir: $("setup-step-moddir"), win: $("setup-step-win"), run: $("setup-step-run") };
+  const show = (k: keyof typeof steps) => {
+    for (const [name, el] of Object.entries(steps)) (el as HTMLElement).hidden = name !== k;
+  };
+
+  // ---- step 1: the workdir (skipped when only the cache is missing) ----
+  const moddirInput = $<HTMLInputElement>("setup-moddir");
+  moddirInput.value = st.current.modDir;
+  const moddirPick = $<HTMLButtonElement>("setup-moddir-pick");
+  moddirPick.hidden = !hostBridge?.pickDir;
+  moddirPick.onclick = async () => {
+    const p = await hostBridge!.pickDir!();
+    if (p) moddirInput.value = p;
+  };
+  $<HTMLButtonElement>("setup-moddir-ok").onclick = async () => {
+    try {
+      const r = await api("/api/setup/moddir", "POST", { path: moddirInput.value.trim() });
+      if ((r.setup as SetupState).needed) show("win");
+      else location.reload(); // only the workdir was missing -- healthy now
+    } catch (e) {
+      await alertDialog((e as ApiError).message);
+    }
+  };
+
+  // ---- step 2: the game data file ----
+  $("setup-expected").textContent = st.expected
+    ? `${st.expected.game}（${st.expected.rooms} 房间 / ${st.expected.objects} 对象 / ${st.expected.sprites} sprite）`
+    : "未知（缺 extract/fingerprint.json）";
+  const winInput = $<HTMLInputElement>("setup-win");
+  winInput.value = st.current.vanillaWin;
+  const det = $("setup-detected");
+  det.innerHTML = "";
+  if (!st.detected.length) det.innerHTML = `<div class="muted">没有自动检测到 Stoneshard 安装，请手动选择或填写路径。</div>`;
+  for (const c of st.detected) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "setup-detect";
+    b.innerHTML = `<b>${c.kind === "vallina" ? "原版备份" : "游戏数据"}</b><span>${esc(c.path)}</span>`;
+    if (winInput.value === c.path) b.classList.add("sel");
+    b.onclick = () => {
+      winInput.value = c.path;
+      det.querySelectorAll(".setup-detect.sel").forEach((el) => el.classList.remove("sel"));
+      b.classList.add("sel");
+    };
+    det.appendChild(b);
+  }
+  const winPick = $<HTMLButtonElement>("setup-win-pick");
+  winPick.hidden = !hostBridge?.pickFile;
+  winPick.onclick = async () => {
+    const p = await hostBridge!.pickFile!();
+    if (p) winInput.value = p;
+  };
+  $<HTMLButtonElement>("setup-extract").onclick = async () => {
+    const win = winInput.value.trim();
+    if (!win) return alertDialog("先选择或填写数据文件路径");
+    show("run");
+    setupLog.length = 0;
+    $("setup-log").textContent = "";
+    $("setup-result").innerHTML = "";
+    $("setup-phase").textContent = "正在启动 UTMT CLI…";
+    $("setup-retry").hidden = true;
+    $("setup-done").hidden = true;
+    try {
+      await api("/api/setup/extract", "POST", { vanillaWin: win });
+    } catch (e) {
+      onSetupEvent({ phase: "error", detail: (e as ApiError).message });
+    }
+  };
+
+  // ---- step 3: progress (events arrive on the store channel) ----
+  $<HTMLButtonElement>("setup-retry").onclick = () => show("win");
+  $<HTMLButtonElement>("setup-done").onclick = () => location.reload();
+
+  show(st.running ? "run" : st.reasons.includes("moddir") || st.reasons.includes("config") ? "moddir" : "win");
+  dlg.showModal();
+  // the only way out is the done button, which reloads the page into a healthy backend
+  await new Promise<void>(() => {});
+}
+
+function onSetupEvent(e: { phase?: string; line?: string; detail?: string; mismatches?: string[] }) {
+  const dlg = $<HTMLDialogElement>("setup-dialog");
+  if (!dlg.open) return;
+  if (e.line) {
+    setupLog.push(e.line);
+    if (setupLog.length > 400) setupLog.splice(0, setupLog.length - 400);
+    const log = $("setup-log");
+    log.textContent = setupLog.join("\n");
+    log.scrollTop = log.scrollHeight;
+  }
+  const phases: Record<string, string> = {
+    assets: "第 1/2 步：导出对象 / sprite / 贴图页…",
+    rooms: "第 2/2 步：导出全部房间…",
+    check: "校验版本指纹…",
+  };
+  if (e.phase && phases[e.phase]) $("setup-phase").textContent = phases[e.phase];
+  if (e.phase === "done") {
+    $("setup-phase").textContent = "完成";
+    $("setup-result").innerHTML = e.mismatches?.length
+      ? `<div class="warn">⚠ 提取完成，但与编辑器钉的版本指纹不一致：<br>${e.mismatches.map(esc).join("<br>")}<br>房间基底可能与开发侧不一致——确认你的游戏版本后继续。</div>`
+      : `<div class="ok">✓ 提取完成，版本指纹一致。</div>`;
+    $("setup-done").hidden = false;
+  }
+  if (e.phase === "error") {
+    $("setup-phase").textContent = "失败";
+    $("setup-result").innerHTML = `<div class="warn">✗ 提取失败：${esc(e.detail ?? "未知错误")}</div>`;
+    $("setup-retry").hidden = false;
+  }
+}
+
 // ================= websocket =================
 
 function wireWs() {
@@ -2499,6 +2636,7 @@ function wireWs() {
 }
 
 async function onStoreEvent(e: any) {
+  if (e?.type === "setup") { onSetupEvent(e); return; }
   if (e?.type === "created") { await refreshRooms(); return; }
   if (e?.type === "assets") {
     if (e.by === BY) return; // our own import already refreshed in submitSpriteImport

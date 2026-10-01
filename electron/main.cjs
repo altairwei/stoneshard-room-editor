@@ -65,11 +65,15 @@ async function startBackend() {
       try { spawn(`taskkill /PID ${child.pid} /T /F`, { shell: true, stdio: "ignore" }); } catch { /* already gone */ }
     });
     const url = `http://127.0.0.1:${DEV_PORT}`;
-    await waitForHttp(`${url}/api/rooms`);
+    // probe the setup route, not /api/rooms: a degraded backend (first run, no cache
+    // yet) 503s everything else, and the window must still load so the wizard shows
+    await waitForHttp(`${url}/api/setup`);
     return url;
   }
   const { startSvreServer } = require("../dist-server/standalone.cjs");
-  const { port } = await startSvreServer({ root: ROOT, staticDir: path.join(ROOT, "dist") });
+  // home = the writable profile dir: a packaged install has no repo config, so its
+  // config, workdir default and asset cache all live under userData
+  const { port } = await startSvreServer({ root: ROOT, staticDir: path.join(ROOT, "dist"), home: app.getPath("userData") });
   return `http://127.0.0.1:${port}`;
 }
 
@@ -251,6 +255,19 @@ else {
     baseUrl = await startBackend();
     console.log(`svre backend: ${baseUrl} (${DEV ? "dev" : "prod"})`);
     ipcMain.on("svre:state", (_e, s) => buildMenu(s));
+    // native pickers for the setup wizard (renderer never gets raw dialog access)
+    ipcMain.handle("svre:pick-dir", async () => {
+      const r = await dialog.showOpenDialog(win, { title: "选择工作目录", properties: ["openDirectory", "createDirectory"] });
+      return r.canceled ? null : r.filePaths[0];
+    });
+    ipcMain.handle("svre:pick-file", async () => {
+      const r = await dialog.showOpenDialog(win, {
+        title: "选择 Stoneshard 数据文件",
+        filters: [{ name: "Stoneshard 数据文件", extensions: ["win"] }],
+        properties: ["openFile"],
+      });
+      return r.canceled ? null : r.filePaths[0];
+    });
     buildMenu(menuState);
     createWindow();
   });

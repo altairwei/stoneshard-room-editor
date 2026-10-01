@@ -30,6 +30,8 @@ ROOT = Path(__file__).resolve().parent.parent
 CFG = json.loads((ROOT / "svre.config.json").read_text(encoding="utf-8"))
 ROOM = "r_sv_hut_inside2"
 PORT = 5179
+SETUP_PORT = 5181
+SETUP_UI_PORT = 5183
 BASE = f"http://localhost:{PORT}"
 
 failures = []
@@ -1108,6 +1110,118 @@ def main():
             browser.close()
 
         check(not (scratch / "rooms" / "r_Osbrook.room.json").exists(), "viewing a vanilla room writes no project file")
+
+        print("C. first-run setup wizard (degraded backend)")
+        # a second server whose config points at nothing: no moddir, no cache. SVRE_CONFIG
+        # keeps every write the wizard makes inside the scratch dir.
+        ss = Path(tempfile.mkdtemp(prefix="svre-e2e-setup-"))
+        scfg = ss / "svre.config.json"
+        scfg.write_text(json.dumps({"modDir": str(ss / "mod"), "assetsDir": str(ss / "no-cache"),
+                                    "sourceDir": "", "vanillaWin": "", "utmtCli": ""}), encoding="utf-8")
+        base2 = f"http://localhost:{SETUP_PORT}"
+
+        def call2(method, path, body=None):
+            req = urllib.request.Request(base2 + path, method=method,
+                                         data=json.dumps(body).encode() if body is not None else None,
+                                         headers={"Content-Type": "application/json"} if body is not None else {})
+            try:
+                with urllib.request.urlopen(req, timeout=10) as r:
+                    return r.status, json.loads(r.read().decode("utf-8"))
+            except urllib.error.HTTPError as e:
+                try:
+                    return e.code, json.loads(e.read().decode("utf-8"))
+                except json.JSONDecodeError:
+                    return e.code, None
+
+        env2 = {**os.environ, "SVRE_CONFIG": str(scfg)}
+        server2 = subprocess.Popen("npx vite --port %d --strictPort" % SETUP_PORT, cwd=ROOT, env=env2, shell=True,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
+        try:
+            for _ in range(120):
+                try:
+                    urllib.request.urlopen(f"{base2}/api/setup", timeout=1)
+                    break
+                except Exception:
+                    time.sleep(0.5)
+
+            st, s = call2("GET", "/api/setup")
+            check(st == 200 and s["needed"] and set(s["reasons"]) == {"moddir", "cache"}, f"degraded: reasons = moddir+cache ({s})")
+            check(s.get("expected", {}).get("game") == "0.9.4.25", "the pinned version fingerprint ships with the editor")
+            check(isinstance(s.get("detected"), list), "setup reports detected game installs")
+            st, r = call2("GET", "/api/rooms")
+            check(st == 503 and r.get("setup") is True, "every other /api route 503s while degraded")
+            st, r = call2("GET", "/api/config")
+            check(st == 200, "/api/config still answers (the shell needs it)")
+
+            st, r = call2("POST", "/api/setup/moddir", {})
+            check(st == 200 and (ss / "mod" / "assets.json").exists() and (ss / "mod" / "rooms").is_dir(),
+                  "moddir step creates the workdir skeleton")
+            check(r["setup"]["reasons"] == ["cache"], "after moddir only the cache is missing")
+            check(json.loads(scfg.read_text(encoding="utf-8"))["modDir"] == str(ss / "mod"), "the choice persists to the scratch config")
+            st, r = call2("GET", "/api/rooms")
+            check(st == 503, "still degraded until the extract lands")
+            st, r = call2("POST", "/api/setup/moddir", {"path": "C:\\"})
+            check(st == 400, "a drive root is refused as workdir")
+
+            st, r = call2("POST", "/api/setup/extract", {"vanillaWin": str(ss / "nope.win")})
+            check(st == 400, "extract refuses a missing data file")
+            fake = ss / "fake.win"
+            fake.write_bytes(b"tiny")
+            st, r = call2("POST", "/api/setup/extract", {"vanillaWin": str(fake)})
+            check(st == 400 and "MB" in str(r.get("error", "")), "extract refuses a file too small to be data.win")
+
+        finally:
+            subprocess.run(f"taskkill /PID {server2.pid} /T /F", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            shutil.rmtree(ss, ignore_errors=True)
+
+        print("C2. wizard UI in the browser (fresh degraded backend)")
+        # its own scratch + server: the HTTP pins above already satisfied this server's
+        # moddir step, and the wizard's first step depends on what is still missing
+        ss2 = Path(tempfile.mkdtemp(prefix="svre-e2e-setupui-"))
+        scfg2 = ss2 / "svre.config.json"
+        scfg2.write_text(json.dumps({"modDir": str(ss2 / "mod"), "assetsDir": str(ss2 / "no-cache"),
+                                     "sourceDir": "", "vanillaWin": "", "utmtCli": ""}), encoding="utf-8")
+        base3 = f"http://localhost:{SETUP_UI_PORT}"
+        env3 = {**os.environ, "SVRE_CONFIG": str(scfg2)}
+        server3 = subprocess.Popen("npx vite --port %d --strictPort" % SETUP_UI_PORT, cwd=ROOT, env=env3, shell=True,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
+        try:
+            for _ in range(120):
+                try:
+                    urllib.request.urlopen(f"{base3}/api/setup", timeout=1)
+                    break
+                except Exception:
+                    time.sleep(0.5)
+            fake2 = ss2 / "fake.win"
+            fake2.write_bytes(b"tiny")
+            with sync_playwright() as p2:
+                b2 = p2.chromium.launch()
+                pg2 = b2.new_page(viewport={"width": 1280, "height": 860})
+                pg2.goto(base3)
+                pg2.wait_for_selector("#setup-dialog[open]", timeout=60000)
+                check(True, "wizard opens by itself on a degraded backend")
+                check(pg2.evaluate("document.getElementById('setup-step-moddir').hidden") is False, "workdir step shows first (moddir missing)")
+                pg2.keyboard.press("Escape")
+                check(pg2.evaluate("document.getElementById('setup-dialog').open") is True, "Esc cannot dismiss the wizard")
+                pg2.click("#setup-moddir-ok")
+                pg2.wait_for_selector("#setup-step-win:not([hidden])", timeout=10000)
+                check((ss2 / "mod" / "assets.json").exists(), "the UI's workdir step created the skeleton")
+                check("0.9.4.25" in pg2.inner_text("#setup-expected"), "win step names the pinned game version")
+                pg2.click("#setup-extract")
+                pg2.wait_for_selector("#msg-dialog[open]", timeout=5000)
+                check(True, "an empty data-file path gets an in-page warning (never a native dialog)")
+                pg2.click("#md-ok")
+                pg2.fill("#setup-win", str(fake2))
+                pg2.click("#setup-extract")
+                pg2.wait_for_selector("#setup-step-run:not([hidden]) #setup-result .warn", timeout=10000)
+                check(pg2.evaluate("document.getElementById('setup-retry').hidden") is False, "a failed extract offers retry")
+                pg2.click("#setup-retry")
+                pg2.wait_for_selector("#setup-step-win:not([hidden])", timeout=5000)
+                check(True, "retry returns to the data-file step")
+                b2.close()
+        finally:
+            subprocess.run(f"taskkill /PID {server3.pid} /T /F", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            shutil.rmtree(ss2, ignore_errors=True)
     finally:
         subprocess.run(f"taskkill /PID {server.pid} /T /F", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         shutil.rmtree(scratch, ignore_errors=True)

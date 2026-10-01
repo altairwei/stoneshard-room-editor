@@ -46,6 +46,10 @@ npm run dev         # http://localhost:5178/?room=r_sv_hut_inside1
 | `vanillaWin` | 未改动的原版 data 文件（`data.win` 是 patch 产物，不能用） |
 | `utmtCli` | `UndertaleModCli.exe` |
 
+环境变量覆盖（测试 / 打包用）：`SVRE_CONFIG`（改读另一个配置文件）、`SVRE_MOD_DIR`、
+`SVRE_ASSETS_DIR`。向导写配置永不碰仓库里的 `svre.config.json`：开发机落在 gitignore 的
+`svre.config.local.json`，打包安装落在 userData 的 `svre.config.json`。
+
 ## 人：浏览器
 
 | 操作 | 效果 |
@@ -102,6 +106,25 @@ npm run app:dev     # 开发形态：壳里拉一个 vite（5186，带 HMR），
 勾选/单选状态由页面实时回推（主题/顺序/工具/六个开关）。单字母快捷键不进菜单，
 避免在输入框里打字被抢。注意：**Electron 不会弹出网页的 confirm/alert/prompt**
 （调用即渲染进程死等），所有确认/输入框都是应用内对话框，别改回原生调用。
+
+### 首次运行向导（分发形态）
+
+打包产物里**没有一字节资产缓存**（版权）——每台机器用机主自己正版游戏的 data 文件
+现场提取。第一次启动时后端是降级的（只有 `/api/config` 与 `/api/setup/*` 应答，其余
+503），页面自动弹出向导：
+
+1. **工作目录**：房间工程、sprite 与注册清单的家（默认 `<userData>/work`，可换）；
+   美术交付 = 把整个文件夹发回。
+2. **游戏数据文件**：自动探测所有 Steam 库（解析 `libraryfolders.vdf`）里的
+   `vallina.win`（MSL 留的原版备份，优先）与 `data.win`，也可手选/手填。编辑器钉的
+   参考版本（`extract/fingerprint.json`）就写在这一步。
+3. **提取**：随包 UTMT CLI 一次载入连跑两个导出脚本（对象/sprite/贴图页 + 全部
+   1067 个房间，约几分钟），完成后与钉住的版本指纹比对——不一致给硬警告（版本不符
+   或 data.win 被 patch 过都会在这里现形），确认后仍可进入。
+
+后端热重进健康模式，不用重启。游戏更新后：开发机 `npm run extract` +
+`node extract/fingerprint.mjs <新版本号>`；打包安装删掉 `<userData>/cache/` 重开即
+重走向导（工作目录已存在会直跳第 2 步）。
 
 ## agent：svre CLI
 

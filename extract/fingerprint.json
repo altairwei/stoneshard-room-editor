@@ -1,0 +1,8 @@
+{
+  "game": "0.9.4.25",
+  "note": "编辑器钉的参考版本指纹：从该版本 vallina.win 提取的缓存统计。游戏更新后重跑 extract 并用 node extract/fingerprint.mjs 重新生成此文件。",
+  "objects": 9663,
+  "sprites": 17248,
+  "rooms": 1067,
+  "indexSha256": "f198689e8d6ed9c4085275eefa357bcea89cc71655e2490991ee36ca6fa851c9"
+}

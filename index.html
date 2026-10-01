@@ -174,6 +174,44 @@
         </div>
       </form>
     </dialog>
+    <dialog id="setup-dialog">
+      <!-- first-run only; no cancel affordance at all (Esc is preventDefault'ed in JS) -->
+      <div class="form setup-form">
+        <div class="insp-title" style="grid-column: 1 / -1">首次运行设置</div>
+        <div class="muted" style="grid-column: 1 / -1">
+          资产缓存不随应用分发（版权）：用你自己正版游戏的 data 文件在本地提取一份。提取只读游戏文件，不会修改它。
+        </div>
+        <section id="setup-step-moddir" style="grid-column: 1 / -1" hidden>
+          <h3>1 · 工作目录</h3>
+          <p class="muted">房间工程、sprite 与注册清单都放这里；交付时把整个文件夹发回即可。</p>
+          <div class="setup-row">
+            <input id="setup-moddir" spellcheck="false" autocomplete="off" />
+            <button id="setup-moddir-pick" type="button">选择文件夹…</button>
+          </div>
+          <div class="setup-actions"><button id="setup-moddir-ok" type="button" class="primary">继续</button></div>
+        </section>
+        <section id="setup-step-win" style="grid-column: 1 / -1" hidden>
+          <h3>2 · 游戏数据文件</h3>
+          <p class="muted">编辑器钉的参考版本：<b id="setup-expected">…</b>。版本不一致会导致房间基底漂移。</p>
+          <div id="setup-detected"></div>
+          <div class="setup-row">
+            <input id="setup-win" spellcheck="false" autocomplete="off" placeholder="vallina.win 或 data.win 的完整路径" />
+            <button id="setup-win-pick" type="button">浏览…</button>
+          </div>
+          <div class="setup-actions"><button id="setup-extract" type="button" class="primary">开始提取（约几分钟）</button></div>
+        </section>
+        <section id="setup-step-run" style="grid-column: 1 / -1" hidden>
+          <h3>3 · 提取资产缓存</h3>
+          <div id="setup-phase" class="muted">正在启动…</div>
+          <pre id="setup-log"></pre>
+          <div id="setup-result"></div>
+          <div class="setup-actions">
+            <button id="setup-retry" type="button" hidden>返回重试</button>
+            <button id="setup-done" type="button" class="primary" hidden>进入编辑器</button>
+          </div>
+        </section>
+      </div>
+    </dialog>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

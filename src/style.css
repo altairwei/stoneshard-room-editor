@@ -480,3 +480,25 @@ body.render #stage { position: fixed; inset: 0; background: #0d0e11; }
 
 /* Electron: controls whose job the native menu took over stay in plain browsers */
 body.electron .menu-only { display: none !important; }
+
+/* ---------------- first-run setup wizard ---------------- */
+#setup-dialog { width: 620px; }
+.setup-form { display: block; }
+.setup-form section h3 { margin: 10px 0 6px; font-size: 14px; }
+.setup-form section p { margin: 0 0 8px; font-size: 12px; }
+.setup-row { display: flex; gap: 8px; margin: 6px 0; }
+.setup-row input { flex: 1; }
+.setup-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 10px; }
+#setup-detected { display: flex; flex-direction: column; gap: 4px; margin: 6px 0; }
+#setup-detected .setup-detect {
+  text-align: left; font-size: 12px; padding: 6px 8px; word-break: break-all;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 6px; color: var(--text); cursor: pointer;
+}
+#setup-detected .setup-detect:hover, #setup-detected .setup-detect.sel { border-color: var(--accent); }
+#setup-detected .setup-detect b { margin-right: 6px; }
+#setup-log {
+  height: 180px; overflow: auto; margin: 8px 0; padding: 8px; font-size: 11px; line-height: 1.5;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 6px; white-space: pre-wrap; word-break: break-all;
+}
+#setup-result .ok { color: var(--ok, #6d6); font-size: 13px; }
+#setup-result .warn { color: var(--warn, #da4); font-size: 13px; line-height: 1.6; }

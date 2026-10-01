@@ -20,10 +20,17 @@
 //   GET  /api/mod-assets                    the mod's own sprites/objects (Sprites/*.png + assets.json)
 //   POST /api/mod-assets/sync               rescan + rewrite <Mod>.Assets.g.cs if it disagrees
 //   GET  /mod-assets/pages/<i>.png          one mod sprite frame (pseudo pages, see modassets.ts)
+//   GET  /api/setup                         first-run state: reasons, detected game installs, fingerprint
+//   POST /api/setup/moddir   {path?}        create the workdir skeleton + persist the choice
+//   POST /api/setup/extract  {vanillaWin}   run the bundled UTMT CLI export -> cache (SSE progress)
+// With no config/cache (a fresh packaged install) the API is degraded: every route but
+// /api/config and /api/setup/* 503s, the page shows the setup wizard, and boot() runs
+// again when the wizard fixes each piece -- no restart.
 import fs from "node:fs";
 import path from "node:path";
 import type { Connect, Plugin } from "vite";
 import { generatedCsPath, loadManifest, pngSizeBuffer, saveManifest, scanModAssets, type ModAssets, type VanillaNames } from "./modassets.ts";
+import { detectVanillaWins, loadExpectedFingerprint, resolveUtmtCli, runExtract, unpackedPath } from "./setup.ts";
 import { HttpError, Store } from "./store.ts";
 
 export interface SvreConfig {
@@ -34,18 +41,45 @@ export interface SvreConfig {
   utmtCli: string;
 }
 
-export function loadConfig(root: string): SvreConfig {
-  const base = JSON.parse(fs.readFileSync(path.join(root, "svre.config.json"), "utf8"));
+export interface LoadedConfig {
+  cfg: SvreConfig;
+  file: string | null; // the config json actually read; null = packaged defaults, nothing on disk yet
+}
+
+// Config search order: SVRE_CONFIG (tests) -> <home>/svre.config.json (packaged app)
+// -> <root>/svre.config.json (+ svre.config.local.json, dev). `home` is the packaged
+// install's writable profile dir (electron userData); with no config anywhere it also
+// supplies the defaults so the first-run wizard has somewhere to put the cache.
+export function loadConfig(root: string, home?: string): LoadedConfig {
+  const rootFile = path.join(root, "svre.config.json");
+  let file: string | null = null;
+  if (process.env.SVRE_CONFIG) file = process.env.SVRE_CONFIG;
+  else if (home && fs.existsSync(path.join(home, "svre.config.json"))) file = path.join(home, "svre.config.json");
+  else if (fs.existsSync(rootFile)) file = rootFile;
+  if (!file && !home) throw new Error(`no svre.config.json in ${root}`);
+  const base: Record<string, unknown> = file ? JSON.parse(fs.readFileSync(file, "utf8")) : {};
+  // the local override only merges over the REPO config (dev-machine secrets); a
+  // packaged install has exactly one writable config -- its home one
   const localFile = path.join(root, "svre.config.local.json");
-  const local = fs.existsSync(localFile) ? JSON.parse(fs.readFileSync(localFile, "utf8")) : {};
-  const cfg = { ...base, ...local };
-  // relative config paths resolve against the repo root, so renaming the editor
-  // folder (or launching the electron shell from another cwd) never breaks them
+  if (!process.env.SVRE_CONFIG && file === rootFile && fs.existsSync(localFile))
+    Object.assign(base, JSON.parse(fs.readFileSync(localFile, "utf8")));
+  const cfg = base as Partial<SvreConfig>;
+  if (home) {
+    cfg.modDir ||= path.join(home, "work");
+    cfg.assetsDir ||= path.join(home, "cache", "assets");
+    cfg.sourceDir ||= "";
+    cfg.vanillaWin ||= "";
+    cfg.utmtCli ||= "";
+  }
+  // relative config paths resolve against the config file's own directory, so
+  // renaming the editor folder (or moving a workdir) never breaks them
+  const anchor = file ? path.dirname(file) : (home ?? root);
   for (const key of ["modDir", "assetsDir", "sourceDir", "vanillaWin", "utmtCli"] as const)
-    if (cfg[key] && !path.isAbsolute(cfg[key])) cfg[key] = path.resolve(root, cfg[key]);
-  // tests point a second server at a scratch copy of a mod, never at the real one
+    if (cfg[key] && !path.isAbsolute(cfg[key])) cfg[key] = path.resolve(anchor, cfg[key]);
+  // tests point a second server at a scratch copy, never at the real mod or cache
   if (process.env.SVRE_MOD_DIR) cfg.modDir = process.env.SVRE_MOD_DIR;
-  return cfg;
+  if (process.env.SVRE_ASSETS_DIR) cfg.assetsDir = process.env.SVRE_ASSETS_DIR;
+  return { cfg: cfg as SvreConfig, file };
 }
 
 const MIME: Record<string, string> = { ".png": "image/png", ".json": "application/json", ".webp": "image/webp" };
@@ -76,24 +110,75 @@ export interface SvreApi {
   setEmit: (cb: (e: Record<string, unknown>) => void) => void;
 }
 
-export function createApi(root: string): SvreApi {
-  const cfg = loadConfig(root);
+export function createApi(root: string, opts: { home?: string } = {}): SvreApi {
+  let cfg: SvreConfig = { modDir: "", assetsDir: "", sourceDir: "", vanillaWin: "", utmtCli: "" };
+  let configFile: string | null = null;
   let emit: (e: Record<string, unknown>) => void = () => {};
-  const store = new Store(cfg, (e) => emit({ ...e, at: new Date().toISOString() }));
+  let store: Store | null = null;
   // vanilla name pools, for manifest validation (object sprites/parents may be vanilla)
-  const vanillaNames: VanillaNames = {
-    objects: new Set(Object.keys(JSON.parse(fs.readFileSync(path.join(cfg.assetsDir, "objects.json"), "utf8")))),
-    sprites: new Set(Object.keys(JSON.parse(fs.readFileSync(path.join(cfg.assetsDir, "sprites.json"), "utf8")))),
-  };
+  let vanillaNames: VanillaNames = { objects: new Set(), sprites: new Set() };
   // the page index a client got from /api/mod-assets must stay valid for the session,
   // so pages are served from the last scan the client could have seen
-  let modScan: ModAssets = scanModAssets(cfg.modDir, { vanilla: vanillaNames });
-  // <Mod>.Rooms.g.cs self-heals from the compiled snapshots at startup (and on every
-  // compile/import/adopt from inside store.ts); a drifted snapshot blocks the regen
-  // instead of being laundered into the build
-  const csHeal = store.syncRoomsCs();
-  if (csHeal.skipped.length) console.warn(`Rooms.g.cs NOT regenerated: drifted snapshots: ${csHeal.skipped.join(", ")}`);
-  else if (csHeal.synced) console.log(`Rooms.g.cs regenerated (${csHeal.rooms.length} rooms)`);
+  let modScan: ModAssets = { sprites: {}, objects: {}, pages: [], warnings: [], synced: false };
+  // first-run state: what the wizard still needs to fix ("config" | "moddir" | "cache")
+  let setupReasons: string[] = [];
+  const extractState = { running: false };
+
+  // (re)initialise everything that depends on config and cache. Runs at startup and
+  // again after the wizard fixes what was missing -- no process restart needed.
+  const boot = () => {
+    setupReasons = [];
+    let loaded: LoadedConfig;
+    try {
+      loaded = loadConfig(root, opts.home);
+    } catch {
+      setupReasons.push("config");
+      return;
+    }
+    cfg = loaded.cfg;
+    configFile = loaded.file;
+    if (!cfg.modDir || !fs.existsSync(cfg.modDir)) setupReasons.push("moddir");
+    if (!cfg.assetsDir || !fs.existsSync(path.join(cfg.assetsDir, "objects.json"))) setupReasons.push("cache");
+    if (setupReasons.length) return; // degraded: only /api/setup/* answers
+    store = new Store(cfg, (e) => emit({ ...e, at: new Date().toISOString() }));
+    vanillaNames = {
+      objects: new Set(Object.keys(JSON.parse(fs.readFileSync(path.join(cfg.assetsDir, "objects.json"), "utf8")))),
+      sprites: new Set(Object.keys(JSON.parse(fs.readFileSync(path.join(cfg.assetsDir, "sprites.json"), "utf8")))),
+    };
+    modScan = scanModAssets(cfg.modDir, { vanilla: vanillaNames });
+    // <Mod>.Rooms.g.cs self-heals from the compiled snapshots at startup (and on every
+    // compile/import/adopt from inside store.ts); a drifted snapshot blocks the regen
+    // instead of being laundered into the build
+    const csHeal = store.syncRoomsCs();
+    if (csHeal.skipped.length) console.warn(`Rooms.g.cs NOT regenerated: drifted snapshots: ${csHeal.skipped.join(", ")}`);
+    else if (csHeal.synced) console.log(`Rooms.g.cs regenerated (${csHeal.rooms.length} rooms)`);
+  };
+  boot();
+
+  // Config writes never touch the committed repo file: overrides land in the
+  // gitignored local file (dev) or the packaged install's single home config.
+  const persistConfig = (patch: Record<string, string>) => {
+    const rootFile = path.join(root, "svre.config.json");
+    const target =
+      process.env.SVRE_CONFIG ??
+      (configFile && configFile !== rootFile ? configFile : null) ??
+      (configFile === rootFile ? path.join(root, "svre.config.local.json") : null) ??
+      (opts.home ? path.join(opts.home, "svre.config.json") : null);
+    if (!target) throw new HttpError(500, "没有可写的配置位置");
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    const cur = fs.existsSync(target) ? JSON.parse(fs.readFileSync(target, "utf8")) : {};
+    fs.writeFileSync(target, JSON.stringify({ ...cur, ...patch }, null, 2) + "\n");
+  };
+
+  const setupState = () => ({
+    needed: setupReasons.length > 0,
+    reasons: [...setupReasons],
+    running: extractState.running,
+    current: { modDir: cfg.modDir, assetsDir: cfg.assetsDir, vanillaWin: cfg.vanillaWin },
+    detected: detectVanillaWins([cfg.vanillaWin]),
+    utmtCli: resolveUtmtCli(cfg.utmtCli, root),
+    expected: loadExpectedFingerprint(root),
+  });
 
   const handler: Connect.NextHandleFunction = async (req, res, next) => {
     const [rawPath, qs] = (req.url ?? "").split("?");
@@ -102,10 +187,60 @@ export function createApi(root: string): SvreApi {
     const method = req.method ?? "GET";
     try {
       if (url === "/api/config") return send(res, 200, cfg);
-      if (url === "/api/rooms") return send(res, 200, store.listRooms());
-      if (url === "/api/vanilla") return send(res, 200, store.searchVanilla(q.q ?? ""));
+      // -------- first-run setup wizard: the only routes that answer in degraded mode --------
+      if (url === "/api/setup" && method === "GET") return send(res, 200, setupState());
+      if (url === "/api/setup/moddir" && method === "POST") {
+        const b = await readJson(req);
+        if (!b.path && !cfg.modDir) throw new HttpError(400, "需要工作目录路径");
+        const target = path.resolve(String(b.path || cfg.modDir));
+        if (target === path.parse(target).root) throw new HttpError(400, "工作目录不能是盘符根目录");
+        fs.mkdirSync(path.join(target, "rooms"), { recursive: true });
+        const mf = path.join(target, "assets.json");
+        if (!fs.existsSync(mf)) fs.writeFileSync(mf, JSON.stringify({ sprites: {}, objects: {} }, null, 2) + "\n");
+        persistConfig({ modDir: target });
+        boot();
+        return send(res, 200, { ok: true, modDir: target, setup: setupState() });
+      }
+      if (url === "/api/setup/extract" && method === "POST") {
+        if (extractState.running) throw new HttpError(409, "提取正在进行中");
+        const b = await readJson(req);
+        const win = path.resolve(String(b.vanillaWin ?? ""));
+        if (!fs.existsSync(win) || !/\.win$/i.test(win)) throw new HttpError(400, `找不到数据文件：${win}`);
+        const mb = fs.statSync(win).size / 1048576;
+        if (mb < 64) throw new HttpError(400, `文件只有 ${mb.toFixed(1)} MB，不像 Stoneshard 的 data.win（正常约 1.5 GB）`);
+        const utmt = resolveUtmtCli(cfg.utmtCli, root);
+        if (!utmt) throw new HttpError(400, "找不到 UndertaleModCli.exe（配置 utmtCli，或随包 vendor/utmt/ 缺失）");
+        const scripts = [path.join(root, "extract", "ExportEditorAssets.csx"), path.join(root, "extract", "ExportRooms.csx")];
+        for (const s of scripts) if (!fs.existsSync(unpackedPath(s))) throw new HttpError(500, `缺导出脚本 ${s}`);
+        extractState.running = true;
+        emit({ type: "setup", phase: "assets", line: `${path.basename(utmt)} load ${win}` });
+        runExtract({
+          utmtCli: utmt,
+          vanillaWin: win,
+          assetsDir: cfg.assetsDir,
+          scripts,
+          expected: loadExpectedFingerprint(root),
+          onProgress: (p) => emit({ type: "setup", ...p }),
+        }).promise.then((r) => {
+          extractState.running = false;
+          if (!r.ok) return emit({ type: "setup", phase: "error", detail: r.error });
+          try {
+            persistConfig({ vanillaWin: win });
+            boot(); // pick up the fresh cache; healthy mode on
+            emit({ type: "setup", phase: "done", mismatches: r.mismatches });
+          } catch (e) {
+            emit({ type: "setup", phase: "error", detail: (e as Error).message });
+          }
+        });
+        return send(res, 202, { ok: true });
+      }
+      if (setupReasons.length && url.startsWith("/api/"))
+        return send(res, 503, { error: "首次运行设置未完成，请先走 /api/setup 向导", setup: true });
+      const st = store!;
+      if (url === "/api/rooms") return send(res, 200, st.listRooms());
+      if (url === "/api/vanilla") return send(res, 200, st.searchVanilla(q.q ?? ""));
       const vd = /^\/api\/vanilla-doc\/([A-Za-z0-9_]+)$/.exec(url);
-      if (vd && method === "GET") return send(res, 200, store.vanillaDoc(vd[1]));
+      if (vd && method === "GET") return send(res, 200, st.vanillaDoc(vd[1]));
       if (url === "/api/mod-assets") {
         modScan = scanModAssets(cfg.modDir, { vanilla: vanillaNames });
         return send(res, 200, { sprites: modScan.sprites, objects: modScan.objects, pages: modScan.pages.length, warnings: modScan.warnings, synced: modScan.synced });
@@ -170,39 +305,39 @@ export function createApi(root: string): SvreApi {
       }
       if (url === "/api/import" && method === "POST") {
         const b = await readJson(req);
-        return send(res, 200, store.importRoom(b.name, { base: b.base, by: b.by }));
+        return send(res, 200, st.importRoom(b.name, { base: b.base, by: b.by }));
       }
       if (url === "/api/create" && method === "POST") {
         const b = await readJson(req);
-        return send(res, 200, store.createRoom(b.name, { base: b.base, keep: b.keep, by: b.by }));
+        return send(res, 200, st.createRoom(b.name, { base: b.base, keep: b.keep, by: b.by }));
       }
 
       const m = /^\/api\/doc\/([A-Za-z0-9_]+)(?:\/([a-z]+))?$/.exec(url);
       if (m) {
         const [, room, action] = m;
-        if (!action && method === "GET") return send(res, 200, store.snapshot(room));
+        if (!action && method === "GET") return send(res, 200, st.snapshot(room));
         const body = method === "POST" ? await readJson(req) : {};
         switch (action) {
-          case "apply": return send(res, 200, store.apply(room, body));
-          case "undo": return send(res, 200, store.undo(room, body.by));
-          case "redo": return send(res, 200, store.redo(room, body.by));
-          case "changes": return send(res, 200, store.changes(room, Number(q.since ?? 0)));
+          case "apply": return send(res, 200, st.apply(room, body));
+          case "undo": return send(res, 200, st.undo(room, body.by));
+          case "redo": return send(res, 200, st.redo(room, body.by));
+          case "changes": return send(res, 200, st.changes(room, Number(q.since ?? 0)));
           case "compile":
             // compiling a room means the next pack reads it; make sure the generated
             // asset registrations are current too (self-heals when assets.json changed)
             modScan = scanModAssets(cfg.modDir, { vanilla: vanillaNames });
-            return send(res, 200, store.compileRoom(room, !!body.force));
-          case "adopt": return send(res, 200, store.adoptExternal(room, body.by));
-          case "describe": return send(res, 200, store.describe(room));
-          case "lint": return send(res, 200, store.describe(room).findings);
-          case "grid": return send(res, 200, store.grid(room, q.region), "text/plain; charset=utf-8");
-          case "query": return send(res, 200, store.query(room, q));
+            return send(res, 200, st.compileRoom(room, !!body.force));
+          case "adopt": return send(res, 200, st.adoptExternal(room, body.by));
+          case "describe": return send(res, 200, st.describe(room));
+          case "lint": return send(res, 200, st.describe(room).findings);
+          case "grid": return send(res, 200, st.grid(room, q.region), "text/plain; charset=utf-8");
+          case "query": return send(res, 200, st.query(room, q));
           case "notes":
-            if (method !== "POST") return send(res, 200, store.snapshot(room).notes);
-            return send(res, 200, body.remove ? store.removeNote(room, body.remove) : store.addNote(room, body));
+            if (method !== "POST") return send(res, 200, st.snapshot(room).notes);
+            return send(res, 200, body.remove ? st.removeNote(room, body.remove) : st.addNote(room, body));
           case "selection":
-            if (method === "POST") return send(res, 200, store.setSelection(room, body.by, body.ids ?? []));
-            return send(res, 200, store.selectionOf(room));
+            if (method === "POST") return send(res, 200, st.setSelection(room, body.by, body.ids ?? []));
+            return send(res, 200, st.selectionOf(room));
         }
         return send(res, 404, { error: `unknown action ${action}` });
       }
