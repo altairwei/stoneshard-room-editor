@@ -275,6 +275,38 @@ function setZMode(m: ZMode) {
   applyZ();
 }
 
+// ---------------- UI theme (day/night chrome) ----------------
+// index.html's inline script sets data-theme from svre.theme before first paint; this
+// owns the state afterwards. Chrome colours are CSS tokens (style.css); the few canvas
+// chrome colours pixi/2d-context paint with live here and follow the same switch.
+// The room ART never follows the UI theme -- sprites, the artboard sheet and the
+// overlay signal colours are game data or fixed signals, so the canvas keeps telling
+// the game truth in either theme. Render mode stays on its own fixed dark, so CLI
+// screenshots are identical regardless of the operator's theme.
+type UiTheme = "dark" | "light";
+const THEME_CANVAS: Record<UiTheme, { voidBg: number; rulerMinor: string; rulerMajor: string; rulerText: string; rulerCursor: string }> = {
+  dark: { voidBg: 0x2a2a2a, rulerMinor: "#48484e", rulerMajor: "#6a6a70", rulerText: "#9a9aa0", rulerCursor: "#6cb6ff" },
+  light: { voidBg: 0xd4d4d9, rulerMinor: "#c3c3ca", rulerMajor: "#9a9aa2", rulerText: "#55555e", rulerCursor: "#2272c8" },
+};
+
+function uiTheme(): UiTheme {
+  return document.documentElement.dataset.theme === "light" ? "light" : "dark";
+}
+
+function setUiTheme(t: UiTheme) {
+  document.documentElement.dataset.theme = t;
+  try {
+    localStorage.setItem("svre.theme", t);
+  } catch {
+    /* best effort */
+  }
+  if (!renderMode) app.renderer.background.color = THEME_CANVAS[t].voidBg;
+  // the button shows the current theme, like 顺序 shows the current z mode
+  $("b-theme").innerHTML = ICONS[t === "light" ? "sun" : "moon"];
+  drawRulers();
+  requestRender();
+}
+
 // objects whose runtime depth is fixed by code: reordering or relayering them cannot
 // change the game picture. Say so out loud -- a silent no-op reads as "the editor is
 // broken" (it did, once).
@@ -306,7 +338,7 @@ async function init() {
   hydrateIcons();
 
   const host = $("stage");
-  await app.init({ resizeTo: host, background: renderMode ? 0x0d0e11 : 0x2a2a2a, antialias: false, roundPixels: true, autoDensity: true, resolution: devicePixelRatio });
+  await app.init({ resizeTo: host, background: renderMode ? 0x0d0e11 : THEME_CANVAS[uiTheme()].voidBg, antialias: false, roundPixels: true, autoDensity: true, resolution: devicePixelRatio });
   host.appendChild(app.canvas);
   world.addChild(artboard); // index 0, under every scene root
   ghostLayer.alpha = 0.65;
@@ -341,6 +373,8 @@ async function init() {
   $("b-new").onclick = openNewDialog;
   $("b-zmode").onclick = () => setZMode(zMode === "game" ? "static" : "game");
   setZMode(zMode); // sync the button label with the persisted preference
+  $("b-theme").onclick = () => setUiTheme(uiTheme() === "light" ? "dark" : "light");
+  setUiTheme(uiTheme()); // sync the icon with the theme index.html painted at boot
   wireToolbox();
   wireTabs();
   wireDock();
@@ -1440,6 +1474,7 @@ function rulerStep() {
 }
 
 function drawRuler(c: HTMLCanvasElement, horizontal: boolean, len: number) {
+  const tc = THEME_CANVAS[uiTheme()];
   const dpr = devicePixelRatio || 1;
   const bw = Math.max(1, Math.round((horizontal ? len : RULER) * dpr));
   const bh = Math.max(1, Math.round((horizontal ? RULER : len) * dpr));
@@ -1470,13 +1505,13 @@ function drawRuler(c: HTMLCanvasElement, horizontal: boolean, len: number) {
     if (p < -0.5 || p > len + 0.5) continue;
     const isMajor = v % major === 0;
     const t = isMajor ? 13 : 6;
-    ctx.strokeStyle = isMajor ? "#6a6a70" : "#48484e";
+    ctx.strokeStyle = isMajor ? tc.rulerMajor : tc.rulerMinor;
     ctx.beginPath();
     if (horizontal) { ctx.moveTo(p, RULER); ctx.lineTo(p, RULER - t); }
     else { ctx.moveTo(RULER, p); ctx.lineTo(RULER - t, p); }
     ctx.stroke();
     if (isMajor) {
-      ctx.fillStyle = "#9a9aa0";
+      ctx.fillStyle = tc.rulerText;
       if (horizontal) ctx.fillText(String(v), p + 3, 10);
       else { ctx.save(); ctx.translate(9, p - 2); ctx.rotate(-Math.PI / 2); ctx.fillText(String(v), 0, 0); ctx.restore(); }
     }
@@ -1484,7 +1519,7 @@ function drawRuler(c: HTMLCanvasElement, horizontal: boolean, len: number) {
   const cur = horizontal ? rulerCursor?.x : rulerCursor?.y;
   if (cur !== undefined && cur >= 0 && cur <= len) {
     const q = Math.round(cur) + 0.5;
-    ctx.strokeStyle = "#6cb6ff";
+    ctx.strokeStyle = tc.rulerCursor;
     ctx.beginPath();
     if (horizontal) { ctx.moveTo(q, 0); ctx.lineTo(q, RULER); } else { ctx.moveTo(0, q); ctx.lineTo(RULER, q); }
     ctx.stroke();
@@ -2335,6 +2370,7 @@ const whoText = (by?: string) => (by === BY ? "你" : by ? `${by}` : "有人");
   },
   toolKind() { return tool.kind; },
   get readOnly() { return readOnly(); },
+  get theme() { return uiTheme(); },
   zmode(m?: "game" | "static") {
     if (m === "game" || m === "static") setZMode(m);
     return zMode;

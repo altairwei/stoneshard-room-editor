@@ -50,6 +50,11 @@ export const ICONS: Record<string, string> = {
   grip: F(
     `<circle cx="6" cy="4" r="1.1"/><circle cx="10" cy="4" r="1.1"/><circle cx="6" cy="8" r="1.1"/><circle cx="10" cy="8" r="1.1"/><circle cx="6" cy="12" r="1.1"/><circle cx="10" cy="12" r="1.1"/>`,
   ),
+  // sun / moon for the UI theme toggle (shows the current theme, like 顺序 does)
+  sun: S(
+    `<circle cx="8" cy="8" r="3.1"/><path d="M8 1.6v1.9M8 12.5v1.9M1.6 8h1.9M12.5 8h1.9M3.5 3.5l1.3 1.3M11.2 11.2l1.3 1.3M12.5 3.5l-1.3 1.3M4.8 11.2l-1.3 1.3"/>`,
+  ),
+  moon: S(`<path d="M14 8.5A6 6 0 1 1 7.5 2a4.7 4.7 0 0 0 6.5 6.5z"/>`),
 };
 
 // fill every [data-icon] placeholder in the static document

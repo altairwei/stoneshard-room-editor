@@ -4,6 +4,12 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>SV Room Editor</title>
+    <script>
+      // paint the persisted UI theme before the bundle lands, so it never flashes;
+      // main.ts owns the state from there (#b-theme toggles, persisted as svre.theme)
+      try { document.documentElement.dataset.theme = localStorage.getItem("svre.theme") === "light" ? "light" : "dark"; }
+      catch { document.documentElement.dataset.theme = "dark"; }
+    </script>
   </head>
   <body>
     <header id="appbar">
@@ -16,6 +22,7 @@
       <span class="spacer"></span>
       <span id="load-state"></span>
       <button id="b-compile" title="编译工程：重放日志生成编译快照，并同步 Rooms.g.cs（Ctrl+S）" disabled>编译</button>
+      <button id="b-theme" class="icon-btn" title="界面主题：白天 / 黑夜（点击切换）"></button>
     </header>
     <div id="options">
       <span id="opt-tool">选择</span>
