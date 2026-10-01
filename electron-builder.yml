@@ -1,0 +1,31 @@
+appId: com.stoneshard.roomeditor
+productName: Stoneshard Room Editor
+copyright: MIT
+directories:
+  output: release
+# The package carries the app, the bundled backend, the extract scripts and the UTMT
+# CLI -- and NOT ONE BYTE of asset cache (copyright: every install extracts its own
+# cache from the owner's game via the first-run wizard). node_modules is excluded on
+# purpose: dist/ (vite) and dist-server/ (rolldown) have everything inlined.
+files:
+  - package.json
+  - electron/**
+  - dist/**
+  - dist-server/**
+  - extract/*.csx
+  - extract/fingerprint.json
+  - vendor/**
+  - "!**/*.map"
+  # pixi is vite-bundled into dist/ and the backend is rolldown-inlined -- the runtime
+  # needs zero node_modules, keep electron-builder's auto-include out
+  - "!node_modules/**"
+# child processes (UTMT CLI) and files it reads (the .csx scripts) cannot live inside
+# asar; the server rewrites app.asar -> app.asar.unpacked for exactly these paths
+asarUnpack:
+  - vendor/**
+  - extract/**
+win:
+  target: zip
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true

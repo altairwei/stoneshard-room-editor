@@ -13,11 +13,15 @@
     "app": "electron .",
     "app:dev": "set SVRE_APP_DEV=1&& electron .",
     "build:server": "rolldown server/standalone.ts --platform node --format cjs --file dist-server/standalone.cjs",
-    "build:app": "npm run build && npm run build:server"
+    "build:app": "npm run build && npm run build:server",
+    "vendor:utmt": "node extract/vendor-utmt.mjs",
+    "fingerprint": "node extract/fingerprint.mjs",
+    "dist": "npm run build:app && npm run vendor:utmt && electron-builder --win zip"
   },
   "devDependencies": {
     "@types/node": "^26.6.3",
     "electron": "^44.5.1",
+    "electron-builder": "^26.15.3",
     "typescript": "^7.0.2",
     "vite": "^8.3.1"
   },

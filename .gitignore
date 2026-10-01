@@ -2,4 +2,6 @@ node_modules/
 dist/
 dist-server/
 cache/
+vendor/
+release/
 svre.config.local.json

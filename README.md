@@ -126,6 +126,24 @@ npm run app:dev     # 开发形态：壳里拉一个 vite（5186，带 HMR），
 `node extract/fingerprint.mjs <新版本号>`；打包安装删掉 `<userData>/cache/` 重开即
 重走向导（工作目录已存在会直跳第 2 步）。
 
+### 打包分发（electron-builder）
+
+```bash
+npm run dist   # = build:app + vendor:utmt + electron-builder --win zip
+```
+
+产物 `release/Stoneshard Room Editor-<版本>-win.zip`：解压即用的绿色版，含应用、
+内嵌后端、导出脚本与 UTMT CLI（MIT，可随包）；**不含**资产缓存（版权，首启向导
+现场提取），也不含 node_modules（前端 pixi 与后端依赖全部打进 bundle，运行时零
+外部依赖）。
+
+- `vendor/utmt/` 由 `npm run vendor:utmt` 从本机 `utmtCli` 的安装目录取（gitignored，
+  每次打包前自动重跑）。
+- UTMT CLI 与 `.csx` 脚本必须 `asarUnpack`（子进程与外部进程读取进不了 asar）；
+  server 对这几条路径做 `app.asar → app.asar.unpacked` 改写（`unpackedPath()`）。
+- zip 目标不签名，一般无需联网；若卡在 winCodeSign/nsis 下载，设
+  `ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/`。
+
 ## agent：svre CLI
 
 ```bash
