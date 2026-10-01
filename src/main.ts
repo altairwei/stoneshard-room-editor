@@ -273,6 +273,7 @@ function setZMode(m: ZMode) {
   b.textContent = m === "game" ? "顺序：游戏" : "顺序：静态";
   b.classList.toggle("static", m === "static");
   applyZ();
+  pushMenuState();
 }
 
 // ---------------- UI theme (day/night chrome) ----------------
@@ -308,6 +309,7 @@ function setUiTheme(t: UiTheme) {
   $("b-theme").innerHTML = ICONS[t === "light" ? "sun" : "moon"];
   drawRulers();
   redrawZoomDependent(); // re-paints artboard/grid/bounds with the theme's canvas colours
+  pushMenuState();
 }
 
 // objects whose runtime depth is fixed by code: reordering or relayering them cannot
@@ -386,7 +388,9 @@ async function init() {
   wireInsts();
   wireViewport(host);
   wireKeys(host);
+  wireMenu();
   wireWs();
+  pushMenuState(); // seat the native menu's checkmarks on the boot state
 
   const initial = params.get("room");
   const wantVanilla = params.get("vanilla") === "1";
@@ -442,11 +446,39 @@ async function refreshRooms(selectAfter?: string) {
 
 // ---------------- open / sync ----------------
 
+// ---------------- in-page message dialogs ----------------
+// window.confirm/alert/prompt are synchronous blocking calls; Electron never answers
+// them, and the renderer wedges hard on the unanswered dialog IPC. Every user prompt
+// goes through this one async <dialog> instead (nicer in the browser too).
+function msgDialog(text: string, opts: { input?: string; okText?: string; cancel?: boolean } = {}): Promise<string | boolean | null> {
+  const dlg = $<HTMLDialogElement>("msg-dialog");
+  const inp = $<HTMLInputElement>("md-input");
+  const cancelBtn = $<HTMLButtonElement>("md-cancel");
+  $("md-text").textContent = text;
+  inp.hidden = opts.input === undefined;
+  inp.value = opts.input ?? "";
+  cancelBtn.hidden = opts.cancel === false;
+  $("md-ok").textContent = opts.okText ?? "确定";
+  const done = new Promise<string | boolean | null>((resolve) => {
+    dlg.addEventListener("close", () => {
+      if (dlg.returnValue === "ok") resolve(opts.input !== undefined ? inp.value : true);
+      else resolve(opts.input !== undefined ? null : false);
+    }, { once: true });
+  });
+  dlg.showModal();
+  (inp.hidden ? $("md-ok") : inp).focus();
+  if (!inp.hidden) inp.select();
+  return done;
+}
+const confirmDialog = (text: string) => msgDialog(text) as Promise<boolean>;
+const alertDialog = async (text: string) => { await msgDialog(text, { cancel: false }); };
+const promptDialog = (text: string, initial = "") => msgDialog(text, { input: initial }) as Promise<string | null>;
+
 async function openRoom(name: string, opts: { silent?: boolean; vanilla?: boolean } = {}) {
   const entry = rooms.find((r) => r.name === name);
   if (!opts.vanilla && entry && !entry.hasProject) {
     // a compiled room with no project yet: offer to adopt it into a project
-    if (opts.silent || !confirm(`房间 ${name} 尚未导入。是否从 Codes/${name}.gml 创建工程？基底将自动推断。`)) {
+    if (opts.silent || !(await confirmDialog(`房间 ${name} 尚未导入。是否从 Codes/${name}.gml 创建工程？基底将自动推断。`))) {
       $<HTMLSelectElement>("room-select").value = doc?.name ?? "";
       return;
     }
@@ -454,7 +486,7 @@ async function openRoom(name: string, opts: { silent?: boolean; vanilla?: boolea
       const r = await api("/api/import", "POST", { name, by: BY });
       toast(`已导入 ${name}：基底 ${r.base}，${r.ops} 条操作`);
     } catch (e) {
-      alert(`导入失败：${(e as Error).message}`);
+      await alertDialog(`导入失败：${(e as Error).message}`);
       $<HTMLSelectElement>("room-select").value = doc?.name ?? "";
       return;
     }
@@ -566,12 +598,12 @@ async function compileDoc() {
   } catch (e) {
     if (e instanceof ApiError && e.status === 409) {
       if (Array.isArray(e.detail)) {
-        alert(`日志无法在基底上完整重放，请先处理以下问题：\n\n${(e.detail as ReplayProblem[]).map((p) => `r${p.rev}：${p.message}`).join("\n")}`);
-      } else if (confirm(`${e.message}\n\n「确定」采纳磁盘上的外部改动（记入一条 external 日志）；「取消」不做改动。`)) {
+        await alertDialog(`日志无法在基底上完整重放，请先处理以下问题：\n\n${(e.detail as ReplayProblem[]).map((p) => `r${p.rev}：${p.message}`).join("\n")}`);
+      } else if (await confirmDialog(`${e.message}\n\n「确定」采纳磁盘上的外部改动（记入一条 external 日志）；「取消」不做改动。`)) {
         await adoptDoc();
         await compileDoc();
       }
-    } else alert(`编译失败：${(e as Error).message}`);
+    } else await alertDialog(`编译失败：${(e as Error).message}`);
   }
 }
 
@@ -583,7 +615,7 @@ async function adoptDoc() {
     await syncDoc();
     await refreshRooms(doc.name);
   } catch (e) {
-    alert(`采纳失败：${(e as Error).message}`);
+    await alertDialog(`采纳失败：${(e as Error).message}`);
   }
 }
 
@@ -623,6 +655,7 @@ async function refreshScene() {
 }
 
 function applyVisibility() {
+  pushMenuState();
   if (!scene || !doc) return;
   for (const n of scene.nodes) {
     let on = !layerOff.has(n.layerIndex) && !hiddenInsts.has(n.inst.instance_id);
@@ -1032,7 +1065,7 @@ function rescaleNotes() {
 
 async function addNoteAt(wx: number, wy: number) {
   if (!doc || readOnly()) { if (readOnly()) toastReadOnly(); return; }
-  const text = prompt(`便签（${Math.round(wx)}, ${Math.round(wy)}）：人类和 agent 均可见`, "");
+  const text = await promptDialog(`便签（${Math.round(wx)}, ${Math.round(wy)}）：人类和 agent 均可见`);
   if (!text?.trim()) return;
   await api(`/api/doc/${doc.name}/notes`, "POST", { by: BY, x: Math.round(wx), y: Math.round(wy), text: text.trim() });
   doc = await api(`/api/doc/${doc.name}`);
@@ -1165,6 +1198,7 @@ function setTool(t: Tool) {
   if (t.kind === "place" || t.kind === "marker") buildGhost(t.object);
   renderToolExtras();
   drawOverlay();
+  pushMenuState();
 }
 
 // letter keys land here; P re-arms the last pick, or opens the library when there is none
@@ -1199,7 +1233,7 @@ function placeAt(wx: number, wy: number) {
   const li = tool.kind === "marker" ? layerFor(object) : activeLayer;
   const L = room().layers[li];
   if (L?.layer_type !== LayerType.Instances) {
-    alert("请先在「层组」页签中选择一个实例图层");
+    void alertDialog("请先在「层组」页签中选择一个实例图层");
     return;
   }
   const verb = tool.kind === "marker" ? "标记" : "放置";
@@ -2234,12 +2268,12 @@ async function openNewDialog() {
   $("nd-ok").onclick = async (e) => {
     e.preventDefault();
     const name = nameInp.value.trim();
-    if (!/^r_[A-Za-z0-9_]+$/.test(name)) { alert("房间名格式不正确，应形如 r_sv_something"); return; }
-    if (!baseSel.value) { alert("请选择一个原版房间作为基底"); return; }
+    if (!/^r_[A-Za-z0-9_]+$/.test(name)) { await alertDialog("房间名格式不正确，应形如 r_sv_something"); return; }
+    if (!baseSel.value) { await alertDialog("请选择一个原版房间作为基底"); return; }
     try {
       await api("/api/create", "POST", { name, base: baseSel.value, keep: $<HTMLSelectElement>("nd-keep").value, by: BY });
     } catch (err) {
-      alert(`创建失败：${(err as Error).message}`);
+      await alertDialog(`创建失败：${(err as Error).message}`);
       return;
     }
     dlg.close();
@@ -2293,48 +2327,125 @@ function openVanillaFromPicker(name: string) {
   void openRoom(name, { vanilla: true });
 }
 
+// ================= electron host (native menus) =================
+// Electron's preload exposes window.svreHost; plain browsers skip all of this.
+// Every menu item is one action id dispatched to the same functions the buttons and
+// keys already call -- the native menu is a third input device, never a parallel path.
+interface SvreHost {
+  isElectron: boolean;
+  onMenu(cb: (id: string) => void): void;
+  pushState(s: { theme: UiTheme; zmode: ZMode; tool: Tool["kind"]; toggles: Record<string, boolean> }): void;
+}
+const hostBridge = (window as any).svreHost as SvreHost | undefined;
+
+function wireMenu() {
+  if (!hostBridge) return;
+  document.body.classList.add("electron"); // hides the controls that moved into menus
+  hostBridge.onMenu((id) => menuAction(id));
+}
+
+function menuAction(id: string): boolean {
+  const stage = $("stage");
+  if (id.startsWith("view.toggle.")) {
+    const key = id.slice("view.toggle.".length) as keyof typeof toggles;
+    if (!(key in toggles)) return false;
+    toggles[key].checked = !toggles[key].checked;
+    applyVisibility();
+    return true;
+  }
+  if (id.startsWith("tool.")) {
+    pickTool(id.slice(5) as Tool["kind"]);
+    return true;
+  }
+  switch (id) {
+    case "file.new": openNewDialog(); return true;
+    case "file.vanilla": openVanillaPicker(); return true;
+    case "file.compile": void compileDoc(); return true;
+    case "edit.undo": void undoRedo("undo"); return true;
+    case "edit.redo": void undoRedo("redo"); return true;
+    case "edit.find": {
+      showTab("insts");
+      const q = $<HTMLInputElement>("insts-q");
+      const panel = q.closest(".dock-panel");
+      if (panel?.classList.contains("collapsed")) panel.querySelector<HTMLElement>("[data-collapse]")?.click();
+      q.focus();
+      q.select();
+      return true;
+    }
+    case "view.theme.light": setUiTheme("light"); return true;
+    case "view.theme.dark": setUiTheme("dark"); return true;
+    case "view.zmode.game": setZMode("game"); return true;
+    case "view.zmode.static": setZMode("static"); return true;
+    case "view.zoomIn": zoomStep(1); return true;
+    case "view.zoomOut": zoomStep(-1); return true;
+    case "view.fit": fit(); return true;
+    case "view.one": zoomAt(1, stage.clientWidth / 2, stage.clientHeight / 2); return true;
+  }
+  return false;
+}
+
+// the native menu's checkmarks/radios are only honest when rebuilt on every change
+function pushMenuState() {
+  hostBridge?.pushState({
+    theme: uiTheme(),
+    zmode: zMode,
+    tool: tool.kind,
+    toggles: Object.fromEntries(Object.entries(toggles).map(([k, el]) => [k, el.checked])),
+  });
+}
+
 // ================= websocket =================
 
 function wireWs() {
   const hot = (import.meta as any).hot;
-  if (!hot) return;
-  hot.on("svre:event", async (e: any) => {
-    if (e?.type === "created") { await refreshRooms(); return; }
-    if (!doc || e?.room !== doc.name || doc.vanilla) return; // vanilla views track no project events
-    switch (e.type) {
-      case "change":
-        if (e.entry?.by === BY) break; // our own commit already replayed it
-        toast(`${whoText(e.entry?.by)}：${e.entry?.label ?? "修改了房间"}（r${e.entry?.rev}）`);
-        await syncDoc();
-        break;
-      case "undo":
-        if (e.by === BY) break;
-        toast(`${whoText(e.by)} 撤销了 r${e.undone}`);
-        await syncDoc();
-        break;
-      case "compiled":
-        doc.compiledRev = e.rev;
-        doc.dirty = false;
-        updateChrome();
-        break;
-      case "notes":
-        if (e.by === BY) break;
-        toast(`${whoText(e.by)} 修改了便签`);
-        doc = await api(`/api/doc/${doc.name}`);
-        renderHistory();
-        drawNotes();
-        break;
-      case "selection":
-        if (e.by === BY) break;
-        remoteSel.set(e.by, e.ids ?? []);
-        drawOverlay();
-        break;
-      case "reloaded":
-        toast("工程文件在磁盘上发生变化（git 操作或其他服务），已重新加载");
-        await syncDoc();
-        break;
-    }
-  });
+  if (hot) {
+    hot.on("svre:event", (e: any) => void onStoreEvent(e));
+  } else {
+    // no vite channel outside the dev server (electron prod): the standalone
+    // backend emits the same events over SSE
+    const es = new EventSource("/api/events");
+    es.onmessage = (m) => {
+      try { void onStoreEvent(JSON.parse(m.data)); } catch { /* malformed event: ignore */ }
+    };
+  }
+}
+
+async function onStoreEvent(e: any) {
+  if (e?.type === "created") { await refreshRooms(); return; }
+  if (!doc || e?.room !== doc.name || doc.vanilla) return; // vanilla views track no project events
+  switch (e.type) {
+    case "change":
+      if (e.entry?.by === BY) break; // our own commit already replayed it
+      toast(`${whoText(e.entry?.by)}：${e.entry?.label ?? "修改了房间"}（r${e.entry?.rev}）`);
+      await syncDoc();
+      break;
+    case "undo":
+      if (e.by === BY) break;
+      toast(`${whoText(e.by)} 撤销了 r${e.undone}`);
+      await syncDoc();
+      break;
+    case "compiled":
+      doc.compiledRev = e.rev;
+      doc.dirty = false;
+      updateChrome();
+      break;
+    case "notes":
+      if (e.by === BY) break;
+      toast(`${whoText(e.by)} 修改了便签`);
+      doc = await api(`/api/doc/${doc.name}`);
+      renderHistory();
+      drawNotes();
+      break;
+    case "selection":
+      if (e.by === BY) break;
+      remoteSel.set(e.by, e.ids ?? []);
+      drawOverlay();
+      break;
+    case "reloaded":
+      toast("工程文件在磁盘上发生变化（git 操作或其他服务），已重新加载");
+      await syncDoc();
+      break;
+  }
 }
 
 const whoText = (by?: string) => (by === BY ? "你" : by ? `${by}` : "有人");
@@ -2376,6 +2487,8 @@ const whoText = (by?: string) => (by === BY ? "你" : by ? `${by}` : "有人");
       .sort((a, b) => a.ord - b.ord);
   },
   toolKind() { return tool.kind; },
+  menu(id: string) { return menuAction(id); },
+  get electron() { return !!hostBridge; },
   get readOnly() { return readOnly(); },
   get theme() { return uiTheme(); },
   get canvasColors() { return { ...THEME_CANVAS[uiTheme()] }; },

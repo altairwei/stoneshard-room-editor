@@ -3,15 +3,21 @@
   "private": true,
   "version": "0.0.1",
   "type": "module",
+  "main": "electron/main.cjs",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
     "extract": "node extract/run.mjs",
-    "extract:scan": "node extract/run.mjs scan"
+    "extract:scan": "node extract/run.mjs scan",
+    "app": "electron .",
+    "app:dev": "set SVRE_APP_DEV=1&& electron .",
+    "build:server": "rolldown server/standalone.ts --platform node --format cjs --file dist-server/standalone.cjs",
+    "build:app": "npm run build && npm run build:server"
   },
   "devDependencies": {
     "@types/node": "^26.6.3",
+    "electron": "^44.5.1",
     "typescript": "^7.0.2",
     "vite": "^8.3.1"
   },

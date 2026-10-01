@@ -477,3 +477,6 @@ body.render #toolbox, body.render #ruler-corner, body.render #ruler-x, body.rend
 body.render #dock, body.render #status, body.render #toasts { display: none !important; }
 body.render #canvas-area { display: block; }
 body.render #stage { position: fixed; inset: 0; background: #0d0e11; }
+
+/* Electron: controls whose job the native menu took over stay in plain browsers */
+body.electron .menu-only { display: none !important; }

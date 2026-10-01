@@ -15,14 +15,14 @@
     <header id="appbar">
       <span class="brand"><span class="brand-logo" data-icon="logo"></span>SV Room Editor</span>
       <select id="room-select" title="房间"></select>
-      <button id="b-new" title="基于一个原版房间新建">新建…</button>
+      <button id="b-new" class="menu-only" title="基于一个原版房间新建">新建…</button>
       <div class="sep"></div>
       <button id="b-undo" class="icon-btn" data-icon="undo" title="撤销 (Ctrl+Z)" disabled></button>
       <button id="b-redo" class="icon-btn" data-icon="redo" title="重做 (Ctrl+Y)" disabled></button>
       <span class="spacer"></span>
       <span id="load-state"></span>
       <button id="b-compile" title="编译工程：重放日志生成编译快照，并同步 Rooms.g.cs（Ctrl+S）" disabled>编译</button>
-      <button id="b-theme" class="icon-btn" title="界面主题：白天 / 黑夜（点击切换）"></button>
+      <button id="b-theme" class="icon-btn menu-only" title="界面主题：白天 / 黑夜（点击切换）"></button>
     </header>
     <div id="options">
       <span id="opt-tool">选择</span>
@@ -34,10 +34,10 @@
       <label class="itoggle" title="标记点"><input type="checkbox" id="t-markers" /><i data-icon="markers"></i><span class="txt">标记</span></label>
       <label class="itoggle" title="网格 (G)"><input type="checkbox" id="t-grid" /><i data-icon="grid"></i><span class="txt">网格</span></label>
       <label class="itoggle" title="便签"><input type="checkbox" id="t-notes" checked /><i data-icon="note"></i><span class="txt">便签</span></label>
-      <button id="b-zmode" title="画布排序方式：&#10;游戏 = 模拟运行时 depth（游戏内真实遮挡；选中实例始终置顶，松开回到真实顺序）&#10;静态 = UTMT 视角（图层 depth + 数组顺序，用于对账）">顺序：游戏</button>
+      <button id="b-zmode" class="menu-only" title="画布排序方式：&#10;游戏 = 模拟运行时 depth（游戏内真实遮挡；选中实例始终置顶，松开回到真实顺序）&#10;静态 = UTMT 视角（图层 depth + 数组顺序，用于对账）">顺序：游戏</button>
       <span class="spacer"></span>
-      <button id="b-zoom-out" class="icon-btn" title="缩小 (-)"><i data-icon="zoomOut"></i><span class="txt">缩小</span></button>
-      <select id="zoom-preset" title="缩放">
+      <button id="b-zoom-out" class="icon-btn menu-only" title="缩小 (-)"><i data-icon="zoomOut"></i><span class="txt">缩小</span></button>
+      <select id="zoom-preset" class="menu-only" title="缩放">
         <option value="" id="zoom-cur" hidden>100%</option>
         <option value="25">25%</option>
         <option value="50">50%</option>
@@ -48,10 +48,10 @@
         <option value="800">800%</option>
         <option value="fit">适配窗口</option>
       </select>
-      <button id="b-zoom-in" class="icon-btn" title="放大 (+)"><i data-icon="zoomIn"></i><span class="txt">放大</span></button>
-      <div class="sep"></div>
-      <button id="b-fit" title="适配窗口 (F / Ctrl+0)">适配</button>
-      <button id="b-1x" title="实际像素 (1 / Ctrl+1)">1:1</button>
+      <button id="b-zoom-in" class="icon-btn menu-only" title="放大 (+)"><i data-icon="zoomIn"></i><span class="txt">放大</span></button>
+      <div class="sep menu-only"></div>
+      <button id="b-fit" class="menu-only" title="适配窗口 (F / Ctrl+0)">适配</button>
+      <button id="b-1x" class="menu-only" title="实际像素 (1 / Ctrl+1)">1:1</button>
     </div>
     <div id="banner" hidden></div>
     <main>
@@ -142,6 +142,15 @@
         <label></label>
         <div style="display:flex; gap:8px; justify-content:flex-end">
           <button value="cancel">取消</button><button id="vd-ok" value="ok" class="primary">打开（只读）</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="msg-dialog">
+      <form method="dialog" class="form">
+        <div id="md-text" style="grid-column: 1 / -1; white-space: pre-line"></div>
+        <input id="md-input" style="grid-column: 1 / -1" spellcheck="false" autocomplete="off" hidden />
+        <div style="grid-column: 1 / -1; display:flex; gap:8px; justify-content:flex-end">
+          <button id="md-ok" value="ok" class="primary">确定</button><button id="md-cancel" value="cancel">取消</button>
         </div>
       </form>
     </dialog>

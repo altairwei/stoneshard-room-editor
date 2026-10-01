@@ -64,7 +64,15 @@ function readJson(req: any): Promise<any> {
   });
 }
 
-export function svreApi(root: string): Plugin {
+export interface SvreApi {
+  cfg: SvreConfig;
+  handler: Connect.NextHandleFunction;
+  // store events (who changed what); vite wires this to its ws, the standalone
+  // server to its SSE channel
+  setEmit: (cb: (e: Record<string, unknown>) => void) => void;
+}
+
+export function createApi(root: string): SvreApi {
   const cfg = loadConfig(root);
   let emit: (e: Record<string, unknown>) => void = () => {};
   const store = new Store(cfg, (e) => emit({ ...e, at: new Date().toISOString() }));
@@ -164,10 +172,15 @@ export function svreApi(root: string): Plugin {
     next();
   };
 
+  return { cfg, handler, setEmit: (cb) => { emit = cb; } };
+}
+
+export function svreApi(root: string): Plugin {
+  const { handler, setEmit } = createApi(root);
   return {
     name: "svre-api",
     configureServer(server) {
-      emit = (e) => server.ws.send("svre:event", e);
+      setEmit((e) => server.ws.send("svre:event", e));
       server.middlewares.use(handler);
     },
   };
