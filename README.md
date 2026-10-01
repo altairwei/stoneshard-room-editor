@@ -68,6 +68,7 @@ npm run dev         # http://localhost:5178/?room=r_sv_hut_inside1
 | Del · Ctrl+D · Ctrl+C/V · Ctrl+A | 删除 · 原地复制 · 复制粘贴 · 全选当前图层 |
 | Ctrl+Z / Ctrl+Y · Ctrl+S | 撤销 / 重做（只动自己的条目）· 编译 |
 | Ctrl+K 或「对象」页签 | 搜对象放置，Esc 结束 |
+| 对象库里「＋ 导入 sprite…」（或文件菜单） | 把新画的 PNG 注册成 mod 对象：选文件（多选 = 多帧，按 `_N` 排序）→ 自动起 sprite/对象名 → parent 默认 `o_shelf`（家具深度 depth=-y；它游戏内随机选帧，多帧要固定帧就清空 parent）→ 导入后立即可摆。写 `Sprites/*.png` + `assets.json`，生成的 C# 与所有打开着的客户端自动刷新 |
 | + / − · F / Ctrl+0 适配 · 1 / Ctrl+1 实际像素 | 缩放步进；选项栏右侧下拉选预设 |
 | S 吸附 · Shift+H 隐形对象 · G 网格 | 显示/编辑开关（选项栏的图标按钮） |
 | 画布上沿/左沿的标尺 | 世界像素刻度；蓝色区段 = 房间范围，蓝线 = 光标 |
@@ -91,7 +92,7 @@ npm run app:dev     # 开发形态：壳里拉一个 vite（5186，带 HMR），
 
 | 菜单 | 内容 |
 |---|---|
-| 文件 | 新建房间… Ctrl+N · 打开原版房间（只读）… Ctrl+O · 编译 Ctrl+S · 打开 mod 目录 · 退出 |
+| 文件 | 新建房间… Ctrl+N · 打开原版房间（只读）… Ctrl+O · 导入 sprite… · 编译 Ctrl+S · 打开 mod 目录 · 退出 |
 | 编辑 | 撤销 Ctrl+Z · 重做 Ctrl+Y · 查找实例 Ctrl+F（聚焦实例筛选框） |
 | 视图 | 主题 白天/黑夜（单选）· 顺序 游戏/静态（单选）· 吸附/隐形/碰撞/标记/网格/便签（勾选）· 放大 Ctrl+= · 缩小 Ctrl+- · 适配 Ctrl+0 · 实际像素 Ctrl+1 · 全屏 |
 | 工具 | 选择/抓手/放置/碰撞矩形/屏障涂刷/区域/标记/便签（单选，与工具箱同步） |
@@ -169,7 +170,8 @@ node test/diff_rooms.ts    # 四个编译快照 diff→重放→序列化逐字�
 - mod 对象的 Create 事实沿父链取（父链是原版的，`from` 标注保持真实来源）；
   create.json 只扫原版，不猜 mod 对象的运行时行为。
 - 端点：`GET /api/mod-assets`（每次请求重扫+自愈）、`POST /api/mod-assets/sync`、
-  `GET /mod-assets/pages/<i>.png`（no-store）。
+  `POST /api/mod-assets/import-sprite`（注册新 sprite：写 PNG + 扩 assets.json + 广播
+  `assets` 事件，与「导入 sprite」对话框同一通道）、`GET /mod-assets/pages/<i>.png`（no-store）。
 - 例外通道：需要计算逻辑的注册（非常量）继续手写 C#——编辑器看不到它，这是划好的
   边界。
 

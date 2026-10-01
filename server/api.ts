@@ -23,7 +23,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { Connect, Plugin } from "vite";
-import { generatedCsPath, scanModAssets, type ModAssets, type VanillaNames } from "./modassets.ts";
+import { generatedCsPath, loadManifest, pngSizeBuffer, saveManifest, scanModAssets, type ModAssets, type VanillaNames } from "./modassets.ts";
 import { HttpError, Store } from "./store.ts";
 
 export interface SvreConfig {
@@ -113,6 +113,53 @@ export function createApi(root: string): SvreApi {
       if (url === "/api/mod-assets/sync" && method === "POST") {
         modScan = scanModAssets(cfg.modDir, { vanilla: vanillaNames });
         return send(res, 200, { file: path.basename(generatedCsPath(cfg.modDir)), warnings: modScan.warnings, synced: modScan.synced });
+      }
+      // the artist flow: draw PNG(s) -> register sprite+object -> place. Writes
+      // Sprites/*.png, extends assets.json, then the usual scan self-heals the .g.cs
+      if (url === "/api/mod-assets/import-sprite" && method === "POST") {
+        const b = await readJson(req);
+        // fresh scan first: validation must see the disk as it is, not the last GET's state
+        modScan = scanModAssets(cfg.modDir, { vanilla: vanillaNames });
+        const ident = /^[A-Za-z_]\w*$/;
+        const sprite = String(b.sprite ?? "");
+        const object = String(b.object ?? "");
+        if (!ident.test(sprite)) throw new HttpError(400, `sprite 名不合法（字母/数字/下划线，字母或下划线开头）：${sprite || "(空)"}`);
+        if (!ident.test(object)) throw new HttpError(400, `对象名不合法：${object || "(空)"}`);
+        if (vanillaNames.sprites.has(sprite)) throw new HttpError(409, `sprite ${sprite} 与原版重名，换个名字`);
+        if (vanillaNames.objects.has(object)) throw new HttpError(409, `对象 ${object} 与原版重名，换个名字`);
+        if (modScan.sprites[sprite]) throw new HttpError(409, `Sprites/ 里已有 ${sprite}（换图直接替换文件；加帧放 ${sprite}_N.png 后 sync）`);
+        if (modScan.objects[object]) throw new HttpError(409, `assets.json 已注册对象 ${object}`);
+        const frames: { buf: Buffer; w: number; h: number }[] = [];
+        for (const f of Array.isArray(b.frames) ? b.frames : []) {
+          const buf = Buffer.from(String((f as { data?: unknown } | null)?.data ?? ""), "base64");
+          const size = pngSizeBuffer(buf);
+          if (!size) throw new HttpError(400, "有文件不是合法的 PNG");
+          frames.push({ buf, ...size });
+        }
+        if (!frames.length) throw new HttpError(400, "至少要选一帧 PNG");
+        if (!frames.every((f) => f.w === frames[0].w && f.h === frames[0].h)) throw new HttpError(400, "多帧的尺寸必须一致");
+        const { manifest } = loadManifest(cfg.modDir);
+        const parent = b.parent ? String(b.parent) : undefined;
+        if (parent && !vanillaNames.objects.has(parent) && !manifest.objects[parent])
+          throw new HttpError(400, `parent ${parent} 不在原版对象表里`);
+        const origin = b.origin !== undefined ? [Number(b.origin[0]), Number(b.origin[1])] as [number, number] : undefined;
+        if (origin && (!Number.isFinite(origin[0]) || !Number.isFinite(origin[1]))) throw new HttpError(400, "origin 必须是两个数字");
+        const note = b.note ? String(b.note) : undefined;
+
+        const dir = path.join(cfg.modDir, "Sprites");
+        fs.mkdirSync(dir, { recursive: true });
+        const files: string[] = [];
+        frames.forEach((f, i) => {
+          const name = frames.length === 1 ? `${sprite}.png` : `${sprite}_${i}.png`;
+          fs.writeFileSync(path.join(dir, name), f.buf);
+          files.push(name);
+        });
+        if (origin) manifest.sprites[sprite] = { origin };
+        manifest.objects[object] = { sprite, ...(parent ? { parent } : {}), visible: b.visible === undefined ? true : !!b.visible, ...(note ? { note } : {}) };
+        saveManifest(cfg.modDir, manifest);
+        modScan = scanModAssets(cfg.modDir, { vanilla: vanillaNames });
+        emit({ type: "assets", by: String(b.by ?? "human"), sprite, object });
+        return send(res, 200, { ok: true, files, warnings: modScan.warnings, synced: modScan.synced });
       }
       const pm = /^\/mod-assets\/pages\/(\d+)\.png$/.exec(url);
       if (pm) {

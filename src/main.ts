@@ -384,6 +384,7 @@ async function init() {
   wireTabs();
   wireDock();
   wirePalette();
+  wireSpriteImport();
   wireVanillaDialog();
   wireInsts();
   wireViewport(host);
@@ -1160,6 +1161,92 @@ function renderPaletteRoom() {
   box.querySelectorAll<HTMLButtonElement>("button.chip").forEach((b) => {
     b.onclick = () => { setTool({ kind: "place", object: b.dataset.o! }); closePalette(); };
   });
+}
+
+// ---- sprite import (the artist flow: draw PNG -> register into the mod -> place) ----
+// Writes Sprites/*.png + an assets.json entry via the server; the generated C# and every
+// open client then heal/refresh off the same manifest, so what the artist places is what
+// the game will register. Mod-level action: allowed even on the vanilla read-only view.
+let spriteFiles: File[] = [];
+
+function openSpriteImport() {
+  const dlg = $<HTMLDialogElement>("sprite-dialog");
+  if (!dlg.open) {
+    // a fresh import starts from defaults, never from the previous one's leftovers
+    spriteFiles = [];
+    $<HTMLInputElement>("sd-files").value = "";
+    $("sd-preview").textContent = "可多选 = 多帧（按文件名 _N 排序）";
+    for (const id of ["sd-sprite", "sd-object", "sd-note"]) $<HTMLInputElement>(id).value = "";
+    $<HTMLInputElement>("sd-ox").value = "0";
+    $<HTMLInputElement>("sd-oy").value = "0";
+  }
+  dlg.showModal();
+}
+
+function wireSpriteImport() {
+  const dlg = $<HTMLDialogElement>("sprite-dialog");
+  dlg.querySelector("form")!.addEventListener("submit", (e) => e.preventDefault()); // Enter must not navigate
+  dlg.addEventListener("click", (e) => { if (e.target === dlg) dlg.close(); }); // backdrop click
+  $("b-import-sprite").onclick = openSpriteImport;
+  $("sd-cancel").onclick = () => dlg.close();
+  $("sd-ok").onclick = () => void submitSpriteImport();
+  $<HTMLInputElement>("sd-files").onchange = onSpriteFiles;
+}
+
+function onSpriteFiles() {
+  // frames in explicit _N order first, then alphabetical; the FileList itself is
+  // read-only, so the sorted copy is what submit reads
+  spriteFiles = [...($<HTMLInputElement>("sd-files").files ?? [])].sort((a, b) => {
+    const n = (f: File) => { const m = /_(\d+)\.png$/i.exec(f.name); return m ? Number(m[1]) : -1; };
+    return n(a) - n(b) || a.name.localeCompare(b.name);
+  });
+  const prev = $("sd-preview");
+  prev.innerHTML = "";
+  if (!spriteFiles.length) { prev.textContent = "可多选 = 多帧（按文件名 _N 排序）"; return; }
+  const img = document.createElement("img");
+  img.src = URL.createObjectURL(spriteFiles[0]);
+  img.style.cssText = "image-rendering:pixelated;max-height:64px;max-width:96px;vertical-align:middle;margin-right:8px";
+  img.onload = () => URL.revokeObjectURL(img.src);
+  prev.append(img, document.createTextNode(`${spriteFiles.length} 帧`));
+  const base = spriteFiles[0].name.replace(/\.png$/i, "").replace(/_\d+$/, "");
+  $<HTMLInputElement>("sd-sprite").value = base;
+  $<HTMLInputElement>("sd-object").value = base.replace(/^s_/, "o_");
+}
+
+async function submitSpriteImport() {
+  const sprite = $<HTMLInputElement>("sd-sprite").value.trim();
+  const object = $<HTMLInputElement>("sd-object").value.trim();
+  if (!spriteFiles.length) { await alertDialog("先选 PNG 文件"); return; }
+  if (!sprite || !object) { await alertDialog("sprite 名和对象名都要填"); return; }
+  const frames = await Promise.all(spriteFiles.map(async (f) => {
+    const u8 = new Uint8Array(await f.arrayBuffer());
+    let s = "";
+    for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode(...u8.subarray(i, i + 0x8000));
+    return { data: btoa(s) };
+  }));
+  const ox = Number($<HTMLInputElement>("sd-ox").value), oy = Number($<HTMLInputElement>("sd-oy").value);
+  const body: Record<string, unknown> = {
+    sprite, object, frames, by: BY,
+    parent: $<HTMLInputElement>("sd-parent").value.trim() || undefined,
+    visible: $<HTMLInputElement>("sd-visible").checked,
+    note: $<HTMLInputElement>("sd-note").value.trim() || undefined,
+  };
+  if (ox !== 0 || oy !== 0) body.origin = [ox, oy]; // MSL's packer default is already (0,0)
+  try {
+    const r = await fetch("/api/mod-assets/import-sprite", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    const j = await r.json();
+    if (!r.ok) { await alertDialog(`导入失败：${j.error ?? r.status}`); return; } // dialog stays open, nothing lost
+    $<HTMLDialogElement>("sprite-dialog").close();
+    toast(`已导入 ${object}（${frames.length} 帧）`);
+    await db.reloadModAssets();
+    // land the artist on their new card in the library
+    $<HTMLInputElement>("palette-q").value = object;
+    renderPalette();
+  } catch (e) {
+    await alertDialog(`导入失败：${(e as Error).message}`);
+  }
 }
 
 function toolCursor() {
@@ -2360,6 +2447,7 @@ function menuAction(id: string): boolean {
   switch (id) {
     case "file.new": openNewDialog(); return true;
     case "file.vanilla": openVanillaPicker(); return true;
+    case "file.importSprite": openSpriteImport(); return true;
     case "file.compile": void compileDoc(); return true;
     case "edit.undo": void undoRedo("undo"); return true;
     case "edit.redo": void undoRedo("redo"); return true;
@@ -2412,6 +2500,13 @@ function wireWs() {
 
 async function onStoreEvent(e: any) {
   if (e?.type === "created") { await refreshRooms(); return; }
+  if (e?.type === "assets") {
+    if (e.by === BY) return; // our own import already refreshed in submitSpriteImport
+    await db.reloadModAssets();
+    if ($<HTMLDialogElement>("palette-dialog").open) renderPalette();
+    toast(`${whoText(e.by)}导入了 ${e.object ?? "mod sprite"}，对象库已刷新`);
+    return;
+  }
   if (!doc || e?.room !== doc.name || doc.vanilla) return; // vanilla views track no project events
   switch (e.type) {
     case "change":

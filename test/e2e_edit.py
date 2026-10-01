@@ -219,6 +219,53 @@ def main():
         st, r = call("POST", f"/api/doc/{ROOM}/compile", {})
         check(st == 200 and target.read_bytes() == original, "post-adopt compile restores the original bytes")
 
+        print("A. mod asset import (sprite registration)")
+        import base64
+        import zlib
+        import struct
+
+        def png_bytes(w, h, rgba):
+            def chunk(tag, data):
+                c = tag + data
+                return struct.pack(">I", len(data)) + c + struct.pack(">I", zlib.crc32(c) & 0xFFFFFFFF)
+            raw = b"".join(b"\x00" + bytes(rgba) * w for _ in range(h))
+            return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0))
+                    + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+
+        f0 = base64.b64encode(png_bytes(8, 8, (200, 120, 40, 255))).decode()
+        f1 = base64.b64encode(png_bytes(8, 8, (40, 120, 200, 255))).decode()
+        st, r = call("POST", "/api/mod-assets/import-sprite", {
+            "sprite": "s_e2e_chair", "object": "o_e2e_chair", "parent": "o_shelf",
+            "origin": [1, 2], "note": "e2e 测试件", "by": "agent-test",
+            "frames": [{"data": f0}, {"data": f1}]})
+        check(st == 200 and r.get("files") == ["s_e2e_chair_0.png", "s_e2e_chair_1.png"], f"import wrote two frames ({r})")
+        check((scratch / "Sprites" / "s_e2e_chair_0.png").read_bytes() == base64.b64decode(f0), "frame bytes landed in Sprites/")
+        man = json.loads((scratch / "assets.json").read_text(encoding="utf-8"))
+        check(man["objects"].get("o_e2e_chair") == {"sprite": "s_e2e_chair", "parent": "o_shelf", "visible": True, "note": "e2e 测试件"},
+              f"manifest object entry ({man['objects'].get('o_e2e_chair')})")
+        check(man["sprites"].get("s_e2e_chair") == {"origin": [1, 2]}, "manifest sprite origin entry")
+        acs = (scratch / f"{scratch.name}.Assets.g.cs").read_text(encoding="utf-8")
+        check("o_e2e_chair" in acs and "OriginX = 1" in acs, "Assets.g.cs self-healed with the new registration")
+        st, ma = call("GET", "/api/mod-assets")
+        check(len(ma["sprites"]["s_e2e_chair"]["frames"]) == 2 and ma["objects"]["o_e2e_chair"]["parent"] == "o_shelf",
+              "scan serves the new sprite (2 frames)")
+        st, r = call("POST", "/api/mod-assets/import-sprite", {"sprite": "s_e2e_chair", "object": "o_e2e_other", "frames": [{"data": f0}]})
+        check(st == 409, "re-importing an existing sprite refused with 409")
+        st, r = call("POST", "/api/mod-assets/import-sprite", {"sprite": "s_house01", "object": "o_e2e_other", "frames": [{"data": f0}]})
+        check(st == 409, "vanilla sprite name collision refused with 409")
+        st, r = call("POST", "/api/mod-assets/import-sprite", {"sprite": "s_e2e_bad", "object": "o_bench", "frames": [{"data": f0}]})
+        check(st == 409, "vanilla object name collision refused with 409")
+        st, r = call("POST", "/api/mod-assets/import-sprite", {"sprite": "s bad", "object": "o_e2e_x", "frames": [{"data": f0}]})
+        check(st == 400, "illegal sprite name refused with 400")
+        st, r = call("POST", "/api/mod-assets/import-sprite", {"sprite": "s_e2e_x", "object": "o_e2e_x", "frames": []})
+        check(st == 400, "zero frames refused with 400")
+        st, r = call("POST", "/api/mod-assets/import-sprite", {"sprite": "s_e2e_x", "object": "o_e2e_x",
+                                                               "frames": [{"data": base64.b64encode(b"not a png").decode()}]})
+        check(st == 400, "non-PNG refused with 400")
+        st, r = call("POST", "/api/mod-assets/import-sprite", {"sprite": "s_e2e_x", "object": "o_e2e_x", "parent": "o_nope",
+                                                               "frames": [{"data": f0}]})
+        check(st == 400, "unknown parent refused with 400")
+
         print("B. browser / human path")
         with sync_playwright() as p:
             browser = p.chromium.launch()
@@ -571,6 +618,23 @@ def main():
                     except Exception:
                         removed = False
                     check(removed, "undo removes it from the page too")
+
+            print("sprite import live-refreshes the library")
+            st, r = call("POST", "/api/mod-assets/import-sprite", {
+                "sprite": "s_e2e_vase", "object": "o_e2e_vase", "by": "agent-test",
+                "frames": [{"data": f0}]})
+            check(st == 200, "a second sprite lands while the page is open")
+            pg.click("#toolbox button[data-tool=place]")
+            pg.wait_for_selector("#palette-dialog[open]", timeout=5000)
+            pg.fill("#palette-q", "o_e2e_vase")
+            try:
+                pg.wait_for_function("document.querySelector('#palette-list li[data-o]')?.dataset.o === 'o_e2e_vase'", timeout=8000)
+                live = True
+            except Exception:
+                live = False
+            check(live, "the imported object appears in the open page's palette without reload (ws event)")
+            check(pg.locator("#palette-list li[data-o] .mod-badge").count() >= 1, "it carries the mod badge")
+            pg.keyboard.press("Escape")
 
             print("palette placement")
             pg.click("#toolbox button[data-tool=place]")
@@ -1030,6 +1094,10 @@ def main():
             check(pg.evaluate("svre.menu('tool.select')") is True and pg.evaluate("svre.toolKind()") == "select", "menu: back to select")
             check(pg.evaluate("svre.menu('view.one')") is True, "menu: 1:1 zoom dispatches")
             check(pg.evaluate("svre.menu('edit.find')") is True and pg.evaluate("document.activeElement.id") == "insts-q", "menu: find focuses the instance filter")
+            check(pg.evaluate("svre.menu('file.importSprite')") is True and pg.evaluate("document.getElementById('sprite-dialog').open") is True,
+                  "menu: import-sprite opens its dialog")
+            pg.click("#sd-cancel")
+            check(pg.evaluate("document.getElementById('sprite-dialog').open") is False, "import-sprite dialog closes on cancel")
             check(pg.evaluate("svre.menu('bogus.id')") is False, "unknown menu ids are refused")
 
             pg.goto(f"{BASE}/?room=r_Osbrook&vanilla=1&render=1")

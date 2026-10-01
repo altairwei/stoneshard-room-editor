@@ -62,6 +62,11 @@ export interface AssetsManifest {
 export const manifestPath = (modDir: string) => path.join(modDir, "assets.json");
 export const generatedCsPath = (modDir: string) => path.join(modDir, `${path.basename(modDir)}.Assets.g.cs`);
 
+// whole-file rewrite; the manifest is editor-owned, so it also owns the formatting
+export function saveManifest(modDir: string, manifest: AssetsManifest): void {
+  fs.writeFileSync(manifestPath(modDir), JSON.stringify(manifest, null, 2) + "\n", "utf8");
+}
+
 export function loadManifest(modDir: string): { manifest: AssetsManifest; exists: boolean; warnings: string[] } {
   const p = manifestPath(modDir);
   const empty: AssetsManifest = { sprites: {}, objects: {} };
@@ -151,6 +156,12 @@ export interface ModAssets {
   pages: string[]; // absolute paths; index i <-> pseudo page MOD_PAGE_BASE + i
   warnings: string[];
   synced: boolean; // the generated .g.cs was (re)written by this scan
+}
+
+export function pngSizeBuffer(buf: Buffer): { w: number; h: number } | null {
+  if (buf.length < 26) return null;
+  if (buf.readUInt32BE(0) !== 0x89504e47 || buf.toString("ascii", 12, 16) !== "IHDR") return null;
+  return { w: buf.readUInt32BE(16), h: buf.readUInt32BE(20) };
 }
 
 function pngSize(file: string): { w: number; h: number } | null {

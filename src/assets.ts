@@ -45,6 +45,7 @@ export class AssetDb {
   sprites: Record<string, SpriteDef> = {};
   create: Record<string, CreateFacts> = {};
   modObjects = new Set<string>(); // names the mod's C# registers (AddObject / GetObject fixups)
+  private modSpriteNames = new Set<string>(); // every sprite a mod scan ever handed us
   private pages = new Map<number, Promise<TextureSource>>();
   private frameTex = new Map<string, Texture>();
 
@@ -55,19 +56,37 @@ export class AssetDb {
     });
     [this.objects, this.sprites, this.create] = await Promise.all([get("objects.json"), get("sprites.json"), get("create.json")]);
 
-    // mod overlay: its objects merge over vanilla defs (a mod can re-sprite a vanilla
-    // object), its sprites likewise. Best-effort: an editor without the route still works.
+    // Best-effort: an editor without the route still works.
     try {
       const ma = await fetch("/api/mod-assets").then((r) => (r.ok ? r.json() : null));
-      if (ma) {
-        for (const [name, def] of Object.entries(ma.objects) as [string, Partial<ObjectDef>][]) {
-          this.modObjects.add(name);
-          const base: ObjectDef = this.objects[name] ?? { visible: true, persistent: false, depth: 0, events: [] };
-          this.objects[name] = { ...base, ...def };
-        }
-        for (const [name, def] of Object.entries(ma.sprites) as [string, SpriteDef][]) this.sprites[name] = def;
-      }
+      if (ma) this.applyMod(ma);
     } catch { /* mod assets are additive; vanilla-only editing still works */ }
+  }
+
+  // merge the server's mod scan over the vanilla defs (a mod can re-sprite a vanilla
+  // object). Re-runnable: importing a sprite re-merges on top without a page reload.
+  private applyMod(ma: { objects: Record<string, Partial<ObjectDef>>; sprites: Record<string, SpriteDef> }) {
+    for (const [name, def] of Object.entries(ma.objects)) {
+      this.modObjects.add(name);
+      const base: ObjectDef = this.objects[name] ?? { visible: true, persistent: false, depth: 0, events: [] };
+      this.objects[name] = { ...base, ...def };
+    }
+    for (const [name, def] of Object.entries(ma.sprites)) {
+      this.sprites[name] = def;
+      this.modSpriteNames.add(name);
+    }
+  }
+
+  // re-pull the mod overlay after a registration changed server-side. Pseudo page numbers
+  // are reassigned by every server scan, so a cached mod page/texture could now point at a
+  // different file -- drop those (vanilla pages never shift).
+  async reloadModAssets() {
+    const ma = await fetch("/api/mod-assets").then((r) => (r.ok ? r.json() : null));
+    if (!ma) return;
+    for (const k of [...this.pages.keys()]) if (k >= MOD_PAGE_BASE) this.pages.delete(k);
+    const names = new Set([...this.modSpriteNames, ...Object.keys(ma.sprites)]);
+    for (const k of [...this.frameTex.keys()]) if (names.has(k.slice(0, k.lastIndexOf("#")))) this.frameTex.delete(k);
+    this.applyMod(ma);
   }
 
   parentChain(name: string): string[] {

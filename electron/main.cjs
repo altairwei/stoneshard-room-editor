@@ -115,6 +115,8 @@ function buildMenu(s) {
         { label: "新建房间…", accelerator: "CmdOrCtrl+N", click: () => send("file.new") },
         { label: "打开原版房间（只读）…", accelerator: "CmdOrCtrl+O", click: () => send("file.vanilla") },
         { type: "separator" },
+        { label: "导入 sprite…", click: () => send("file.importSprite") },
+        { type: "separator" },
         { label: "编译", accelerator: "CmdOrCtrl+S", click: () => send("file.compile") },
         { type: "separator" },
         {

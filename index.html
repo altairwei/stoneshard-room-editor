@@ -109,6 +109,7 @@
       <div class="pd-head">
         <input id="palette-q" type="search" placeholder="筛选对象名…  (Enter 放第一个 · Esc 关闭)" autocomplete="off" />
         <div id="palette-families"></div>
+        <button id="b-import-sprite" title="把新画的 PNG 注册成 mod 对象（写 Sprites/ + assets.json），立即可摆">＋ 导入 sprite…</button>
       </div>
       <div class="pd-body">
         <div id="palette-room-wrap" hidden>
@@ -151,6 +152,25 @@
         <input id="md-input" style="grid-column: 1 / -1" spellcheck="false" autocomplete="off" hidden />
         <div style="grid-column: 1 / -1; display:flex; gap:8px; justify-content:flex-end">
           <button id="md-ok" value="ok" class="primary">确定</button><button id="md-cancel" value="cancel">取消</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="sprite-dialog">
+      <!-- no method=dialog: submit stays async so a 409 keeps what the artist typed -->
+      <form class="form">
+        <div class="insp-title" style="grid-column: 1 / -1">导入 sprite（注册进 mod 资产）</div>
+        <label>PNG 文件</label><input id="sd-files" type="file" accept="image/png" multiple />
+        <label></label><div id="sd-preview" class="muted">可多选 = 多帧（按文件名 _N 排序）</div>
+        <label>sprite 名</label><input id="sd-sprite" spellcheck="false" placeholder="s_xxx_chair" autocomplete="off" />
+        <label>对象名</label><input id="sd-object" spellcheck="false" placeholder="o_xxx_chair" autocomplete="off" />
+        <label>parent</label><input id="sd-parent" spellcheck="false" value="o_shelf" autocomplete="off" />
+        <label></label><div class="muted">o_shelf = 家具深度（depth=-y，玩家可走到后面），但它游戏内随机选帧——多帧要固定帧请清空 parent（纯摆设，图层深度）</div>
+        <label>原点</label><span><input id="sd-ox" type="number" value="0" style="width:6em" /> , <input id="sd-oy" type="number" value="0" style="width:6em" /></span>
+        <label>可见</label><input id="sd-visible" type="checkbox" checked />
+        <label>备注</label><input id="sd-note" autocomplete="off" placeholder="可选" />
+        <label></label>
+        <div style="display:flex; gap:8px; justify-content:flex-end">
+          <button type="button" id="sd-ok" class="primary">导入</button><button type="button" id="sd-cancel">取消</button>
         </div>
       </form>
     </dialog>
