@@ -16,7 +16,7 @@ import { AssetDb } from "./assets";
 import { CELL, LayerType, findInstance, type Room, type RoomInstance } from "./core/room.ts";
 import { applyAll, type Op } from "./core/ops.ts";
 import type { Note, ReplayProblem } from "./core/project.ts";
-import { buildScene, drawBounds, drawGrid, markerView, spriteView, type InstanceNode, type RoomScene } from "./render";
+import { applyZOrder, buildScene, drawBounds, drawGrid, markerView, spriteView, type InstanceNode, type RoomScene, type ZMode } from "./render";
 import { FAMILIES, searchObjects, thumbHtml, type Family } from "./palette";
 import { ICONS, hydrateIcons } from "./icons.ts";
 
@@ -224,6 +224,67 @@ function toast(text: string, ms = 4200) {
   setTimeout(() => el.remove(), ms);
 }
 
+// ---------------- canvas draw order (游戏 / 静态) ----------------
+//
+// The canvas defaults to "game": runtime depth simulation, the occlusion you will
+// actually get. "static" is UTMT's data view (layer depth + array position), kept for
+// auditing the raw lists. Selected DRAWN instances lift above everything so the thing
+// being aimed can never be hidden; deselecting drops them back to the true order.
+let zMode: ZMode = (() => {
+  try {
+    return localStorage.getItem("svre.zmode") === "static" ? "static" : "game";
+  } catch {
+    return "game"; // private mode: no persisted preference
+  }
+})();
+let zSig = ""; // mode | scene generation | sorted selection -- skip work when unchanged
+let sceneGen = 0;
+
+// drawOverlay calls this on every hover; only a changed signature does real work
+function applyZ() {
+  if (!scene || !doc) return;
+  const sig = `${zMode}|${sceneGen}|${[...selection].sort((a, b) => a - b).join(",")}`;
+  if (sig === zSig) return;
+  zSig = sig;
+  applyZOrder(scene, zMode, selection);
+  requestRender();
+}
+
+function setZMode(m: ZMode) {
+  zMode = m;
+  try {
+    localStorage.setItem("svre.zmode", m);
+  } catch {
+    /* best effort */
+  }
+  const b = $("b-zmode");
+  b.textContent = m === "game" ? "顺序：游戏" : "顺序：静态";
+  b.classList.toggle("static", m === "static");
+  applyZ();
+}
+
+// objects whose runtime depth is fixed by code: reordering or relayering them cannot
+// change the game picture. Say so out loud -- a silent no-op reads as "the editor is
+// broken" (it did, once).
+function depthCodedWhy(obj: string): string | null {
+  const c = db.createOf(obj);
+  if (!c) return null;
+  if (c.draw?.mode === "baked") return "烙进背景 surface";
+  const d = c.depth;
+  if (d && !d.conditional && d.mode === "y") return "游戏内按 depth=-y 排序";
+  if (d && !d.conditional && d.mode === "const") return `游戏内 depth 恒为 ${d.value}`;
+  return null;
+}
+const depthToastAt = new Map<string, number>();
+function toastDepthCoded(obj: string) {
+  const why = depthCodedWhy(obj);
+  if (!why) return;
+  const now = Date.now();
+  if (now - (depthToastAt.get(obj) ?? -1e9) < 8000) return; // one reminder per object per drag session
+  depthToastAt.set(obj, now);
+  toast(`${obj} ${why}：调序不影响游戏内遮挡，只改静态视图与创建顺序`);
+}
+
 // ================= boot =================
 
 async function init() {
@@ -266,6 +327,8 @@ async function init() {
   $("b-undo").onclick = () => undoRedo("undo");
   $("b-redo").onclick = () => undoRedo("redo");
   $("b-new").onclick = openNewDialog;
+  $("b-zmode").onclick = () => setZMode(zMode === "game" ? "static" : "game");
+  setZMode(zMode); // sync the button label with the persisted preference
   wireToolbox();
   wireTabs();
   wireDock();
@@ -280,6 +343,8 @@ async function init() {
     // svre render: bare canvas, overlays from the URL, ready flag for the screenshotter
     for (const k of ["grid", "collision", "hidden", "markers", "notes"] as const)
       toggles[k].checked = params.get(k) === "1";
+    const zm = params.get("z"); // ?z=static renders the UTMT audit view instead
+    if (zm === "game" || zm === "static") setZMode(zm);
     if (initial) await openRoom(initial, { silent: true });
     const focus = params.get("focus")?.split(",").map(Number);
     const z = Number(params.get("zoom"));
@@ -461,17 +526,19 @@ async function refreshLint() {
 
 async function refreshScene() {
   if (!doc) return;
-  const next = await buildScene(db, room());
+  const next = await buildScene(db, room(), { zmode: zMode });
   if (scene) {
     world.removeChild(scene.root);
     scene.root.destroy({ children: true });
   }
   scene = next;
+  sceneGen++; // force applyZ: fresh nodes carry no selection lift yet
   resizeGate.clear(); // gates are per instance; classification re-asks the sprite cache
   world.addChild(scene.root);
   world.addChild(ghostLayer); // keep the ghost on top
   nodeById = new Map(scene.nodes.map((n) => [n.inst.instance_id, n]));
   if (hovered !== null && !nodeById.has(hovered)) hovered = null;
+  applyZ();
   applyVisibility();
   renderLayerList();
   renderInstList();
@@ -570,14 +637,15 @@ function renderLayerList() {
 // ================= instance layers (the real, Photoshop-style 图层) =================
 //
 // Each row is one instance. Groups are GameMaker layers sorted by depth, front-most
-// first; inside a group the array order is reversed, because the canvas follows UTMT's
-// static rule: later in the layer array = drawn on top. Dragging a row between two rows
-// of the same group reorders the array; dragging across groups relayers. Both are the
-// `relayer` op — same-layer relayer IS the reorder op.
-// Rows whose runtime depth code overrides the layer order (the -y autosorters, baked
-// decals…) carry a badge: in the GAME their occlusion comes from that code, not from
-// where they sit in this list. The canvas doesn't simulate it -- it stays a placement
-// tool.
+// first; inside a group the array order is reversed (later in the array = drawn on
+// top in the static / UTMT view). The array order is the DATA this tab edits, and it
+// is mirrored into game_objects, the game's creation order. Dragging a row between
+// two rows of the same group reorders it; dragging across groups relayers. Both are
+// the `relayer` op — same-layer relayer IS the reorder op.
+// The canvas defaults to the GAME's order (runtime depth simulation): rows with a
+// depth badge are sorted by their depth code there, so for them this list's order
+// only feeds the static view and the creation-order tie-break -- reordering cannot
+// change their game occlusion (a toast says so when you try).
 
 function renderInstList() {
   if (!doc || !scene || $("tab-insts").hidden) return;
@@ -598,7 +666,7 @@ function renderInstList() {
       const obj = inst.object_definition ?? "";
       const badge = n && n.depth !== L.layer_depth ? `<span class="depth-badge" title="${esc(n.depthWhy)}">d${n.depth}</span>` : "";
       rows.push(`<li class="inst${selection.has(inst.instance_id) ? " sel" : ""}${hiddenInsts.has(inst.instance_id) ? " off" : ""}"
-        data-id="${inst.instance_id}" draggable="true" title="${esc(obj)} #${inst.instance_id}&#10;${esc(n?.depthWhy ?? "")}&#10;拖动调整遮挡顺序（组内为同层调序，跨组为更换图层）">
+        data-id="${inst.instance_id}" draggable="true" title="${esc(obj)} #${inst.instance_id}&#10;${esc(n?.depthWhy ?? "")}&#10;拖动调整数组顺序（组内调序 / 跨组换层）">
         <span class="grip">${ICONS.grip}</span>${thumbHtml(db, obj, inst.image_index, 28)}
         <div class="itext"><div class="iname">${esc(obj)} <span class="iid">#${inst.instance_id}</span>${badge}</div>
         <div class="imeta">@${inst.x},${inst.y}${inst.scale_x !== 1 || inst.scale_y !== 1 ? ` · ${inst.scale_x}×${inst.scale_y}` : ""}</div></div>
@@ -721,6 +789,7 @@ function dropInstAt(id: number, target: { kind: "row"; id: number; after: boolea
   const srcName = room().layers[src.layer].layer_name!;
   const dstName = room().layers[toLayer].layer_name!;
   const obj = src.inst.object_definition ?? String(id);
+  toastDepthCoded(obj);
   commit(toLayer === src.layer ? `调整顺序 ${obj}` : `移到 ${dstName}：${obj}`, [
     { op: "relayer", id, layer: dstName, before: anchor, expect: { layer: srcName } },
   ]);
@@ -1700,6 +1769,7 @@ function requestRender() {
 }
 
 function drawOverlay() {
+  applyZ(); // selection changes land here; a signature guard keeps hovers free
   overlay.clear();
   const box = (n: InstanceNode, color: number, w: number) => {
     if (!n.view.visible) return;
@@ -2028,6 +2098,7 @@ function inspect() {
   body.querySelector<HTMLSelectElement>("select[data-layer]")!.onchange = (e) => {
     const to = Number((e.target as HTMLSelectElement).value);
     const layerName = room().layers[to].layer_name!;
+    for (const o of new Set(at.map((a) => a.inst.object_definition ?? ""))) toastDepthCoded(o);
     const ops: Op[] = at.map((a) => ({
       op: "relayer",
       id: a.inst.instance_id,
@@ -2155,6 +2226,10 @@ const whoText = (by?: string) => (by === BY ? "你" : by ? `${by}` : "有人");
       .sort((a, b) => a.ord - b.ord);
   },
   toolKind() { return tool.kind; },
+  zmode(m?: "game" | "static") {
+    if (m === "game" || m === "static") setZMode(m);
+    return zMode;
+  },
   instRowCount() { return document.querySelectorAll("#inst-list li.inst").length; },
   gateOf(id: number) { return resizeGate.get(id) ?? null; },
   // a stage-local point where canvas pick() returns this instance, or null if it's

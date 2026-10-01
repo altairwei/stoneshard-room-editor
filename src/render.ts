@@ -1,18 +1,23 @@
-// Draw a room the way UTMT draws it.
+// Draw a room the way the GAME draws it -- with one deliberate exception.
 //
 // What decides the picture, and where the editor gets it from:
 //   position/scale/frame/tint  the room JSON
 //   sprite, origin, trim       sprites.json (texture-page rects, straight from data.win)
-//   draw order                 UTMT's static rule: layer depth first, then position in
-//                              the layer's instance array (later in the array = on top).
-//                              Runtime `depth = -y` code (o_barrier, c_nightlight…) is
-//                              NOT simulated: this is a placement tool, and what you are
-//                              placing must stay visible or you cannot aim it (a window
-//                              light over a house, say). The runtime depth is still
-//                              computed and shown in the inspector as information.
-//                              Vanilla rooms keep the two orders manually aligned
-//                              (lights listed after their house AND within the -y
-//                              crossover window), so this matches the game there too.
+//   draw order                 two views, picked by the 顺序 button (applyZOrder):
+//                              "game" (default) simulates the runtime: instances whose
+//                              Create/Step assign `depth` (o_barrier's -y+18,
+//                              c_nightlight's -y+startdepth, baked decals…) sort by
+//                              that depth, everything else sits at its layer depth,
+//                              and same-depth ties break by creation order
+//                              (game_objects), like the runtime. "static" is UTMT's
+//                              rule: layer depth, then position in the layer's
+//                              instance array -- an audit view of the raw data, NOT
+//                              what the game shows wherever vanilla lists drifted.
+//   the exception              selected instances always render on top: a placement
+//                              tool must never hide the thing you are aiming (a window
+//                              light tucked behind its house is exactly where you need
+//                              to see it). Deselect and it falls back to its true
+//                              occlusion, so the canvas still teaches the game truth.
 //   drawn at all               object `visible` (or a Create override) AND layer
 //                              is_visible. Hidden things are still shown, faded, when
 //                              the "hidden" overlay is on -- they are half the room
@@ -22,7 +27,7 @@
 // spawns, depth changed outside Create.
 import { Container, Graphics, Sprite, Text } from "pixi.js";
 import type { AssetDb, Frame } from "./assets";
-import { CELL, LayerType, gmColor, type Room, type RoomInstance, type RoomLayer } from "./core/room.ts";
+import { CELL, LayerType, allInstances, gmColor, type Room, type RoomInstance, type RoomLayer } from "./core/room.ts";
 
 export type NodeKind = "drawn" | "hidden" | "collision" | "marker";
 
@@ -52,6 +57,44 @@ export interface RoomScene {
   nodes: InstanceNode[];
   gridLayer: Graphics;
   boundsLayer: Graphics;
+  // z bookkeeping for applyZOrder: the grid sits above the topmost flat fill and
+  // below the backmost art; creation order is the runtime's same-depth tie-break.
+  maxFillZ: number;
+  baseArtZ: number;
+  creationOrder: Map<number, number>; // instance_id -> index in game_objects
+}
+
+// The two draw-order views (see the header comment). "game" is the truth the runtime
+// will draw; "static" is UTMT's data view for auditing the raw layer arrays.
+export type ZMode = "game" | "static";
+
+// above every overlay band (1e8+…), below the bounds layer (2e8+1): selected art must
+// stay visible no matter what the scene's true occlusion is
+const LIFT_Z = 1.5e8;
+
+// Assign every node's z for one view mode, and re-seat the grid inside the art stack.
+// "game": -runtime depth, ties by creation order. "static": -layer depth, ties by
+// position in the layer array. The tie fraction stays in (0,1), so it can never
+// outrank a 1-unit depth gap. Lifted (selected) drawn nodes jump above everything --
+// overlays included -- so the thing being placed or moved can never be hidden.
+export function applyZOrder(scene: RoomScene, mode: ZMode, lift: ReadonlySet<number>) {
+  const cTotal = scene.creationOrder.size;
+  let minArt = scene.baseArtZ;
+  for (const n of scene.nodes) {
+    if (n.kind !== "drawn") {
+      // overlay bands: always visible as what they are, so they never need the lift
+      n.view.zIndex = 1e8 + (n.kind === "hidden" ? 0 : n.kind === "collision" ? 1 : 2);
+      continue;
+    }
+    const tie =
+      mode === "game"
+        ? ((scene.creationOrder.get(n.inst.instance_id) ?? 0) + 1) / (cTotal + 1)
+        : (n.instIndex + 1) / ((n.layer.layer_data.instances as RoomInstance[]).length + 1);
+    const lifted = lift.has(n.inst.instance_id);
+    n.view.zIndex = (lifted ? LIFT_Z : mode === "game" ? -n.depth : -n.layer.layer_depth) + tie;
+    if (!lifted) minArt = Math.min(minArt, n.view.zIndex);
+  }
+  scene.gridLayer.zIndex = Math.min(scene.maxFillZ + 0.5, minArt - 0.5);
 }
 
 // o_hut_wall (s_handmadeCollision) self-destructs after stamping o_controller.newgrid;
@@ -127,16 +170,29 @@ export function markerView(label: string): Container {
   return view;
 }
 
-export async function buildScene(db: AssetDb, room: Room): Promise<RoomScene> {
+export async function buildScene(db: AssetDb, room: Room, opts?: { zmode?: ZMode }): Promise<RoomScene> {
   const root = new Container();
   root.sortableChildren = true;
   const nodes: InstanceNode[] = [];
+  // creation order breaks same-depth draw ties in "game" mode (later = on top); the
+  // room's game_objects list is that order, layer arrays are not.
+  const creationOrder = new Map<number, number>();
+  {
+    // game_objects is the source of truth for creation order (MSL imports it
+    // positionally). Rooms that came in via a diff replay may not have one --
+    // derive creation order from the layer arrays in that case, which is what
+    // AddRoomJson ends up with for a GMS1-style file anyway.
+    if (room.game_objects?.length) room.game_objects.forEach((g, i) => creationOrder.set(g.instance_id, i));
+    else for (const e of allInstances(room)) creationOrder.set(e.inst.instance_id, creationOrder.size);
+  }
   // the grid is a background, not an overlay: it must sit above the room's flat colour
   // fills (the void around interiors -- those are opaque, so below them it would be
   // invisible) but below every sprite, tile and instance, so it never covers game art.
-  // A conflicting z (a fill in front of art) resolves to under everything.
+  // A conflicting z (a fill in front of art) resolves to under everything. Instance
+  // art z depends on the view mode, so applyZOrder re-seats the grid on every pass;
+  // here we only track the mode-independent parts (fills and non-instance art).
   let maxFillZ = -1e9;
-  let minArtZ = 1e9;
+  let baseArtZ = 1e9;
 
   // preload every page the room touches, so the scene appears in one go
   const frames: Frame[] = [];
@@ -159,7 +215,7 @@ export async function buildScene(db: AssetDb, room: Room): Promise<RoomScene> {
           if (v) {
             v.position.set(layer.x_offset, layer.y_offset);
             v.zIndex = -layer.layer_depth;
-            minArtZ = Math.min(minArtZ, v.zIndex);
+            baseArtZ = Math.min(baseArtZ, v.zIndex);
             root.addChild(v);
           }
         } else {
@@ -186,7 +242,7 @@ export async function buildScene(db: AssetDb, room: Room): Promise<RoomScene> {
         v.alpha = alpha;
         v.zIndex = -layer.layer_depth;
         v.visible = layer.is_visible;
-        minArtZ = Math.min(minArtZ, v.zIndex);
+        baseArtZ = Math.min(baseArtZ, v.zIndex);
         root.addChild(v);
       }
       continue;
@@ -248,13 +304,8 @@ export async function buildScene(db: AssetDb, room: Room): Promise<RoomScene> {
         (view.children[0] as Sprite).tint = rgb;
         view.alpha = alpha;
       }
-      // overlays sit above the game picture, in a fixed order; drawn art follows the
-      // UTMT rule -- layer depth, then array position. The fraction stays in (0,1), so
-      // it can never outrank a 1-unit layer-depth gap.
-      const tie = (ii + 1) / (insts.length + 1);
-      view.zIndex = kind === "drawn" ? -layer.layer_depth + tie : 1e8 + (kind === "hidden" ? 0 : kind === "collision" ? 1 : 2);
-      minArtZ = Math.min(minArtZ, view.zIndex);
-
+      // z is assigned by applyZOrder at the end of the build (and re-assigned live
+      // on every view-mode / selection change, without rebuilding the scene)
       const node: InstanceNode = {
         kind, layerIndex: li, instIndex: ii, layer, inst, depth, depthWhy, visibleWhy,
         customDraw: draw?.mode === "custom" || !!draw?.extra, view,
@@ -265,14 +316,14 @@ export async function buildScene(db: AssetDb, room: Room): Promise<RoomScene> {
   }
 
   const gridLayer = new Graphics();
-  // above the backmost fill, below the backmost art (see the comment atop buildScene)
-  gridLayer.zIndex = Math.min(maxFillZ + 0.5, minArtZ - 0.5);
-  root.addChild(gridLayer);
+  root.addChild(gridLayer); // applyZOrder seats it above the fills, below the art
   const boundsLayer = new Graphics();
   boundsLayer.zIndex = 2e8 + 1;
   root.addChild(boundsLayer);
 
-  return { root, nodes, gridLayer, boundsLayer };
+  const scene: RoomScene = { root, nodes, gridLayer, boundsLayer, maxFillZ, baseArtZ, creationOrder };
+  applyZOrder(scene, opts?.zmode ?? "game", new Set());
+  return scene;
 }
 
 export function drawGrid(g: Graphics, room: Room, zoom: number, labels = false) {

@@ -84,6 +84,8 @@ button.primary:hover { background: linear-gradient(#4a97ea, #3380d2); }
 .itoggle:has(input:focus-visible) { outline: 1px solid var(--accent); }
 .itoggle i { display: grid; place-items: center; width: 100%; height: 100%; }
 .itoggle svg { width: 14px; height: 14px; display: block; }
+#b-zmode { font-size: 11px; white-space: nowrap; }
+#b-zmode.static { border-color: var(--warn); color: var(--warn); } /* non-default audit view: mark it */
 #zoom-preset { width: 76px; text-align: right; background: #1e1e21; border-color: var(--line); padding: 3px 4px; }
 /* 视口够宽时顶栏的图标按钮同时显示文本（窄窗口保持纯图标） */
 .itoggle .txt, .icon-btn .txt { display: none; }

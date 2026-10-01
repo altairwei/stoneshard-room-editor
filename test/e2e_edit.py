@@ -788,7 +788,8 @@ def main():
             check(len(arr6) == len(arr) and arr6[-1] == A and arr6[-2] == C, f"row drag reordered the layer array (front-most now #{A})")
             check(d6["log"][-1]["label"].startswith("调整顺序"), f"reorder labelled ({d6['log'][-1]['label']})")
             # the canvas draw order (pixi's own children array) must flip with the array:
-            # the draw order IS the layer array order (UTMT semantics, no depth simulation)
+            # collision stamps share one constant overlay z, so their order is pixi's
+            # stable child order = build order = the layer array order
             zo = {e["id"]: e["ord"] for e in pg.evaluate("svre.drawOrder()")}
             check(zo.get(A, -1) > zo.get(C, -1), f"canvas draw order flipped with the array (#{A} above #{C})")
             pg.keyboard.press("Control+z")
@@ -799,12 +800,12 @@ def main():
             zo7 = {e["id"]: e["ord"] for e in pg.evaluate("svre.drawOrder()")}
             check(zo7.get(A, -1) < zo7.get(C, -1), "canvas draw order restored with the array")
 
-            print("draw order follows the layer's instance array (UTMT semantics)")
-            # runtime depth=-y is NOT simulated on the canvas: what decides is the
-            # position in the layer's instance array. The two bushes are appended in
-            # creation order (999001, then 999002), so 999002 draws on top; relayering
-            # flips the canvas (relayer also syncs game_objects, the runtime creation
-            # order). A visible layer, or the bushes would classify into the hidden band.
+            print("game draw order: same-depth ties break by creation order")
+            # the canvas simulates runtime depth (game mode is the default). o_bush01
+            # is depth=-y+18, and this pair shares y=26 -> same depth -> the tie breaks
+            # by creation order (game_objects): 999002, appended after 999001, draws on
+            # top; relayering syncs game_objects, so the canvas tie flips with it.
+            # A visible layer, or the bushes would classify into the hidden band.
             fg_name = next(L["layer_name"] for L in d0["room"]["layers"]
                            if L["layer_name"] == "ForegroundInstances")
             st, d8 = call("POST", f"/api/doc/{ROOM}/apply", {"by": "agent-test", "label": "钉住顺序测试 A", "ops": [
@@ -824,7 +825,7 @@ def main():
             za = pg.evaluate("svre.viewInfo(999001) && svre.viewInfo(999001).z")
             zb = pg.evaluate("svre.viewInfo(999002) && svre.viewInfo(999002).z")
             check(za is not None and zb is not None and zb > za,
-                  f"later in the layer array draws above ({zb} > {za})")
+                  f"later creation order draws on top at equal depth ({zb} > {za})")
             # reorder: 999002 before 999001 in the same layer -> its canvas z must drop
             # below 999001's (game_objects follows along, the runtime creation order)
             st, d9 = call("POST", f"/api/doc/{ROOM}/apply", {"by": "agent-test", "label": "调整顺序 o_bush01", "ops": [
@@ -835,12 +836,78 @@ def main():
             za2 = pg.evaluate("svre.viewInfo(999001) && svre.viewInfo(999001).z")
             zb2 = pg.evaluate("svre.viewInfo(999002) && svre.viewInfo(999002).z")
             check(zb2 is not None and za2 is not None and zb2 < za2,
-                  f"reorder flips the draw order ({zb2} < {za2})")
+                  f"reorder flips the creation-order tie ({zb2} < {za2})")
             st, d10 = call("GET", f"/api/doc/{ROOM}")
             go = [g["instance_id"] for g in d10["room"]["game_objects"]]
             check(go.index(999002) < go.index(999001), "game_objects mirrors the reorder")
             call("POST", f"/api/doc/{ROOM}/undo", {"by": "agent-test"})
             call("POST", f"/api/doc/{ROOM}/undo", {"by": "agent-test"})
+            pg.wait_for_timeout(400)
+
+            print("game vs static: depth rules the canvas, selection lifts, relayer speaks up")
+            # a pair where the two orders DISAGREE: depth=-y+18 puts the lower (bigger
+            # y) bush in front in game truth no matter where it sits in the layer
+            # array. 999003 at y=78 added FIRST, 999004 at y=26 SECOND.
+            st, d11 = call("POST", f"/api/doc/{ROOM}/apply", {"by": "agent-test", "label": "钉住顺序测试 B", "ops": [
+                {"op": "add", "layer": fg_name, "inst": {"x": 182, "y": 78, "object_definition": "o_bush01", "instance_id": 999003,
+                 "creation_code": None, "scale_x": 1, "scale_y": 1, "color": 4294967295, "rotation": 0, "pre_create_code": None, "image_speed": 1, "image_index": 0}},
+                {"op": "add", "layer": fg_name, "inst": {"x": 182, "y": 26, "object_definition": "o_bush01", "instance_id": 999004,
+                 "creation_code": None, "scale_x": 1, "scale_y": 1, "color": 4294967295, "rotation": 0, "pre_create_code": None, "image_speed": 1, "image_index": 0}},
+            ]})
+            check(st == 200, f"disagreeing bush pair added ({st})")
+            ok_add2 = True
+            try:
+                pg.wait_for_function("svre.kindOf(999003) && svre.kindOf(999004)", timeout=10000)
+            except Exception:
+                ok_add2 = False
+            check(ok_add2, "pair rebuilt on the canvas")
+            check(pg.evaluate("svre.zmode()") == "game", "game mode is the default")
+            z3 = pg.evaluate("svre.viewInfo(999003).z")
+            z4 = pg.evaluate("svre.viewInfo(999004).z")
+            check(z3 > z4, f"game mode: runtime depth=-y rules, not array position ({z3} > {z4})")
+            pg.evaluate("svre.zmode('static')")
+            zs3 = pg.evaluate("svre.viewInfo(999003).z")
+            zs4 = pg.evaluate("svre.viewInfo(999004).z")
+            check(zs4 > zs3, f"static mode: later in the layer array draws on top ({zs4} > {zs3})")
+            pg.evaluate("svre.zmode('game')")
+            check(pg.evaluate("svre.viewInfo(999003).z") > pg.evaluate("svre.viewInfo(999004).z"), "back to game truth")
+
+            # a UI row drag relayers the pair: the depth-coded toast must speak up,
+            # and the game order still must not flip (a tie fraction can't cross a
+            # depth gap) even though game_objects mirrors the drag
+            pg.wait_for_selector("#inst-list li.inst[data-id='999003']", timeout=5000)
+            pg.locator("#inst-list li.inst[data-id='999003']").drag_to(
+                pg.locator("#inst-list li.inst[data-id='999004']"), target_position={"x": 60, "y": 2})
+            ok_toast = True
+            try:
+                pg.wait_for_selector(".toast:has-text('调序不影响游戏内遮挡')", timeout=5000)
+            except Exception:
+                ok_toast = False
+            check(ok_toast, "reordering a depth=-y object toasts that the game won't care")
+            pg.wait_for_timeout(900)
+            st, d12 = call("GET", f"/api/doc/{ROOM}")
+            arrB = [i["instance_id"] for i in next(L for L in d12["room"]["layers"] if L["layer_name"] == fg_name)["layer_data"]["instances"]]
+            check(arrB.index(999003) > arrB.index(999004), "row drag relayered the pair (999003 now later in the array)")
+            goB = [g["instance_id"] for g in d12["room"]["game_objects"]]
+            check(goB.index(999003) > goB.index(999004), "game_objects mirrors the drag (creation-order twin)")
+            pg.keyboard.press("v")  # make Escape mean "clear selection", not "switch tool"
+            pg.keyboard.press("Escape")  # the drag selected 999003; drop the lift
+            pg.wait_for_timeout(300)
+            z3b = pg.evaluate("svre.viewInfo(999003).z")
+            z4b = pg.evaluate("svre.viewInfo(999004).z")
+            check(z3b > z4b, f"game order unchanged by the relayer ({z3b} > {z4b})")
+
+            # selection lift: the covered instance renders above everything while held
+            pg.click("#inst-list li.inst[data-id='999004']")
+            pg.wait_for_timeout(300)
+            zl4 = pg.evaluate("svre.viewInfo(999004).z")
+            check(zl4 > 1e8 and zl4 > pg.evaluate("svre.viewInfo(999003).z"), f"selected instance lifts above the scene ({zl4})")
+            pg.keyboard.press("Escape")
+            pg.wait_for_timeout(300)
+            check(pg.evaluate("svre.viewInfo(999003).z") > pg.evaluate("svre.viewInfo(999004).z"), "deselect drops it back to the true order")
+            pg.keyboard.press("Control+z")  # undo the row drag (page author's entry)
+            pg.wait_for_timeout(700)
+            call("POST", f"/api/doc/{ROOM}/undo", {"by": "agent-test"})  # undo the pair add
             pg.wait_for_timeout(400)
 
             print("compile from the page")

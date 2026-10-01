@@ -27,6 +27,7 @@
       <label class="itoggle" title="标记点"><input type="checkbox" id="t-markers" /><i data-icon="markers"></i><span class="txt">标记</span></label>
       <label class="itoggle" title="网格 (G)"><input type="checkbox" id="t-grid" /><i data-icon="grid"></i><span class="txt">网格</span></label>
       <label class="itoggle" title="便签"><input type="checkbox" id="t-notes" checked /><i data-icon="note"></i><span class="txt">便签</span></label>
+      <button id="b-zmode" title="画布排序方式：&#10;游戏 = 模拟运行时 depth（游戏内真实遮挡；选中实例始终置顶，松开回到真实顺序）&#10;静态 = UTMT 视角（图层 depth + 数组顺序，用于对账）">顺序：游戏</button>
       <span class="spacer"></span>
       <button id="b-zoom-out" class="icon-btn" title="缩小 (-)"><i data-icon="zoomOut"></i><span class="txt">缩小</span></button>
       <select id="zoom-preset" title="缩放">
@@ -72,7 +73,7 @@
         </section>
         <section class="dock-panel dock-tabs">
           <nav class="tabs">
-            <button data-tab="insts" class="on" title="实例图层：每个实例一行，按遮挡顺序排列；拖动调整顺序，眼睛图标控制编辑器内显隐">图层</button>
+            <button data-tab="insts" class="on" title="实例图层：每个实例一行，按图层数组顺序排列（靠上 = 静态视图里画在前面）；拖动调整顺序，眼睛图标控制编辑器内显隐；带 d 徽标的行游戏内由 depth 代码排序">图层</button>
             <button data-tab="layers" title="GameMaker 图层（分组）：放置目标层与整层显隐">层组</button>
             <button data-tab="history">历史<span id="history-badge"></span></button>
           </nav>
