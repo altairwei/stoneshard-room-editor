@@ -108,6 +108,37 @@ const BARRIER_PAINT = "o_projectileBarrier";
 const paintLabel = (object: string) => (object === BARRIER_PAINT ? "屏障" : "碰撞");
 const hiddenInsts = new Set<number>(); // per-instance editor-local hide (the eyes in the 图层 tab)
 let dragRowId: number | null = null; // instance row mid-drag in the 图层 tab
+
+// Edge auto-scroll while dragging a row: HTML5 drags suppress the wheel and give no
+// native edge scrolling, so a row could only move within one viewport. While a drag is
+// active a rAF loop scrolls the tab's section proportionally to how deep the pointer
+// sits in the top/bottom edge band. The 150ms dwell keeps a quick drop AT the edge
+// from scrolling first (e2e's drag_to hovers only briefly before mouseup).
+let dragScrollY = -1; // last dragover clientY during a row drag
+let dragScrollSince = 0; // when the pointer entered the edge band (0 = outside)
+let dragScrollRaf = 0;
+function dragScrollTick(section: HTMLElement) {
+  if (dragRowId === null) { dragScrollRaf = 0; dragScrollY = -1; dragScrollSince = 0; return; }
+  const r = section.getBoundingClientRect();
+  const EDGE = 28, MAX = 12;
+  let v = 0;
+  if (dragScrollY >= 0) {
+    if (dragScrollY < r.top + EDGE) v = -MAX * (1 - Math.max(0, dragScrollY - r.top) / EDGE);
+    else if (dragScrollY > r.bottom - EDGE) v = MAX * (1 - Math.max(0, r.bottom - dragScrollY) / EDGE);
+  }
+  const now = performance.now();
+  if (v === 0) dragScrollSince = 0;
+  else {
+    if (!dragScrollSince) dragScrollSince = now;
+    if (now - dragScrollSince > 150) section.scrollTop += v;
+  }
+  dragScrollRaf = requestAnimationFrame(() => dragScrollTick(section));
+}
+function armDragScroll(section: HTMLElement | null) {
+  if (!section || dragScrollRaf) return;
+  dragScrollY = -1;
+  dragScrollRaf = requestAnimationFrame(() => dragScrollTick(section));
+}
 let clipboard: { layerName: string | null; inst: RoomInstance }[] = [];
 let cursorWorld = { x: 0, y: 0 };
 let spaceHeld = false;
@@ -605,6 +636,7 @@ function wireInstRows(list: HTMLElement) {
     });
     li.addEventListener("dragstart", (e) => {
       dragRowId = id;
+      armDragScroll(li.closest("section") as HTMLElement | null);
       if (!selection.has(id)) {
         selection.clear();
         selection.add(id);
@@ -655,6 +687,13 @@ function wireInstRows(list: HTMLElement) {
       dragRowId = null;
     });
   });
+  // one-time, section-level: feed the edge auto-scroll with pointer positions (the
+  // per-row listeners above are re-wired on every renderInstList, this must not stack)
+  const section = list.closest("section") as HTMLElement | null;
+  if (section && !section.dataset.scrollWired) {
+    section.dataset.scrollWired = "1";
+    section.addEventListener("dragover", (e) => { if (dragRowId !== null) dragScrollY = e.clientY; });
+  }
 }
 
 // A drop between rows means "sit immediately before the row above the line" in that
