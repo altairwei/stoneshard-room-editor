@@ -1,4 +1,4 @@
-// All-rooms export for sv-room-editor (bases for room projects). Derived from
+// All-rooms export for stoneshard-room-editor (bases for room projects). Derived from
 // StoneValley/tools/roomgen/ExportRoomNC.csx, itself a non-interactive clone of MSL's own ExportRoom.csx (which needs GUI dialogs and
 // therefore cannot run under the headless CLI). Same JSON schema, hardcoded I/O.
 // Output is pure data -- asset names and numbers, no game art.

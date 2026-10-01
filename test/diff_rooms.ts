@@ -1,12 +1,13 @@
 // node test/diff_rooms.ts -- diff each compiled snapshot against its vanilla base and
 // prove the ops replay to the byte-identical file.
 import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 import { diffRooms, verifyDiff } from "../src/core/diff.ts";
 import { applyAll } from "../src/core/ops.ts";
 import { cloneRoom, serializeRoom, styleOf } from "../src/core/room.ts";
 
 const MOD = "D:/Program Files/ModShardLauncher/ModSources/StoneValley";
-const VAN = "E:/StoneShard_Mod_Data/tools/sv-room-editor/cache/assets/rooms";
+const VAN = fileURLToPath(new URL("../cache/assets/rooms", import.meta.url));
 const pairs = [
   ["r_house01inside_Child_2", "r_sv_hut_inside1"],
   ["r_house01inside2floor_Child_2", "r_sv_hut_inside2"],

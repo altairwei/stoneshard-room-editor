@@ -1,4 +1,4 @@
-// SV Room Editor -- Electron main process.
+// Stoneshard Room Editor -- Electron main process.
 //
 // The app is the same web bundle the browser uses; this shell provides the native
 // menu and owns the backend lifecycle:
@@ -172,12 +172,12 @@ function buildMenu(s) {
       label: "帮助",
       submenu: [
         {
-          label: "关于 SV Room Editor",
+          label: "关于 Stoneshard Room Editor",
           click: async () => {
             dialog.showMessageBox(win, {
               type: "info",
               title: "关于",
-              message: `SV Room Editor v${app.getVersion()}`,
+              message: `Stoneshard Room Editor v${app.getVersion()}`,
               detail: `后端：${baseUrl}\nmod 目录：${await modDir()}\n模式：${DEV ? "开发（vite HMR）" : "打包（内嵌后端 + dist）"}`,
             });
           },
@@ -196,7 +196,7 @@ function createWindow() {
     minHeight: 720,
     show: !SMOKE,
     backgroundColor: "#1b1b1d",
-    title: "SV Room Editor",
+    title: "Stoneshard Room Editor",
     webPreferences: {
       preload: process.env.SVRE_APP_NO_PRELOAD ? undefined : path.join(__dirname, "preload.cjs"), // escape hatch for bisecting
       contextIsolation: true,

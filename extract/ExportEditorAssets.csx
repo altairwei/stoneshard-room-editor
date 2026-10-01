@@ -1,4 +1,4 @@
-// Headless asset export for sv-room-editor.
+// Headless asset export for stoneshard-room-editor.
 //
 //   UndertaleModCli.exe load <vallina.win> -s ExportEditorAssets.csx
 //   (output dir from env SVRE_OUT; default = ../cache/assets next to this script's repo)

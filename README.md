@@ -1,6 +1,6 @@
-# sv-room-editor
+# stoneshard-room-editor
 
-StoneShard 专用房间编辑器，**人和 agent 共用一份文档**。读写的是 MSL 的房间 JSON
+通用的 Stoneshard 房间编辑器，**人和 agent 共用一份文档**。读写的是 MSL 的房间 JSON
 （`Msl.AddRoomJson` 吃的那种），按游戏自己的规则把房间画出来。
 P0 渲染保真度已对游戏截图验证过（见文末）。
 

@@ -684,7 +684,7 @@ function updateChrome() {
     bc.innerHTML = `${ICONS.compile}<span>编译</span>`;
     $<HTMLButtonElement>("b-undo").disabled = true;
     $<HTMLButtonElement>("b-redo").disabled = true;
-    document.title = `${room().name}（原版 · 只读） — SV Room Editor`;
+    document.title = `${room().name}（原版 · 只读） — Stoneshard Room Editor`;
     $("load-state").innerHTML =
       `${esc(room().name)} · 原版缓存 · 只读 · ${room().width}×${room().height}` +
       ` · 可见 ${counts.drawn ?? 0} · 隐形 ${counts.hidden ?? 0} · 碰撞 ${counts.collision ?? 0} · 标记 ${counts.marker ?? 0}`;
@@ -702,7 +702,7 @@ function updateChrome() {
   const canRedo = doc.redoable.includes(BY);
   $<HTMLButtonElement>("b-undo").disabled = !canUndo;
   $<HTMLButtonElement>("b-redo").disabled = !canRedo;
-  document.title = `${dirty ? "● " : ""}${room().name} — SV Room Editor`;
+  document.title = `${dirty ? "● " : ""}${room().name} — Stoneshard Room Editor`;
   $("load-state").innerHTML =
     `${esc(room().name)} · r${doc.rev}${doc.compiledRev !== null ? ` · 编译于 r${doc.compiledRev}` : " · 从未编译"}` +
     ` · ${room().width}×${room().height} · 可见 ${counts.drawn ?? 0} · 隐形 ${counts.hidden ?? 0} · 碰撞 ${counts.collision ?? 0} · 标记 ${counts.marker ?? 0}` +

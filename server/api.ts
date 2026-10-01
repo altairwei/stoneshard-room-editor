@@ -39,6 +39,10 @@ export function loadConfig(root: string): SvreConfig {
   const localFile = path.join(root, "svre.config.local.json");
   const local = fs.existsSync(localFile) ? JSON.parse(fs.readFileSync(localFile, "utf8")) : {};
   const cfg = { ...base, ...local };
+  // relative config paths resolve against the repo root, so renaming the editor
+  // folder (or launching the electron shell from another cwd) never breaks them
+  for (const key of ["modDir", "assetsDir", "sourceDir", "vanillaWin", "utmtCli"] as const)
+    if (cfg[key] && !path.isAbsolute(cfg[key])) cfg[key] = path.resolve(root, cfg[key]);
   // tests point a second server at a scratch copy of a mod, never at the real one
   if (process.env.SVRE_MOD_DIR) cfg.modDir = process.env.SVRE_MOD_DIR;
   return cfg;

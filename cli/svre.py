@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""svre -- the agent-facing command line of sv-room-editor.
+"""svre -- the agent-facing command line of stoneshard-room-editor.
 
 Talks to the dev server (npm run dev, default http://localhost:5178), which owns every
 room project. Everything an agent can do to a room goes through here; a human looking at
