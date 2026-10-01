@@ -284,9 +284,12 @@ function setZMode(m: ZMode) {
 // the game truth in either theme. Render mode stays on its own fixed dark, so CLI
 // screenshots are identical regardless of the operator's theme.
 type UiTheme = "dark" | "light";
-const THEME_CANVAS: Record<UiTheme, { voidBg: number; rulerMinor: string; rulerMajor: string; rulerText: string; rulerCursor: string }> = {
-  dark: { voidBg: 0x2a2a2a, rulerMinor: "#48484e", rulerMajor: "#6a6a70", rulerText: "#9a9aa0", rulerCursor: "#6cb6ff" },
-  light: { voidBg: 0xd4d4d9, rulerMinor: "#c3c3ca", rulerMajor: "#9a9aa2", rulerText: "#55555e", rulerCursor: "#2272c8" },
+// voidBg/sheet: pixi pasteboard + the artboard page. gridLine/gridMajor/bounds: canvas
+// chrome drawn over the sheet. The room's own background FILL layers (the black void
+// around interiors) are game data -- they are not here and never flip.
+const THEME_CANVAS: Record<UiTheme, { voidBg: number; sheet: number; gridLine: number; gridMajor: number; bounds: number; rulerMinor: string; rulerMajor: string; rulerText: string; rulerCursor: string }> = {
+  dark: { voidBg: 0x2a2a2a, sheet: 0x0d0e11, gridLine: 0xffffff, gridMajor: 0xffe08a, bounds: 0xffd479, rulerMinor: "#48484e", rulerMajor: "#6a6a70", rulerText: "#9a9aa0", rulerCursor: "#6cb6ff" },
+  light: { voidBg: 0xd4d4d9, sheet: 0xe8e9ec, gridLine: 0x101014, gridMajor: 0xa67c00, bounds: 0xa67c00, rulerMinor: "#c3c3ca", rulerMajor: "#9a9aa2", rulerText: "#55555e", rulerCursor: "#2272c8" },
 };
 
 function uiTheme(): UiTheme {
@@ -304,7 +307,7 @@ function setUiTheme(t: UiTheme) {
   // the button shows the current theme, like 顺序 shows the current z mode
   $("b-theme").innerHTML = ICONS[t === "light" ? "sun" : "moon"];
   drawRulers();
-  requestRender();
+  redrawZoomDependent(); // re-paints artboard/grid/bounds with the theme's canvas colours
 }
 
 // objects whose runtime depth is fixed by code: reordering or relayering them cannot
@@ -1405,8 +1408,11 @@ function paintCommit(d: { ax: number; ay: number; bx: number; by: number; object
 
 function redrawZoomDependent() {
   if (!scene || !doc) return;
-  if (toggles.grid.checked) drawGrid(scene.gridLayer, room(), zoom, true);
-  drawBounds(scene.boundsLayer, room(), zoom);
+  // render mode keeps the fixed dark canvas chrome so CLI screenshots never
+  // depend on the operator's UI theme
+  const tc = renderMode ? THEME_CANVAS.dark : THEME_CANVAS[uiTheme()];
+  if (toggles.grid.checked) drawGrid(scene.gridLayer, room(), zoom, true, tc.gridLine, tc.gridMajor);
+  drawBounds(scene.boundsLayer, room(), zoom, tc.bounds);
   rescaleNotes();
   drawArtboard();
   drawOverlay();
@@ -1451,12 +1457,13 @@ function zoomStep(dir: 1 | -1) {
   zoomAt(z ?? (dir > 0 ? 16 : 0.1), host.clientWidth / 2, host.clientHeight / 2);
 }
 
-// the room as a dark sheet with a soft shadow over the neutral pasteboard
+// the room as a dark sheet with a soft shadow over the neutral pasteboard;
+// the sheet follows the UI theme, the shadow stays (a page lifts off any colour)
 function drawArtboard() {
   artboard.clear();
   if (renderMode || !doc) return;
   artboard.rect(3 / zoom, 4 / zoom, room().width, room().height).fill({ color: 0x000000, alpha: 0.35 });
-  artboard.rect(0, 0, room().width, room().height).fill(0x0d0e11);
+  artboard.rect(0, 0, room().width, room().height).fill(THEME_CANVAS[uiTheme()].sheet);
 }
 
 // ---------------- rulers ----------------
@@ -2371,6 +2378,7 @@ const whoText = (by?: string) => (by === BY ? "你" : by ? `${by}` : "有人");
   toolKind() { return tool.kind; },
   get readOnly() { return readOnly(); },
   get theme() { return uiTheme(); },
+  get canvasColors() { return { ...THEME_CANVAS[uiTheme()] }; },
   zmode(m?: "game" | "static") {
     if (m === "game" || m === "static") setZMode(m);
     return zMode;

@@ -326,15 +326,17 @@ export async function buildScene(db: AssetDb, room: Room, opts?: { zmode?: ZMode
   return scene;
 }
 
-export function drawGrid(g: Graphics, room: Room, zoom: number, labels = false) {
+// the grid is editor chrome, not game data: its colours come from the caller's UI
+// theme (defaults = the dark theme, which render mode always uses)
+export function drawGrid(g: Graphics, room: Room, zoom: number, labels = false, line = 0xffffff, major = 0xffe08a) {
   g.clear();
   g.removeChildren().forEach((c) => c.destroy());
   for (let x = 0; x <= room.width; x += CELL) g.moveTo(x, 0).lineTo(x, room.height);
   for (let y = 0; y <= room.height; y += CELL) g.moveTo(0, y).lineTo(room.width, y);
-  g.stroke({ color: 0xffffff, width: 1 / zoom, alpha: 0.12 });
+  g.stroke({ color: line, width: 1 / zoom, alpha: 0.12 });
   if (!labels) return;
   // cell numbers every 5 cells, the same numbering `svre grid` prints
-  const style = { fontSize: 10, fill: 0xffe08a, fontFamily: "Consolas, monospace", stroke: { color: 0x000000, width: 3 } };
+  const style = { fontSize: 10, fill: major, fontFamily: "Consolas, monospace", stroke: { color: 0x000000, width: 3 } };
   const cells = (n: number) => Math.ceil(n / CELL);
   for (let gx = 0; gx < cells(room.width); gx += 5)
     for (let gy = 0; gy < cells(room.height); gy += 5) {
@@ -347,10 +349,10 @@ export function drawGrid(g: Graphics, room: Room, zoom: number, labels = false) 
     }
   for (let gx = 0; gx < cells(room.width); gx += 5) g.moveTo(gx * CELL, 0).lineTo(gx * CELL, room.height);
   for (let gy = 0; gy < cells(room.height); gy += 5) g.moveTo(0, gy * CELL).lineTo(room.width, gy * CELL);
-  g.stroke({ color: 0xffe08a, width: 1 / zoom, alpha: 0.35 });
+  g.stroke({ color: major, width: 1 / zoom, alpha: 0.35 });
 }
 
-export function drawBounds(g: Graphics, room: Room, zoom: number) {
+export function drawBounds(g: Graphics, room: Room, zoom: number, color = 0xffd479) {
   g.clear();
-  g.rect(0, 0, room.width, room.height).stroke({ color: 0xffd479, width: 1.5 / zoom, alpha: 0.7 });
+  g.rect(0, 0, room.width, room.height).stroke({ color, width: 1.5 / zoom, alpha: 0.7 });
 }
