@@ -327,7 +327,9 @@ export async function buildScene(db: AssetDb, room: Room, opts?: { zmode?: ZMode
 }
 
 // the grid is editor chrome, not game data: its colours come from the caller's UI
-// theme (defaults = the dark theme, which render mode always uses)
+// theme (defaults = the dark theme, which render mode always uses). The labels need
+// no outline halo: applyZOrder seats the grid below every sprite, so they only ever
+// appear over the uniform sheet or the room's flat fill layers.
 export function drawGrid(g: Graphics, room: Room, zoom: number, labels = false, line = 0xffffff, major = 0xffe08a) {
   g.clear();
   g.removeChildren().forEach((c) => c.destroy());
@@ -336,7 +338,7 @@ export function drawGrid(g: Graphics, room: Room, zoom: number, labels = false, 
   g.stroke({ color: line, width: 1 / zoom, alpha: 0.12 });
   if (!labels) return;
   // cell numbers every 5 cells, the same numbering `svre grid` prints
-  const style = { fontSize: 10, fill: major, fontFamily: "Consolas, monospace", stroke: { color: 0x000000, width: 3 } };
+  const style = { fontSize: 10, fill: major, fontFamily: "Consolas, monospace" };
   const cells = (n: number) => Math.ceil(n / CELL);
   for (let gx = 0; gx < cells(room.width); gx += 5)
     for (let gy = 0; gy < cells(room.height); gy += 5) {

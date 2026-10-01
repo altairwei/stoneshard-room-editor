@@ -289,7 +289,7 @@ type UiTheme = "dark" | "light";
 // around interiors) are game data -- they are not here and never flip.
 const THEME_CANVAS: Record<UiTheme, { voidBg: number; sheet: number; gridLine: number; gridMajor: number; bounds: number; rulerMinor: string; rulerMajor: string; rulerText: string; rulerCursor: string }> = {
   dark: { voidBg: 0x2a2a2a, sheet: 0x0d0e11, gridLine: 0xffffff, gridMajor: 0xffe08a, bounds: 0xffd479, rulerMinor: "#48484e", rulerMajor: "#6a6a70", rulerText: "#9a9aa0", rulerCursor: "#6cb6ff" },
-  light: { voidBg: 0xd4d4d9, sheet: 0xe8e9ec, gridLine: 0x101014, gridMajor: 0xa67c00, bounds: 0xa67c00, rulerMinor: "#c3c3ca", rulerMajor: "#9a9aa2", rulerText: "#55555e", rulerCursor: "#2272c8" },
+  light: { voidBg: 0xb9b6af, sheet: 0xd3d0c9, gridLine: 0x101014, gridMajor: 0xa67c00, bounds: 0xa67c00, rulerMinor: "#c3c3ca", rulerMajor: "#9a9aa2", rulerText: "#55555e", rulerCursor: "#2272c8" },
 };
 
 function uiTheme(): UiTheme {
