@@ -475,6 +475,7 @@ async function refreshScene() {
   applyVisibility();
   renderLayerList();
   renderInstList();
+  renderPaletteRoom();
   renderHistory();
   drawNotes();
   inspect();
@@ -896,22 +897,58 @@ function wirePalette() {
     if (e.key === "Enter") { const first = $("palette-list").querySelector<HTMLElement>("li"); first?.click(); }
     if (e.key === "Escape") { q.blur(); setTool({ kind: "select" }); }
   };
+  // one-time: hovering a library card narrates the full identity in the pinned info line
+  $("palette-list").addEventListener("mouseover", (e) => {
+    const li = (e.target as Element).closest("li[data-o]") as HTMLElement | null;
+    if (!li) return;
+    const n = li.dataset.o!;
+    const chain = db.parentChain(n).slice(0, 3).join(" → ");
+    $("palette-info").textContent =
+      `${n} · ${db.objects[n]?.sprite ?? "无 sprite"}${chain ? " · " + chain : ""}${db.modObjects.has(n) ? " · mod 自建" : ""}`;
+  });
   renderPalette();
+  renderPaletteRoom();
 }
 
 function renderPalette() {
   const names = searchObjects(db, $<HTMLInputElement>("palette-q").value, family);
+  // the user's own mod objects outrank vanilla ones at equal search rank (stable sort)
+  // and carry a badge -- the library is the game's catalog, theirs is the point
+  const ranked = names.slice().sort((a, b) => Number(db.modObjects.has(b)) - Number(db.modObjects.has(a)));
   const list = $("palette-list");
-  list.innerHTML = names
+  list.innerHTML = ranked
     .map((n) => {
-      const d = db.objects[n];
-      const chain = db.parentChain(n).slice(0, 3).join(" → ");
       const on = tool.kind === "place" && tool.object === n ? "on" : "";
-      return `<li data-o="${esc(n)}" class="${on}">${thumbHtml(db, n)}<div style="min-width:0"><div class="pname">${esc(n)}</div><div class="pmeta">${esc(d.sprite ?? "无 sprite")}${chain ? " · " + esc(chain) : ""}</div></div></li>`;
+      const mod = db.modObjects.has(n) ? `<i class="mod-badge" title="mod 自建对象（assets.json 注册）">mod</i>` : "";
+      return `<li data-o="${esc(n)}" class="${on}" title="${esc(n)}">${thumbHtml(db, n, 0, 56)}${mod}<span class="pname">${esc(n.replace(/^o_/, ""))}</span></li>`;
     })
-    .join("") || `<li class="muted" style="padding:10px">没有匹配的对象</li>`;
+    .join("") || `<li class="muted" style="padding:10px;grid-column:1/-1">没有匹配的对象</li>`;
   list.querySelectorAll<HTMLElement>("li[data-o]").forEach((li) => {
     li.onclick = () => setTool({ kind: "place", object: li.dataset.o! });
+  });
+}
+
+// objects already in the room, as quick chips: most placement is "another one of these".
+// They stay compact chips (row-ish), the library stays a card grid -- same shape
+// language only for things that really are room content.
+function renderPaletteRoom() {
+  if (!doc || !scene) return;
+  const counts = new Map<string, number>();
+  for (const L of room().layers)
+    if (L.layer_type === LayerType.Instances)
+      for (const inst of L.layer_data.instances as RoomInstance[])
+        if (inst.object_definition) counts.set(inst.object_definition, (counts.get(inst.object_definition) ?? 0) + 1);
+  const entries = [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  $("palette-room-wrap").hidden = entries.length === 0;
+  const box = $("palette-room");
+  box.innerHTML = entries
+    .map(([o, n]) => {
+      const on = tool.kind === "place" && tool.object === o ? "on" : "";
+      return `<button class="chip ${on}" data-o="${esc(o)}" title="${esc(o)} · ${n} 个实例">${thumbHtml(db, o, 0, 22)}<span>${esc(o.replace(/^o_/, ""))}</span><b>×${n}</b></button>`;
+    })
+    .join("");
+  box.querySelectorAll<HTMLButtonElement>("button.chip").forEach((b) => {
+    b.onclick = () => setTool({ kind: "place", object: b.dataset.o! });
   });
 }
 
@@ -944,8 +981,8 @@ function setTool(t: Tool) {
     b.classList.toggle("on", on);
     b.setAttribute("aria-pressed", String(on));
   });
-  document.querySelectorAll<HTMLElement>("#palette-list li[data-o]").forEach((li) => {
-    li.classList.toggle("on", t.kind === "place" && li.dataset.o === t.object);
+  document.querySelectorAll<HTMLElement>("#palette-list li[data-o], #palette-room button[data-o]").forEach((el) => {
+    el.classList.toggle("on", t.kind === "place" && el.dataset.o === t.object);
   });
   if (t.kind === "place" || t.kind === "marker") buildGhost(t.object);
   renderToolExtras();
