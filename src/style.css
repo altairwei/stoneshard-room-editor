@@ -255,11 +255,15 @@ main {
 #palette-families { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
 #palette-families button { padding: 2px 9px; font-size: 11px; border-radius: 10px; background: #1e1e21; }
 #palette-families button.on { background: #24517e; border-color: #3d7ec2; color: #fff; }
-/* the palette is a LIBRARY, not room content -- grid of cards, never rows, so it
-   can't be mistaken for the 图层 tab's instance list (rows = instances, cards = catalog) */
-#palette-room-wrap { padding: 6px 8px 0; }
-.plib-head { padding: 8px 8px 4px; font-size: 11px; color: var(--muted); }
-.plib-hint { padding: 0 8px 6px; font-size: 10px; color: var(--faint); }
+/* the palette is a MODAL library, not room content -- a catalog wants width the dock
+   can't give. Grid of cards, never rows, so it can't be mistaken for the 图层 tab's
+   instance list (rows = instances, cards = catalog). */
+#palette-dialog { width: min(920px, 94vw); height: min(78vh, 820px); padding: 0; }
+#palette-dialog[open] { display: flex; flex-direction: column; }
+#palette-dialog .pd-head { flex: none; padding: 12px 12px 8px; border-bottom: 1px solid var(--line-2); }
+#palette-dialog .pd-body { flex: 1; overflow: auto; min-height: 0; padding: 2px 12px 8px; }
+#palette-room-wrap { padding: 6px 0 0; }
+.plib-head { padding: 8px 0 4px; font-size: 11px; color: var(--muted); }
 #palette-room { display: flex; flex-wrap: wrap; gap: 4px; padding: 0 0 2px; max-height: 112px; overflow-y: auto; }
 #palette-room .chip {
   display: flex; align-items: center; gap: 5px; padding: 2px 7px 2px 2px;
@@ -282,7 +286,7 @@ main {
   padding: 0 3px; border-radius: 3px; background: #2c4a2e; color: #9fdc9f;
 }
 .plib-info {
-  position: sticky; bottom: 0; padding: 4px 8px; background: var(--panel); border-top: 1px solid var(--line-2);
+  flex: none; padding: 6px 12px; background: var(--panel); border-top: 1px solid var(--line-2);
   font-size: 10px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .thumb {

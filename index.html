@@ -74,7 +74,6 @@
           <nav class="tabs">
             <button data-tab="insts" class="on" title="实例图层：每个实例一行，按遮挡顺序排列；拖动调整顺序，眼睛图标控制编辑器内显隐">图层</button>
             <button data-tab="layers" title="GameMaker 图层（分组）：放置目标层与整层显隐">层组</button>
-            <button data-tab="palette">放置</button>
             <button data-tab="history">历史<span id="history-badge"></span></button>
           </nav>
           <section id="tab-insts">
@@ -82,20 +81,6 @@
             <ul id="inst-list"></ul>
           </section>
           <section id="tab-layers" hidden><ul id="layer-list"></ul></section>
-          <section id="tab-palette" hidden>
-            <div class="palette-head">
-              <input id="palette-q" type="search" placeholder="筛选对象名…  (Ctrl+K)" autocomplete="off" />
-              <div id="palette-families"></div>
-            </div>
-            <div id="palette-room-wrap" hidden>
-              <div class="plib-head">本房间已有 · 点击再放一个</div>
-              <div id="palette-room"></div>
-            </div>
-            <div class="plib-head">对象库 · 不在本房间</div>
-            <div class="plib-hint">点击后在画布上单击放入，Esc 结束；悬停看详情</div>
-            <ul id="palette-list"></ul>
-            <div id="palette-info" class="plib-info">对象库 = 游戏与 mod 的全部对象定义，不是本房间内容</div>
-          </section>
           <section id="tab-history" hidden>
             <div id="notes-list"></div>
             <ul id="history-list"></ul>
@@ -112,6 +97,21 @@
       <span id="s-hint">V 选择 · H 抓手 · P 放置 · C 碰撞 · B 屏障 · T 区域 · M 标记 · N 便签 · 空格/右键拖动平移 · Shift+H 隐形 · G 网格 · S 吸附 · F 适配</span>
     </footer>
     <div id="toasts"></div>
+    <dialog id="palette-dialog">
+      <div class="pd-head">
+        <input id="palette-q" type="search" placeholder="筛选对象名…  (Enter 放第一个 · Esc 关闭)" autocomplete="off" />
+        <div id="palette-families"></div>
+      </div>
+      <div class="pd-body">
+        <div id="palette-room-wrap" hidden>
+          <div class="plib-head">本房间已有 · 点击再放一个</div>
+          <div id="palette-room"></div>
+        </div>
+        <div class="plib-head">对象库 · 不在本房间 · 点击后在画布上单击放入</div>
+        <ul id="palette-list"></ul>
+      </div>
+      <div id="palette-info" class="plib-info">对象库 = 游戏与 mod 的全部对象定义，不是本房间内容</div>
+    </dialog>
     <dialog id="new-dialog">
       <form method="dialog" class="form">
         <div class="insp-title" style="grid-column: 1 / -1">新建房间</div>

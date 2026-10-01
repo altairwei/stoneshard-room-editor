@@ -747,7 +747,8 @@ function wireInsts() {
 
 function wireToolbox() {
   document.querySelectorAll<HTMLButtonElement>("#toolbox button[data-tool]").forEach((b) => {
-    b.onclick = () => pickTool(b.dataset.tool as Tool["kind"]);
+    // 放置 opens the library modal; every other button arms its tool directly
+    b.onclick = () => (b.dataset.tool === "place" ? openPalette() : pickTool(b.dataset.tool as Tool["kind"]));
   });
 }
 
@@ -779,10 +780,8 @@ function showTab(tab: string) {
   document.querySelectorAll<HTMLButtonElement>(".tabs button[data-tab]").forEach((x) => x.classList.toggle("on", x.dataset.tab === tab));
   $("tab-insts").hidden = tab !== "insts";
   $("tab-layers").hidden = tab !== "layers";
-  $("tab-palette").hidden = tab !== "palette";
   $("tab-history").hidden = tab !== "history";
   if (tab === "insts") renderInstList();
-  if (tab === "palette") $<HTMLInputElement>("palette-q").focus();
   if (tab === "history" && doc) {
     lastSeenRev = doc.rev;
     $("history-badge").textContent = "";
@@ -878,7 +877,21 @@ async function addNoteAt(wx: number, wy: number) {
   drawNotes();
 }
 
-// ---------------- palette & placement ----------------
+// ---------------- palette & placement (modal library) ----------------
+
+// the library lives in a modal, not the dock: a catalog wants width. Triggered by the
+// toolbox 放置 button, Ctrl+K, or P with no prior pick. Picking arms the place tool and
+// closes; Esc / backdrop click closes without changing the armed tool.
+function openPalette() {
+  const dlg = $<HTMLDialogElement>("palette-dialog");
+  renderPaletteRoom();
+  renderPalette();
+  if (!dlg.open) dlg.showModal();
+  const q = $<HTMLInputElement>("palette-q");
+  q.focus();
+  q.select();
+}
+function closePalette() { $<HTMLDialogElement>("palette-dialog").close(); }
 
 function wirePalette() {
   const q = $<HTMLInputElement>("palette-q");
@@ -895,8 +908,10 @@ function wirePalette() {
   q.oninput = () => { clearTimeout(t); t = window.setTimeout(renderPalette, 80); };
   q.onkeydown = (e) => {
     if (e.key === "Enter") { const first = $("palette-list").querySelector<HTMLElement>("li"); first?.click(); }
-    if (e.key === "Escape") { q.blur(); setTool({ kind: "select" }); }
+    if (e.key === "Escape") { e.preventDefault(); closePalette(); }
   };
+  const dlg = $<HTMLDialogElement>("palette-dialog");
+  dlg.addEventListener("click", (e) => { if (e.target === dlg) dlg.close(); }); // backdrop click
   // one-time: hovering a library card narrates the full identity in the pinned info line
   $("palette-list").addEventListener("mouseover", (e) => {
     const li = (e.target as Element).closest("li[data-o]") as HTMLElement | null;
@@ -906,8 +921,6 @@ function wirePalette() {
     $("palette-info").textContent =
       `${n} · ${db.objects[n]?.sprite ?? "无 sprite"}${chain ? " · " + chain : ""}${db.modObjects.has(n) ? " · mod 自建" : ""}`;
   });
-  renderPalette();
-  renderPaletteRoom();
 }
 
 function renderPalette() {
@@ -924,7 +937,7 @@ function renderPalette() {
     })
     .join("") || `<li class="muted" style="padding:10px;grid-column:1/-1">没有匹配的对象</li>`;
   list.querySelectorAll<HTMLElement>("li[data-o]").forEach((li) => {
-    li.onclick = () => setTool({ kind: "place", object: li.dataset.o! });
+    li.onclick = () => { setTool({ kind: "place", object: li.dataset.o! }); closePalette(); };
   });
 }
 
@@ -948,7 +961,7 @@ function renderPaletteRoom() {
     })
     .join("");
   box.querySelectorAll<HTMLButtonElement>("button.chip").forEach((b) => {
-    b.onclick = () => setTool({ kind: "place", object: b.dataset.o! });
+    b.onclick = () => { setTool({ kind: "place", object: b.dataset.o! }); closePalette(); };
   });
 }
 
@@ -989,10 +1002,10 @@ function setTool(t: Tool) {
   drawOverlay();
 }
 
-// toolbox buttons and the letter keys land here; P without a pick yet opens the palette
+// letter keys land here; P re-arms the last pick, or opens the library when there is none
 function pickTool(kind: Tool["kind"]) {
   if (kind === "place") {
-    if (!lastPlaced) { showTab("palette"); return; }
+    if (!lastPlaced) { openPalette(); return; }
     setTool({ kind: "place", object: lastPlaced });
   } else if (kind === "zone") setTool({ kind, object: zoneObject });
   else if (kind === "marker") setTool({ kind, object: markerObject });
@@ -1792,7 +1805,7 @@ function wireKeys(host: HTMLElement) {
     const k = e.key.toLowerCase();
 
     if (ctrl && k === "s") { e.preventDefault(); compileDoc(); return; }
-    if (ctrl && k === "k") { e.preventDefault(); showTab("palette"); return; }
+    if (ctrl && k === "k") { e.preventDefault(); openPalette(); return; }
     if (inField) return;
     if (!doc) return;
 

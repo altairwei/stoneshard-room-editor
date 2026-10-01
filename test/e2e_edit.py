@@ -503,7 +503,8 @@ def main():
             # Colissions) -- so pick a visible instances layer first, like a human would
             pg.click(".tabs button[data-tab=layers]")
             pg.locator("#layer-list li", has_text="ForegroundInstances").first.click()
-            pg.click(".tabs button[data-tab=palette]")
+            pg.click("#toolbox button[data-tool=place]")
+            pg.wait_for_selector("#palette-dialog[open]", timeout=5000)
             pg.fill("#palette-q", "o_sv_house01")
             # renderPalette is debounced (80ms) off the input event; wait for the list to
             # actually reflect the query rather than guessing how long that takes
@@ -562,7 +563,8 @@ def main():
                     check(removed, "undo removes it from the page too")
 
             print("palette placement")
-            pg.click(".tabs button[data-tab=palette]")
+            pg.click("#toolbox button[data-tool=place]")
+            pg.wait_for_selector("#palette-dialog[open]", timeout=5000)
             pg.fill("#palette-q", "o_chest")
             pg.wait_for_function("document.querySelector('#palette-list li[data-o]')?.dataset.o?.includes('chest')", timeout=5000)
             first = pg.locator("#palette-list li[data-o]").first
