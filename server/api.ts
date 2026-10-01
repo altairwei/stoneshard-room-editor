@@ -4,6 +4,7 @@
 //
 //   GET  /api/rooms                         every room: project? compiled? dirty? drift?
 //   GET  /api/vanilla?q=                    search vanilla rooms (bases)
+//   GET  /api/vanilla-doc/<room>            a vanilla cache room for read-only viewing (no project)
 //   POST /api/import      {name, base?, by?} project from an existing Codes/<name>.gml
 //   POST /api/create      {name, base, keep?, by?}  new room on a vanilla base
 //   GET  /api/doc/<room>                    full state: room JSON, log summary, notes, selections
@@ -91,6 +92,8 @@ export function svreApi(root: string): Plugin {
       if (url === "/api/config") return send(res, 200, cfg);
       if (url === "/api/rooms") return send(res, 200, store.listRooms());
       if (url === "/api/vanilla") return send(res, 200, store.searchVanilla(q.q ?? ""));
+      const vd = /^\/api\/vanilla-doc\/([A-Za-z0-9_]+)$/.exec(url);
+      if (vd && method === "GET") return send(res, 200, store.vanillaDoc(vd[1]));
       if (url === "/api/mod-assets") {
         modScan = scanModAssets(cfg.modDir, { vanilla: vanillaNames });
         return send(res, 200, { sprites: modScan.sprites, objects: modScan.objects, pages: modScan.pages.length, warnings: modScan.warnings, synced: modScan.synced });

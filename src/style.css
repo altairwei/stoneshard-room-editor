@@ -364,6 +364,17 @@ dialog {
 dialog::backdrop { background: rgba(0, 0, 0, .55); }
 dialog select[size] { height: 170px; }
 
+/* ---------------- vanilla read-only viewing ---------------- */
+/* edit affordances go inert and look it; view affordances (toggles, z-order, zoom,
+   selection, inspector) stay live. The hard refusals are in main.ts (commit/setTool). */
+.vanilla-ro #toolbox button[data-tool="place"],
+.vanilla-ro #toolbox button[data-tool="collision"],
+.vanilla-ro #toolbox button[data-tool="barrier"],
+.vanilla-ro #toolbox button[data-tool="zone"],
+.vanilla-ro #toolbox button[data-tool="marker"],
+.vanilla-ro #toolbox button[data-tool="note"] { opacity: .35; pointer-events: none; }
+.vanilla-ro #toolbox .tsep { opacity: .35; }
+
 /* ---------------- render mode (svre render): the canvas alone ---------------- */
 body.render #appbar, body.render #options, body.render #banner,
 body.render #toolbox, body.render #ruler-corner, body.render #ruler-x, body.render #ruler-y,

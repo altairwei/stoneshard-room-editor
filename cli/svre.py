@@ -24,6 +24,7 @@ the same room in a browser sees these changes land (and you see theirs via `chan
     python cli/svre.py assets                       the mod asset manifest: objects, sprites, warnings
     python cli/svre.py assets sync                  rescan + rewrite <Mod>.Assets.g.cs if stale
     python cli/svre.py render r_foo out.png [--zoom 2] [--focus x,y] [--grid] [--labels]
+    python cli/svre.py render r_Osbrook out.png --vanilla   read-only render of a vanilla cache room
     python cli/svre.py serve                        start the dev server (if not running)
 
 Ops vocabulary for apply (JSON array; instance ids are the room JSON's instance_id):
@@ -147,6 +148,8 @@ def render(args):
     zoom = float(arg_value(args, "--zoom", "2"))
     focus = arg_value(args, "--focus", None)
     params = [f"room={urllib.parse.quote(name)}", "render=1"]
+    if "--vanilla" in args:
+        params.append("vanilla=1")  # view the cache room read-only; no project involved
     for flag, key in [("--grid", "grid"), ("--labels", "grid"), ("--collision", "collision"),
                       ("--hidden", "hidden"), ("--markers", "markers"), ("--notes", "notes")]:
         if flag in args:

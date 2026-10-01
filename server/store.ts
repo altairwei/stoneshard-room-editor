@@ -126,6 +126,21 @@ export class Store {
     return rooms.filter((r) => r.name.toLowerCase().includes(s)).slice(0, limit);
   }
 
+  // A vanilla cache room opened for viewing, in the same shape snapshot() returns so the
+  // client's whole pipeline works unchanged. There is deliberately no Doc behind it:
+  // nothing is persisted, and every write route goes through open() which 404s for this
+  // name -- the read-only guarantee is structural, not a flag the server has to police.
+  vanillaDoc(name: string) {
+    const file = this.vanillaPath(name);
+    if (!fs.existsSync(file)) throw new HttpError(404, `no vanilla room ${name} in the cache (search with /api/vanilla?q=)`);
+    const room = JSON.parse(fs.readFileSync(file, "utf8")) as Room;
+    return {
+      name, vanilla: true, rev: 0, compiledRev: null, dirty: false, drift: false,
+      base: null, baseChanged: false, problems: [], notes: [], log: [],
+      selection: {}, undoable: [], redoable: [], room,
+    };
+  }
+
   // ---------------- open / persist ----------------
 
   private loadBase(p: Project): { base: Room; changed: boolean } {

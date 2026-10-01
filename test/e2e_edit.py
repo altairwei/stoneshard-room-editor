@@ -192,6 +192,16 @@ def main():
         st, lint = call("GET", f"/api/doc/{ROOM}/lint")
         check(st == 200 and isinstance(lint, list), f"lint returns findings ({len(lint)})")
 
+        print("A. vanilla read-only doc")
+        st, vdoc = call("GET", "/api/vanilla-doc/r_Osbrook")
+        check(st == 200 and vdoc.get("vanilla") is True and vdoc["room"]["name"] == "r_Osbrook", "vanilla doc opens straight from the cache")
+        check(vdoc["log"] == [] and vdoc["notes"] == [] and vdoc["dirty"] is False and vdoc["rev"] == 0, "no project state rides along")
+        check(mirror_ok(vdoc["room"]), "vanilla room's game_objects mirror matches")
+        vinsts = [i for L in vdoc["room"]["layers"] for i in L["layer_data"].get("instances", [])]
+        check(len(vinsts) > 1000, f"vanilla room fully populated ({len(vinsts)} instances)")
+        st, _ = call("GET", "/api/vanilla-doc/r_definitely_not_a_room")
+        check(st == 404, "unknown vanilla room 404s")
+
         print("A. drift / adopt")
         clean = target.read_bytes()
         target.write_bytes(clean + b" ")  # someone touches the compiled file
@@ -918,8 +928,80 @@ def main():
             check(doc7["dirty"] is False, "compiled: no longer dirty")
             check(obj in disk, f"compiled file contains {obj}")
 
+            print("vanilla room: read-only channel")
+            XY = "(id) => { for (const L of svre.doc.room.layers) { const a = L.layer_data.instances; if (!a) continue; const i = a.find(i => i.instance_id === id); if (i) return [i.x, i.y]; } return null; }"
+            pg.goto(f"{BASE}/?room=r_Osbrook&vanilla=1")
+            pg.wait_for_function("document.getElementById('load-state').textContent.includes('只读')", timeout=120000)
+            check(pg.evaluate("svre.doc.vanilla") is True, "the client knows this doc is vanilla")
+            check(pg.evaluate("svre.readOnly") is True, "read-only flag is up")
+            check(pg.evaluate("document.body.classList.contains('vanilla-ro')"), "vanilla-ro body class")
+            check(pg.evaluate("document.getElementById('b-compile').disabled") is True, "compile button inert")
+            pe = pg.evaluate("getComputedStyle(document.querySelector(\"#toolbox button[data-tool='collision']\")).pointerEvents")
+            check(pe == "none", "edit tool buttons inert")
+            check("只读" in (pg.text_content("#banner") or ""), "banner announces read-only")
+            check(pg.evaluate("document.querySelector('#room-select option[data-vanilla]')?.value ?? null") == "r_Osbrook",
+                  "the dropdown marks the open vanilla room")
+            # view affordances stay live: z-order toggle and the selection lift
+            check(pg.evaluate("svre.zmode()") == "game", "game order is the default in vanilla too")
+            pg.evaluate("svre.zmode('static')")
+            check(pg.evaluate("svre.zmode()") == "static", "static audit view toggles in vanilla")
+            pg.evaluate("svre.zmode('game')")
+            pg.fill("#insts-q", "light02")
+            pg.wait_for_timeout(400)
+            row = pg.locator("#inst-list li.inst").first
+            vid = int(row.get_attribute("data-id"))
+            row.click()
+            pg.wait_for_timeout(400)
+            check(pg.evaluate("svre.selection") == [vid], f"row click selects in vanilla (#{vid})")
+            zl = pg.evaluate(f"svre.viewInfo({vid}).z")
+            check(zl is not None and zl > 1e8, f"selection lift works in vanilla ({zl})")
+            pg.evaluate("document.activeElement?.blur()")  # keys must reach the window handler, not the filter input
+            xy0 = pg.evaluate(XY, vid)
+            # edit refusals: tool keys, Delete, arrows and a canvas drag all change nothing
+            pg.keyboard.press("c")
+            check(pg.evaluate("svre.toolKind()") == "select", "edit tool keys refused")
+            check(pg.locator(".toast:has-text('只读')").count() > 0, "the refusal says why")
+            n0 = pg.evaluate("svre.instRowCount()")
+            pg.keyboard.press("Delete")
+            pg.wait_for_timeout(300)
+            check(pg.evaluate("svre.instRowCount()") == n0, "Delete removes nothing")
+            pg.keyboard.press("ArrowRight")
+            pg.wait_for_timeout(300)
+            check(pg.evaluate(XY, vid) == xy0, "arrow nudge refused")
+            pg.evaluate(f"svre.focus({xy0[0]}, {xy0[1]}, 3)")
+            pg.wait_for_timeout(200)
+            pt = pg.evaluate(f"svre.pickPoint({vid})")
+            check(pt is not None, "the selected (lifted) instance is pickable for a drag attempt")
+            if pt:
+                sb = pg.locator("#stage").bounding_box()
+                pg.mouse.move(sb["x"] + pt["x"], sb["y"] + pt["y"])
+                pg.mouse.down()
+                pg.mouse.move(sb["x"] + pt["x"] + 60, sb["y"] + pt["y"], steps=4)
+                pg.mouse.up()
+                pg.wait_for_timeout(400)
+                check(pg.evaluate(XY, vid) == xy0, "canvas drag moves nothing")
+            check(pg.evaluate("svre.doc.rev") == 0 and pg.evaluate("svre.doc.log.length") == 0, "no log entries were created")
+            # the picker's own path: dropdown group -> search -> pre-selected first hit -> 打开
+            pg.goto(f"{BASE}/?room={ROOM}")
+            pg.wait_for_function("document.getElementById('load-state').textContent.includes('可见')", timeout=60000)
+            pg.select_option("#room-select", "__vanilla_pick__")
+            pg.wait_for_selector("#vanilla-dialog[open]", timeout=5000)
+            pg.fill("#vd-q", "deliverycart")
+            pg.wait_for_timeout(400)
+            check(pg.evaluate("document.getElementById('vd-list').value") == "r_prce_DeliveryCart_Osbrook",
+                  "the picker pre-selects the first hit (a list box does not do it alone)")
+            pg.click("#vd-ok")
+            pg.wait_for_function("document.getElementById('load-state').textContent.includes('只读')", timeout=60000)
+            check(pg.evaluate("svre.doc.name") == "r_prce_DeliveryCart_Osbrook" and pg.evaluate("svre.readOnly") is True,
+                  "the picker opens its pick read-only")
+            pg.goto(f"{BASE}/?room=r_Osbrook&vanilla=1&render=1")
+            pg.wait_for_function("window.svreReady === true", timeout=120000)
+            check(pg.evaluate("svre.doc.vanilla") is True, "render mode opens the vanilla room read-only")
+
             check(not errors, f"no page errors {errors}")
             browser.close()
+
+        check(not (scratch / "rooms" / "r_Osbrook.room.json").exists(), "viewing a vanilla room writes no project file")
     finally:
         subprocess.run(f"taskkill /PID {server.pid} /T /F", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         shutil.rmtree(scratch, ignore_errors=True)

@@ -127,6 +127,17 @@
         </div>
       </form>
     </dialog>
+    <dialog id="vanilla-dialog">
+      <form method="dialog" class="form">
+        <div class="insp-title" style="grid-column: 1 / -1">打开原版房间（只读）</div>
+        <label>搜索</label><input id="vd-q" placeholder="搜索原版房间名…  (Enter 打开第一个)" spellcheck="false" autocomplete="off" />
+        <label></label><select id="vd-list" size="10"></select>
+        <label></label>
+        <div style="display:flex; gap:8px; justify-content:flex-end">
+          <button value="cancel">取消</button><button id="vd-ok" value="ok" class="primary">打开（只读）</button>
+        </div>
+      </form>
+    </dialog>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

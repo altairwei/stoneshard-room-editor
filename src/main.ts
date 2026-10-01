@@ -35,6 +35,7 @@ interface DocSnapshot {
   base: unknown; baseChanged: boolean; problems: ReplayProblem[]; notes: Note[];
   log: LogSummary[]; selection: Record<string, { ids: number[]; at: string }>;
   undoable: string[]; redoable: string[]; room: Room;
+  vanilla?: boolean; // a vanilla cache room opened for viewing: no project, read-only
 }
 
 class ApiError extends Error {
@@ -208,6 +209,9 @@ const toggles = {
 };
 
 const room = () => doc!.room;
+// a vanilla cache room is open for viewing only: rendering, selection and the inspector
+// all work, every edit path is refused (commit() is the hard backstop)
+const readOnly = () => !!doc?.vanilla;
 const snapOn = () => toggles.snap.checked && !altHeld;
 const snapPoint = (v: number) => (snapOn() ? Math.floor(v / CELL) * CELL : Math.round(v));
 const instsOf = (ids: Iterable<number>) =>
@@ -222,6 +226,14 @@ function toast(text: string, ms = 4200) {
   el.textContent = text;
   $("toasts").appendChild(el);
   setTimeout(() => el.remove(), ms);
+}
+
+let roToastAt = 0;
+function toastReadOnly() {
+  const now = Date.now();
+  if (now - roToastAt < 4000) return; // one reminder per editing attempt burst
+  roToastAt = now;
+  toast("原版房间只读查看：要改动请「新建…」以它为基底派生工程");
 }
 
 // ---------------- canvas draw order (游戏 / 静态) ----------------
@@ -333,19 +345,21 @@ async function init() {
   wireTabs();
   wireDock();
   wirePalette();
+  wireVanillaDialog();
   wireInsts();
   wireViewport(host);
   wireKeys(host);
   wireWs();
 
   const initial = params.get("room");
+  const wantVanilla = params.get("vanilla") === "1";
   if (renderMode) {
     // svre render: bare canvas, overlays from the URL, ready flag for the screenshotter
     for (const k of ["grid", "collision", "hidden", "markers", "notes"] as const)
       toggles[k].checked = params.get(k) === "1";
     const zm = params.get("z"); // ?z=static renders the UTMT audit view instead
     if (zm === "game" || zm === "static") setZMode(zm);
-    if (initial) await openRoom(initial, { silent: true });
+    if (initial) await openRoom(initial, { silent: true, vanilla: wantVanilla });
     const focus = params.get("focus")?.split(",").map(Number);
     const z = Number(params.get("zoom"));
     if (focus && focus.length === 2 && focus.every(Number.isFinite)) focusOn(focus[0], focus[1], Number.isFinite(z) && z > 0 ? z : zoom);
@@ -354,28 +368,46 @@ async function init() {
     (window as any).svreReady = true;
     return;
   }
-  if (initial ?? rooms[0]?.name) await openRoom(initial ?? rooms[0].name);
+  if (initial ?? rooms[0]?.name) await openRoom(initial ?? rooms[0].name, { vanilla: wantVanilla && !!initial });
 }
 
 async function refreshRooms(selectAfter?: string) {
   rooms = await api("/api/rooms");
   const sel = $<HTMLSelectElement>("room-select");
+  // vanilla cache rooms aren't projects and never appear in this list; the picker
+  // entry opens a search dialog instead. While one is open it shows up as a marked
+  // option so the dropdown keeps naming what the canvas shows.
+  const vg = doc?.vanilla
+    ? `<option value="${esc(doc.name)}" data-vanilla="1">${esc(doc.name)} · 查看中</option>`
+    : "";
   sel.innerHTML = rooms
     .map((r) => {
       const marks = `${r.hasProject ? "" : " · 未导入"}${r.dirty ? " ●" : ""}${r.drift ? " ⚠ 漂移" : ""}`;
       return `<option value="${esc(r.name)}">${esc(r.name)}${marks}</option>`;
     })
-    .join("");
-  sel.onchange = () => openRoom(sel.value);
+    .join("") + `<optgroup label="原版（只读）">${vg}<option value="__vanilla_pick__">打开原版房间…</option></optgroup>`;
+  sel.onchange = () => {
+    const v = sel.value;
+    if (v === "__vanilla_pick__") {
+      sel.value = doc?.name ?? ""; // revert: the dialog decides where we go
+      openVanillaPicker();
+      return;
+    }
+    if (sel.selectedOptions[0]?.dataset.vanilla) {
+      if (v !== doc?.name || !doc?.vanilla) void openRoom(v, { vanilla: true });
+      return;
+    }
+    void openRoom(v);
+  };
   if (selectAfter) sel.value = selectAfter;
   else if (doc) sel.value = doc.name;
 }
 
 // ---------------- open / sync ----------------
 
-async function openRoom(name: string, opts: { silent?: boolean } = {}) {
+async function openRoom(name: string, opts: { silent?: boolean; vanilla?: boolean } = {}) {
   const entry = rooms.find((r) => r.name === name);
-  if (entry && !entry.hasProject) {
+  if (!opts.vanilla && entry && !entry.hasProject) {
     // a compiled room with no project yet: offer to adopt it into a project
     if (opts.silent || !confirm(`房间 ${name} 尚未导入。是否从 Codes/${name}.gml 创建工程？基底将自动推断。`)) {
       $<HTMLSelectElement>("room-select").value = doc?.name ?? "";
@@ -394,12 +426,14 @@ async function openRoom(name: string, opts: { silent?: boolean } = {}) {
   $("load-state").textContent = `打开 ${name}…`;
   let snap: DocSnapshot;
   try {
-    snap = await api(`/api/doc/${name}`);
+    snap = await api(opts.vanilla ? `/api/vanilla-doc/${name}` : `/api/doc/${name}`);
   } catch (e) {
     $("load-state").textContent = `打开失败：${(e as Error).message}`;
+    $<HTMLSelectElement>("room-select").value = doc?.name ?? "";
     return;
   }
   doc = snap;
+  lintFindings = []; // a fresh room starts with no opinion; refreshLint refills projects
   selection.clear();
   hovered = null;
   layerOff.clear();
@@ -411,14 +445,15 @@ async function openRoom(name: string, opts: { silent?: boolean } = {}) {
   setTool({ kind: "select" });
   await refreshScene();
   fit();
+  await refreshRooms(name); // sync the dropdown (deep links, the vanilla marker option)
   updateChrome();
   refreshLint();
-  history.replaceState(null, "", `?room=${encodeURIComponent(name)}`);
+  history.replaceState(null, "", `?room=${encodeURIComponent(name)}${opts.vanilla ? "&vanilla=1" : ""}`);
 }
 
 // pull the server's state wholesale (someone else edited, undo/redo, adopt, 409 recovery)
 async function syncDoc() {
-  if (!doc) return;
+  if (!doc || doc.vanilla) return; // vanilla views have no server-side state to sync
   doc = await api(`/api/doc/${doc.name}`);
   for (const id of [...selection]) if (!findInstance(room(), id)) selection.delete(id);
   await refreshScene();
@@ -442,6 +477,7 @@ function guessActiveLayer(): number {
 let commitQueue: Promise<unknown> = Promise.resolve();
 
 function commit(label: string, ops: Op[]): Promise<boolean> {
+  if (readOnly()) { toastReadOnly(); return Promise.resolve(false); } // vanilla views take no edits
   const run = commitQueue.then(() => commitNow(label, ops));
   commitQueue = run.catch(() => {});
   return run;
@@ -472,7 +508,7 @@ async function commitNow(label: string, ops: Op[]): Promise<boolean> {
 }
 
 async function undoRedo(which: "undo" | "redo") {
-  if (!doc) return;
+  if (!doc || readOnly()) { if (readOnly()) toastReadOnly(); return; }
   try {
     await api(`/api/doc/${doc.name}/${which}`, "POST", { by: BY });
     await syncDoc();
@@ -484,7 +520,7 @@ async function undoRedo(which: "undo" | "redo") {
 }
 
 async function compileDoc() {
-  if (!doc) return;
+  if (!doc || readOnly()) { if (readOnly()) toastReadOnly(); return; }
   try {
     const r = await api(`/api/doc/${doc.name}/compile`, "POST", {});
     lintFindings = r.findings ?? [];
@@ -515,7 +551,7 @@ async function adoptDoc() {
 }
 
 async function refreshLint() {
-  if (!doc || renderMode) return;
+  if (!doc || renderMode || doc.vanilla) return; // lint speaks about the mod's rules; a cache room has no project to judge
   try {
     lintFindings = await api(`/api/doc/${doc.name}/lint`);
     updateChrome();
@@ -567,8 +603,29 @@ function applyVisibility() {
 
 function updateChrome() {
   if (!doc) return;
-  const dirty = doc.dirty;
+  document.body.classList.toggle("vanilla-ro", readOnly());
+  const counts = scene!.nodes.reduce<Record<string, number>>((a, n) => ((a[n.kind] = (a[n.kind] ?? 0) + 1), a), {});
   const bc = $<HTMLButtonElement>("b-compile");
+  if (readOnly()) {
+    // vanilla cache room: view-only chrome. No rev/compile state exists, edit buttons
+    // stay inert, and the banner carries the one decision available (derive a project).
+    bc.disabled = true;
+    bc.classList.remove("primary");
+    bc.innerHTML = `${ICONS.compile}<span>编译</span>`;
+    $<HTMLButtonElement>("b-undo").disabled = true;
+    $<HTMLButtonElement>("b-redo").disabled = true;
+    document.title = `${room().name}（原版 · 只读） — SV Room Editor`;
+    $("load-state").innerHTML =
+      `${esc(room().name)} · 原版缓存 · 只读 · ${room().width}×${room().height}` +
+      ` · 可见 ${counts.drawn ?? 0} · 隐形 ${counts.hidden ?? 0} · 碰撞 ${counts.collision ?? 0} · 标记 ${counts.marker ?? 0}`;
+    $("history-badge").textContent = "";
+    const banner = $("banner");
+    banner.hidden = false;
+    banner.innerHTML = "原版缓存房间 · 只读查看，任何编辑都不会落盘。要基于它修改：「新建…」以它为基底派生工程（写入 mod 的 rooms/）。";
+    return;
+  }
+  bc.disabled = false;
+  const dirty = doc.dirty;
   bc.classList.toggle("primary", dirty);
   bc.innerHTML = `${ICONS.compile}<span>编译</span>${dirty ? '<span class="dirty-dot" title="有未编译的改动">●</span>' : ""}`;
   const canUndo = doc.undoable.includes(BY);
@@ -576,7 +633,6 @@ function updateChrome() {
   $<HTMLButtonElement>("b-undo").disabled = !canUndo;
   $<HTMLButtonElement>("b-redo").disabled = !canRedo;
   document.title = `${dirty ? "● " : ""}${room().name} — SV Room Editor`;
-  const counts = scene!.nodes.reduce<Record<string, number>>((a, n) => ((a[n.kind] = (a[n.kind] ?? 0) + 1), a), {});
   $("load-state").innerHTML =
     `${esc(room().name)} · r${doc.rev}${doc.compiledRev !== null ? ` · 编译于 r${doc.compiledRev}` : " · 从未编译"}` +
     ` · ${room().width}×${room().height} · 可见 ${counts.drawn ?? 0} · 隐形 ${counts.hidden ?? 0} · 碰撞 ${counts.collision ?? 0} · 标记 ${counts.marker ?? 0}` +
@@ -666,7 +722,7 @@ function renderInstList() {
       const obj = inst.object_definition ?? "";
       const badge = n && n.depth !== L.layer_depth ? `<span class="depth-badge" title="${esc(n.depthWhy)}">d${n.depth}</span>` : "";
       rows.push(`<li class="inst${selection.has(inst.instance_id) ? " sel" : ""}${hiddenInsts.has(inst.instance_id) ? " off" : ""}"
-        data-id="${inst.instance_id}" draggable="true" title="${esc(obj)} #${inst.instance_id}&#10;${esc(n?.depthWhy ?? "")}&#10;拖动调整数组顺序（组内调序 / 跨组换层）">
+        data-id="${inst.instance_id}" draggable="${readOnly() ? "false" : "true"}" title="${esc(obj)} #${inst.instance_id}&#10;${esc(n?.depthWhy ?? "")}&#10;${readOnly() ? "原版房间只读，不能调序" : "拖动调整数组顺序（组内调序 / 跨组换层）"}">
         <span class="grip">${ICONS.grip}</span>${thumbHtml(db, obj, inst.image_index, 28)}
         <div class="itext"><div class="iname">${esc(obj)} <span class="iid">#${inst.instance_id}</span>${badge}</div>
         <div class="imeta">@${inst.x},${inst.y}${inst.scale_x !== 1 || inst.scale_y !== 1 ? ` · ${inst.scale_x}×${inst.scale_y}` : ""}</div></div>
@@ -704,6 +760,7 @@ function wireInstRows(list: HTMLElement) {
       if (at) focusOn(at.inst.x, at.inst.y, Math.max(zoom, 2));
     });
     li.addEventListener("dragstart", (e) => {
+      if (readOnly()) { e.preventDefault(); return; }
       dragRowId = id;
       armDragScroll(li.closest("section") as HTMLElement | null);
       if (!selection.has(id)) {
@@ -769,7 +826,7 @@ function wireInstRows(list: HTMLElement) {
 // layer's array (the list shows front-most first = the array reversed). A drop on a group
 // header = front-most of that layer. Same layer = reorder, different layer = relayer.
 function dropInstAt(id: number, target: { kind: "row"; id: number; after: boolean } | { kind: "front"; layer: number }) {
-  if (!doc) return;
+  if (!doc || readOnly()) return;
   const src = findInstance(room(), id);
   if (!src) return;
   let toLayer: number, anchor: number | null;
@@ -937,7 +994,7 @@ function rescaleNotes() {
 }
 
 async function addNoteAt(wx: number, wy: number) {
-  if (!doc) return;
+  if (!doc || readOnly()) { if (readOnly()) toastReadOnly(); return; }
   const text = prompt(`便签（${Math.round(wx)}, ${Math.round(wy)}）：人类和 agent 均可见`, "");
   if (!text?.trim()) return;
   await api(`/api/doc/${doc.name}/notes`, "POST", { by: BY, x: Math.round(wx), y: Math.round(wy), text: text.trim() });
@@ -952,6 +1009,7 @@ async function addNoteAt(wx: number, wy: number) {
 // toolbox 放置 button, Ctrl+K, or P with no prior pick. Picking arms the place tool and
 // closes; Esc / backdrop click closes without changing the armed tool.
 function openPalette() {
+  if (readOnly()) { toastReadOnly(); return; } // the library arms the place tool
   const dlg = $<HTMLDialogElement>("palette-dialog");
   renderPaletteRoom();
   renderPalette();
@@ -1041,6 +1099,7 @@ function toolCursor() {
 }
 
 function setTool(t: Tool) {
+  if (readOnly() && t.kind !== "select" && t.kind !== "hand") { toastReadOnly(); return; } // view-only: no edit tools
   tool = t;
   if (t.kind === "place") lastPlaced = t.object;
   if (t.kind === "zone") zoneObject = t.object;
@@ -1538,7 +1597,7 @@ function wireViewport(host: HTMLElement) {
       return;
     }
     // a handle of the single selected coverage rectangle wins over move/marquee
-    if (selection.size === 1) {
+    if (selection.size === 1 && !readOnly()) {
       const n = nodeById.get([...selection][0]);
       if (n && n.view.visible && resizeGate.get(n.inst.instance_id)) {
         const handle = handleAt(n, sx, sy);
@@ -1571,8 +1630,10 @@ function wireViewport(host: HTMLElement) {
       renderLayerList();
       syncInstSelection(true);
       inspect();
-      const orig = instsOf(selection).map((a) => ({ id: a.inst.instance_id, x: a.inst.x, y: a.inst.y, tx: a.inst.x, ty: a.inst.y }));
-      drag = { mode: "move", sx, sy, ids: orig.map((o) => o.id), orig, moved: false };
+      if (!readOnly()) {
+        const orig = instsOf(selection).map((a) => ({ id: a.inst.instance_id, x: a.inst.x, y: a.inst.y, tx: a.inst.x, ty: a.inst.y }));
+        drag = { mode: "move", sx, sy, ids: orig.map((o) => o.id), orig, moved: false };
+      }
       postSelection();
     } else {
       drag = { mode: "marquee", sx, sy, ex: sx, ey: sy, additive: e.shiftKey || e.ctrlKey, moved: false };
@@ -1785,7 +1846,7 @@ function drawOverlay() {
     if (n) box(n, 0x6cb6ff, 2);
   }
   // drag-resize handles: single selection of a visible coverage rectangle
-  if (selection.size === 1 && tool.kind === "select") {
+  if (selection.size === 1 && tool.kind === "select" && !readOnly()) {
     const n = nodeById.get([...selection][0]);
     if (n && n.view.visible) {
       const gate = resizeGate.get(n.inst.instance_id);
@@ -1855,7 +1916,7 @@ function drawOverlay() {
 // tell the world what we have selected (agents see it in the snapshot / over WS)
 let selTimer = 0;
 function postSelection() {
-  if (!doc || renderMode) return;
+  if (!doc || renderMode || readOnly()) return; // a vanilla room has no doc to hold a selection
   clearTimeout(selTimer);
   selTimer = window.setTimeout(() => {
     api(`/api/doc/${doc!.name}/selection`, "POST", { by: BY, ids: [...selection] }).catch(() => {});
@@ -2078,6 +2139,8 @@ function inspect() {
     </div>
     ${facts}`;
 
+  if (readOnly()) body.querySelectorAll<HTMLInputElement | HTMLSelectElement>("input[data-k], select[data-layer]").forEach((el) => { el.disabled = true; });
+
   body.querySelectorAll<HTMLInputElement>("input[data-k]").forEach((inp) => {
     const commitField = () => {
       const key = inp.dataset.k as keyof RoomInstance;
@@ -2143,6 +2206,51 @@ async function openNewDialog() {
   };
 }
 
+// ================= vanilla read-only picker =================
+
+// The dropdown's 原版（只读）group leads here: search the cache, open the pick with
+// ?vanilla=1. Nothing is created; the room renders from cache/assets/rooms/<name>.json.
+function wireVanillaDialog() {
+  const dlg = $("vanilla-dialog") as HTMLDialogElement;
+  const q = $<HTMLInputElement>("vd-q");
+  const list = $<HTMLSelectElement>("vd-list");
+  let t = 0;
+  q.oninput = () => { clearTimeout(t); t = window.setTimeout(fillVanillaList, 80); };
+  q.onkeydown = (e) => {
+    if (e.key === "Enter") { e.preventDefault(); const first = list.querySelector("option"); if (first) openVanillaFromPicker(first.value); }
+    if (e.key === "Escape") { e.preventDefault(); dlg.close(); }
+  };
+  list.ondblclick = () => { if (list.value) openVanillaFromPicker(list.value); };
+  $("vd-ok").onclick = (e) => { e.preventDefault(); if (list.value) openVanillaFromPicker(list.value); };
+  dlg.addEventListener("click", (e) => { if (e.target === dlg) dlg.close(); }); // backdrop click
+}
+
+async function fillVanillaList() {
+  const q = $<HTMLInputElement>("vd-q");
+  const list = $<HTMLSelectElement>("vd-list");
+  const found = await api(`/api/vanilla?q=${encodeURIComponent(q.value)}`);
+  list.innerHTML = found
+    .map((r: any) => `<option value="${esc(r.name)}">${esc(r.name)} · ${r.w}×${r.h} · ${r.instances} 实例</option>`)
+    .join("");
+  // a list box (size>1) does NOT auto-select the first option on fill -- value stays ""
+  // and 打开 silently does nothing. Pin the selection so Enter/双击/按钮 all have a target.
+  if (list.options.length) list.selectedIndex = 0;
+}
+
+async function openVanillaPicker() {
+  await fillVanillaList();
+  const dlg = $("vanilla-dialog") as HTMLDialogElement;
+  if (!dlg.open) dlg.showModal();
+  const q = $<HTMLInputElement>("vd-q");
+  q.focus();
+  q.select();
+}
+
+function openVanillaFromPicker(name: string) {
+  ($("vanilla-dialog") as HTMLDialogElement).close();
+  void openRoom(name, { vanilla: true });
+}
+
 // ================= websocket =================
 
 function wireWs() {
@@ -2150,7 +2258,7 @@ function wireWs() {
   if (!hot) return;
   hot.on("svre:event", async (e: any) => {
     if (e?.type === "created") { await refreshRooms(); return; }
-    if (!doc || e?.room !== doc.name) return;
+    if (!doc || e?.room !== doc.name || doc.vanilla) return; // vanilla views track no project events
     switch (e.type) {
       case "change":
         if (e.entry?.by === BY) break; // our own commit already replayed it
@@ -2226,6 +2334,7 @@ const whoText = (by?: string) => (by === BY ? "你" : by ? `${by}` : "有人");
       .sort((a, b) => a.ord - b.ord);
   },
   toolKind() { return tool.kind; },
+  get readOnly() { return readOnly(); },
   zmode(m?: "game" | "static") {
     if (m === "game" || m === "static") setZMode(m);
     return zMode;

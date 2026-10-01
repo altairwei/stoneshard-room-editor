@@ -73,6 +73,7 @@ npm run dev         # http://localhost:5178/?room=r_sv_hut_inside1
 | 画布上沿/左沿的标尺 | 世界像素刻度；蓝色区段 = 房间范围，蓝线 = 光标 |
 | 「历史」页签 | 所有人的改动日志（点一条高亮它碰的实例）+ 便签管理 |
 | 新建… | 从原版房间派生新房间（全量复制或只留控制器） |
+| 房间下拉 →「打开原版房间…」 | 只读查看任意原版缓存房间：双序画布、图层页签、检查器、静态/游戏切换全可用；不产生工程文件，一切编辑被拒绝（要修改请用「新建…」派生）。深链 `?room=<名>&vanilla=1` |
 
 agent 改动到达时页面弹 toast 并刷新；agent 的选区以橙色框显示。选项栏下方的横幅
 （banner）提示漂移/基底变更；漂移时给「采纳」按钮。右侧「属性」面板可折叠（记住状态）。
@@ -88,6 +89,7 @@ python cli/svre.py query r_sv_hut_inside1 --object o_chest
 python cli/svre.py apply r_x --ops ops.json --label "..." --by claude
 python cli/svre.py compile r_x
 python cli/svre.py render r_x out.png --zoom 2 --grid --labels
+python cli/svre.py render r_Osbrook out.png --vanilla      # 原版房间也只读渲染（同一条通道）
 python cli/svre.py --help                         # 全部命令 + op 词汇表
 ```
 
