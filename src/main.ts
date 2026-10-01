@@ -2423,6 +2423,11 @@ interface SvreHost {
   isElectron: boolean;
   onMenu(cb: (id: string) => void): void;
   pushState(s: { theme: UiTheme; zmode: ZMode; tool: Tool["kind"]; toggles: Record<string, boolean> }): void;
+  // custom titlebar: pop the native menu at the given page coords
+  popupMenu?(x: number, y: number): void;
+  // ...and run the window controls; the shell answers with svre:win-state
+  winControl?(action: "min" | "max" | "close"): void;
+  onWinState?(cb: (s: { maximized: boolean }) => void): void;
   // first-run wizard pickers; absent in plain browsers (the text inputs suffice there)
   pickDir?(): Promise<string | null>;
   pickFile?(): Promise<string | null>;
@@ -2433,6 +2438,29 @@ function wireMenu() {
   if (!hostBridge) return;
   document.body.classList.add("electron"); // hides the controls that moved into menus
   hostBridge.onMenu((id) => menuAction(id));
+  // custom titlebar's ☰ pops the same native menu at the button's bottom-left corner
+  const tb = $("tb-menu");
+  tb.addEventListener("click", () => {
+    const r = tb.getBoundingClientRect();
+    hostBridge.popupMenu?.(Math.round(r.left), Math.round(r.bottom));
+  });
+  // window controls; the max button icon/tooltip mirrors the shell's state pushes
+  $("tb-min").addEventListener("click", () => hostBridge.winControl?.("min"));
+  const tbMax = $("tb-max");
+  tbMax.addEventListener("click", () => hostBridge.winControl?.("max"));
+  $("tb-close").addEventListener("click", () => hostBridge.winControl?.("close"));
+  hostBridge.onWinState?.((s) => {
+    tbMax.classList.toggle("maxed", !!s.maximized);
+    tbMax.title = s.maximized ? "还原" : "最大化";
+  });
+  // the page keeps document.title at "<room> — Stoneshard Room Editor"; mirror it
+  const tbTitle = document.querySelector<HTMLElement>("#titlebar .tb-title");
+  const titleEl = document.querySelector("title");
+  if (tbTitle && titleEl) {
+    const syncTitle = () => { tbTitle.textContent = document.title; };
+    new MutationObserver(syncTitle).observe(titleEl, { childList: true });
+    syncTitle();
+  }
 }
 
 function menuAction(id: string): boolean {

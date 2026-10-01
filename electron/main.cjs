@@ -32,6 +32,12 @@ let baseUrl = "";
 let menuState = { theme: "dark", zmode: "game", tool: "select", toggles: {} };
 let modDirCache = null;
 
+// frameless chrome: the OS title bar is hidden (titleBarStyle:"hidden" keeps the native
+// frame -- resize borders/snap/shadow all keep working) and the page draws its own
+// #titlebar: drag region, ☰ menu popup, and the min/max/close buttons (titleBarOverlay
+// was tried first but paints NOTHING on win10 19045 + electron 44 -- custom buttons it
+// is, which is what VS Code does anyway).
+
 function waitForHttp(url, tries = 120) {
   return new Promise((resolve, reject) => {
     const attempt = (left) => {
@@ -203,6 +209,9 @@ function createWindow() {
     show: !SMOKE,
     backgroundColor: "#1b1b1d",
     title: "Stoneshard Room Editor",
+    // custom title bar: hide the OS caption, keep the native frame (resize/snap/shadow);
+    // the page's #titlebar supplies drag area, ☰ menu and min/max/close
+    titleBarStyle: "hidden",
     webPreferences: {
       preload: process.env.SVRE_APP_NO_PRELOAD ? undefined : path.join(__dirname, "preload.cjs"), // escape hatch for bisecting
       contextIsolation: true,
@@ -212,6 +221,9 @@ function createWindow() {
       backgroundThrottling: false,
     },
   });
+  // the custom max/restore button icon follows the real window state
+  win.on("maximize", () => win.webContents.send("svre:win-state", { maximized: true }));
+  win.on("unmaximize", () => win.webContents.send("svre:win-state", { maximized: false }));
   win.loadURL(process.env.SVRE_APP_URL || baseUrl + (process.env.SVRE_APP_QUERY ?? ""));
   if (SMOKE) {
     win.webContents.on("render-process-gone", (_e, d) => console.log(`SMOKE renderer gone: ${JSON.stringify(d)}`));
@@ -221,6 +233,12 @@ function createWindow() {
     win.webContents.once("did-finish-load", () => {
       setTimeout(async () => {
         try {
+          // optional page poke before the capture (e.g. flip the theme for a second shot)
+          if (process.env.SVRE_APP_SMOKE_EVAL) {
+            await win.webContents.executeJavaScript(process.env.SVRE_APP_SMOKE_EVAL)
+              .catch((e) => console.log(`SMOKE eval: ${e?.message ?? e}`));
+            await new Promise((res) => setTimeout(res, 400));
+          }
           const probe = await Promise.race([
             win.webContents.executeJavaScript(
               `JSON.stringify({ bridge: typeof window.svreHost, ready: document.readyState, title: document.title, bodyClass: document.body?.className ?? null, bNew: document.getElementById("b-new") ? getComputedStyle(document.getElementById("b-new")).display : null, loadState: document.getElementById("load-state")?.textContent ?? null })`
@@ -255,6 +273,18 @@ else {
     baseUrl = await startBackend();
     console.log(`svre backend: ${baseUrl} (${DEV ? "dev" : "prod"})`);
     ipcMain.on("svre:state", (_e, s) => buildMenu(s));
+    // the custom titlebar's ☰ button pops the same native menu, at the button
+    ipcMain.on("svre:menu-popup", (_e, pos) => {
+      const m = Menu.getApplicationMenu();
+      if (m) m.popup({ window: win, x: Math.round(pos?.x ?? 0), y: Math.round(pos?.y ?? 0) });
+    });
+    // ...and its min/max/close buttons drive the real window
+    ipcMain.on("svre:win-control", (_e, action) => {
+      if (!win) return;
+      if (action === "min") win.minimize();
+      else if (action === "max") { if (win.isMaximized()) win.unmaximize(); else win.maximize(); }
+      else if (action === "close") win.close();
+    });
     // native pickers for the setup wizard (renderer never gets raw dialog access)
     ipcMain.handle("svre:pick-dir", async () => {
       const r = await dialog.showOpenDialog(win, { title: "选择工作目录", properties: ["openDirectory", "createDirectory"] });
