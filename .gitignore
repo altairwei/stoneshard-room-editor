@@ -5,3 +5,4 @@ cache/
 vendor/
 release/
 svre.config.local.json
+__pycache__/
