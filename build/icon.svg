@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+<rect x="34" y="82" width="188" height="148" rx="20" fill="#8a5a33"/>
+<path d="M34 134H222M34 182H222" stroke="#6a4224" stroke-width="10"/>
+<rect x="58" y="230" width="42" height="22" fill="#1c0f2e"/>
+<rect x="58" y="229" width="42" height="16" fill="#8a5a33"/>
+<path d="M93 230H202A20 20 0 0 0 222 210V102A20 20 0 0 0 202 82H54A20 20 0 0 0 34 102V210A20 20 0 0 0 54 230H65" fill="none" stroke="#1c0f2e" stroke-width="44"/>
+<path d="M100 230H202A20 20 0 0 0 222 210V102A20 20 0 0 0 202 82H54A20 20 0 0 0 34 102V210A20 20 0 0 0 54 230H58" fill="none" stroke="#c3c6cf" stroke-width="30"/>
+<path d="M100 230H202A20 20 0 0 0 222 210V102A20 20 0 0 0 202 82H54A20 20 0 0 0 34 102V210A20 20 0 0 0 54 230H58" fill="none" stroke="#e9ebf0" stroke-width="8.4" transform="translate(0 -9)"/>
+<ellipse cx="128" cy="204" rx="44" ry="10" fill="#000" opacity=".35"/>
+
+<polygon points="128.0,18.0 85.8,75.6 97.3,169.7 128.0,210.0 158.7,169.7 170.2,75.6" fill="#1c0f2e" stroke="#1c0f2e" stroke-width="14" stroke-linejoin="round"/>
+<polygon points="128.0,18.0 85.8,75.6 119.4,85.2" fill="#f2e0ff"/>
+<polygon points="85.8,75.6 97.3,169.7 124.2,179.3 119.4,85.2" fill="#b47cf4"/>
+<polygon points="97.3,169.7 128.0,210.0 124.2,179.3" fill="#9150de"/>
+<polygon points="128.0,18.0 119.4,85.2 170.2,75.6" fill="#9d5fe8"/>
+<polygon points="119.4,85.2 170.2,75.6 158.7,169.7 124.2,179.3" fill="#6c31b8"/>
+<polygon points="124.2,179.3 158.7,169.7 128.0,210.0" fill="#4a1d8a"/>
+<path d="M95.4,77.5L121.3,31.4" stroke="#fff" stroke-opacity=".85" stroke-width="5.76" stroke-linecap="round"/>
+</svg>

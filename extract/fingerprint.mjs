@@ -19,6 +19,9 @@ const fp = {
   sprites: Object.keys(JSON.parse(fs.readFileSync(path.join(dir, "sprites.json"), "utf8"))).length,
   rooms: JSON.parse(fs.readFileSync(path.join(dir, "rooms.json"), "utf8")).length,
   indexSha256: crypto.createHash("sha256").update(fs.readFileSync(path.join(dir, "rooms", "_index.json"))).digest("hex"),
+  // entries in create.json (the GML source scan, extract/scan-create.mjs) -- the wizard's
+  // last step checks the artist's own scan against this
+  create: Object.keys(JSON.parse(fs.readFileSync(path.join(dir, "create.json"), "utf8"))).length,
 };
 fs.writeFileSync(path.join(root, "extract", "fingerprint.json"), JSON.stringify(fp, null, 2) + "\n");
 console.log(JSON.stringify(fp));

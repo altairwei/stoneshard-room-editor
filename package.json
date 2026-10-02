@@ -16,6 +16,7 @@
     "build:app": "npm run build && npm run build:server",
     "vendor:utmt": "node extract/vendor-utmt.mjs",
     "fingerprint": "node extract/fingerprint.mjs",
+    "icon": "node build/make-icon.mjs",
     "dist": "npm run build:app && npm run vendor:utmt && electron-builder --win zip"
   },
   "devDependencies": {
