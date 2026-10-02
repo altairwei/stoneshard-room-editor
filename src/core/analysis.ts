@@ -187,7 +187,7 @@ export function lint(k: Knowledge, room: Room, g = walkGrid(k, room)): Finding[]
   for (const [o, ids] of mod)
     out.push({ rule: "mod-object", level: "info", ids, message: `${o} is a mod object: its Msl.AddObject must run before this room's AddRoomJson, or the instance is silently dropped` });
   for (const [c, ids] of missing)
-    out.push({ rule: "missing-code", level: "error", ids, message: `creation code "${c}" resolves to nothing (no vanilla entry, no Codes/${c}.gml): MSL stores null and the instance's Create never runs` });
+    out.push({ rule: "missing-code", level: "error", ids, message: `creation code "${c}" resolves to nothing (no ${c}.gml anywhere under the mod's Codes/, and no vanilla ${c}.gml in the decompiled source dump): MSL stores null and the instance's Create never runs` });
   for (const [id, n] of seen) if (n > 1) out.push({ rule: "duplicate-id", level: "error", ids: [id], message: `instance_id ${id} appears ${n} times` });
 
   if (g.starters.length === 0) out.push({ rule: "no-starter", level: "warn", message: "no o_position_starter: the player has nowhere to arrive" });

@@ -209,6 +209,76 @@ def main():
         st, lint = call("GET", f"/api/doc/{ROOM}/lint")
         check(st == 200 and isinstance(lint, list), f"lint returns findings ({len(lint)})")
 
+        print("A. Codes/ resolution: leaf names, subdirectories, collisions")
+        # MSL's ModFiles.GetCode("x.gml") resolves by LEAF FILE NAME across the whole
+        # Codes/ tree, ignoring directories -- the mod's own Codes/README.md states it,
+        # and StoneValley.cs calls GetCode("scr_sv_furniture_cells.gml") for a file that
+        # lives in Codes/Furniture/. Server-side resolution used to be flat
+        # (Codes/<name>.gml), so every creation code of any mod that organises its Codes/
+        # into subdirectories silently resolved to nothing (StoneValley: 59 of 59 files).
+        # This pins it, and pins the freshness: the index is rebuilt per request, the way
+        # the modObjects block in store.ts already was.
+        code_of = {}
+        for L in doc["room"]["layers"]:
+            for i in L["layer_data"].get("instances", []):
+                for c in (i.get("creation_code"), i.get("pre_create_code")):
+                    if c:
+                        code_of.setdefault(c, i["instance_id"])
+        codes = sorted(code_of)
+        check(len(codes) == 3, f"the fixture has creation codes to resolve ({len(codes)})")
+
+        def missing():
+            _, f = call("GET", f"/api/doc/{ROOM}/lint")
+            return sorted(x["ids"][0] for x in f if x["rule"] == "missing-code")
+
+        # Two of the three are vanilla RoomCC codes that the decompiled source dump also
+        # holds, so only the mod's own one is unresolvable to begin with -- and that is the
+        # one that actually exercises Codes/ resolution.
+        base = missing()
+        check(len(base) == 1, f"only the mod's own code is unresolvable to start with ({base})")
+        only = next(c for c in codes if code_of[c] == base[0])
+
+        nested = scratch / "Codes" / "RoomCC"
+        nested.mkdir()
+        for c in codes:
+            (nested / f"{c}.gml").write_text("// nested, the way the mod organises them\n", encoding="utf-8")
+        check(missing() == [], f"a subdirectory of Codes/ resolves it (still missing: {missing()})")
+
+        (nested / f"{only}.gml").unlink()
+        check(missing() == base, f"deleting the nested file brings its missing-code back, no restart ({missing()})")
+        (nested / f"{only}.gml").write_text("// restored\n", encoding="utf-8")
+        check(missing() == [], "restoring it clears the finding again")
+
+        # two directories, one leaf name: MSL's GetCode takes whichever it finds first,
+        # which is not something a room can rely on. Reported once, project-wide, with the
+        # editor's own deterministic pick (shallowest, then path order) named.
+        deep = nested / "deep"
+        deep.mkdir()
+        (deep / f"{only}.gml").write_text("// a second file with the same leaf name\n", encoding="utf-8")
+        st, diag = call("GET", "/api/diagnostics")
+        check(st == 200 and isinstance(diag.get("rooms"), list) and isinstance(diag.get("project"), list),
+              "diagnostics returns rooms[] + project[]")
+        dup = [p for p in diag["project"] if p["code"] == "codes-duplicate"]
+        check(len(dup) == 1 and dup[0]["subject"] == f"{only}.gml", f"leaf collision reported once, project-wide ({dup})")
+        check(dup and dup[0]["paths"] == [f"Codes/RoomCC/{only}.gml", f"Codes/RoomCC/deep/{only}.gml"],
+              f"the winner is listed first (shallowest path wins): {dup[0]['paths'] if dup else None}")
+        # the project-wide totals are the only count the panel trusts, so they must be the
+        # sum of what it is about to render
+        counted = {"error": 0, "warn": 0, "info": 0}
+        for r in diag["rooms"]:
+            for f_ in r["findings"]:
+                counted[f_["level"]] += 1
+        for p_ in diag["project"]:
+            counted[p_["level"]] += 1
+        check(diag["totals"] == counted, f"totals are the sum of the rows ({diag['totals']} vs {counted})")
+        check(any(r["name"] == ROOM for r in diag["rooms"]), "the open room is in the project-wide list")
+        st, one = call("GET", f"/api/doc/{ROOM}/lint")
+        got = next((r for r in diag["rooms"] if r["name"] == ROOM), {}).get("findings", [])
+        check(json.dumps(got, sort_keys=True) == json.dumps(one, sort_keys=True),
+              "diagnostics agrees with the per-room lint, finding for finding")
+        (deep / f"{only}.gml").unlink()
+        deep.rmdir()
+
         print("A. vanilla read-only doc")
         st, vdoc = call("GET", "/api/vanilla-doc/r_Osbrook")
         check(st == 200 and vdoc.get("vanilla") is True and vdoc["room"]["name"] == "r_Osbrook", "vanilla doc opens straight from the cache")
@@ -1768,6 +1838,10 @@ def main():
                 # A opens a project; the server emits {type:"project"} and BOTH tabs reload
                 pga.evaluate("void svre.openProject('%s')" % str(proj).replace("\\", "\\\\"))
                 pga.wait_for_selector("#appbar", timeout=60000)
+                # the appbar is visible from the first paint (it is plain HTML; only the
+                # welcome page's body class hides it), while the title is seated after
+                # /api/setup answers. Wait for the claim being tested, not for the chrome.
+                pga.wait_for_function("() => document.title.includes('StoneValley')", timeout=60000)
                 check("StoneValley" in pga.title(), f"the title names the project ({pga.title()})")
                 # the editor chrome is up before /api/rooms has answered, so wait for the
                 # room list itself -- #appbar alone would let this race the fetch

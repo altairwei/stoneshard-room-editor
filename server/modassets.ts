@@ -176,7 +176,10 @@ function pngSize(file: string): { w: number; h: number } | null {
   }
 }
 
-export function scanModAssets(modDir: string, opts: { vanilla?: VanillaNames } = {}): ModAssets {
+// `write: false` makes the scan purely read-only: it still reports every warning, but
+// skips the self-heal below. The diagnostics endpoint needs that -- a GET must not rewrite
+// <Mod>.Assets.g.cs behind a client that is not re-reading the sprite pages.
+export function scanModAssets(modDir: string, opts: { vanilla?: VanillaNames; write?: boolean } = {}): ModAssets {
   const pages: string[] = [];
   const sprites: Record<string, ModSpriteDef> = {};
   const objects: Record<string, ModObjectDef> = {};
@@ -240,7 +243,7 @@ export function scanModAssets(modDir: string, opts: { vanilla?: VanillaNames } =
   // the generated C# self-heals: rewrite it whenever it disagrees with the manifest, so
   // what the editor shows and what the game registers can never drift apart
   let synced = false;
-  if (exists) {
+  if (exists && opts.write !== false) {
     const out = generatedCsPath(modDir);
     const text = genAssetsCs(manifest, path.basename(modDir));
     const cur = fs.existsSync(out) ? fs.readFileSync(out, "utf8") : null;

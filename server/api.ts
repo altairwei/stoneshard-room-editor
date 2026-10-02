@@ -3,6 +3,8 @@
 // the custom event "svre:event"; the CLI polls /changes instead.
 //
 //   GET  /api/rooms                         every room: project? compiled? dirty? drift?
+//   GET  /api/diagnostics                   one pass over the project: every room's lint findings
+//                                           + project-level warnings (assets.json, Codes/ collisions)
 //   GET  /api/vanilla?q=                    search vanilla rooms (bases)
 //   GET  /api/vanilla-doc/<room>            a vanilla cache room for read-only viewing (no project)
 //   POST /api/import      {name, base?, by?} project from an existing Codes/<name>.gml
@@ -511,6 +513,17 @@ export function createApi(root: string, opts: { home?: string } = {}): SvreApi {
       // must await first should capture `const gen = bootGen` up front and refuse with a
       // 409 when it no longer matches.
       if (url === "/api/rooms") return send(res, 200, store!.listRooms());
+      // every room's findings + the project-level warnings, in one pass. Read-only: the
+      // asset scan runs with write:false so a GET never rewrites <Mod>.Assets.g.cs, and it
+      // deliberately does NOT assign the module-level modScan -- that variable's `pages`
+      // array is the contract behind /mod-assets/pages/<i>.png and may only move when the
+      // client can re-read it.
+      if (url === "/api/diagnostics") {
+        const scan = scanModAssets(cfg.modDir, { vanilla: vanillaNames, write: false });
+        return send(res, 200, store!.diagnostics({
+          projectWarnings: scan.warnings.map((message) => ({ code: "assets" as const, level: "warn" as const, message })),
+        }));
+      }
       if (url === "/api/vanilla") return send(res, 200, store!.searchVanilla(q.q ?? ""));
       const vd = /^\/api\/vanilla-doc\/([A-Za-z0-9_]+)$/.exec(url);
       if (vd && method === "GET") return send(res, 200, store!.vanillaDoc(vd[1]));

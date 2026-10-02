@@ -14,7 +14,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { describe, gridText, lint, walkGrid, type Knowledge } from "../src/core/analysis.ts";
+import { describe, gridText, lint, walkGrid, type Finding, type Knowledge, type ObjInfo } from "../src/core/analysis.ts";
 import { diffRooms, verifyDiff } from "../src/core/diff.ts";
 import { applyAll, maxInstanceId, normalize, OpError, touchedIds, type Op } from "../src/core/ops.ts";
 import {
@@ -53,9 +53,33 @@ interface Doc {
 
 export type Emit = (event: Record<string, unknown>) => void;
 
+// A warning that belongs to the project rather than to any one room, so it is reported once
+// instead of once per room (which is what a per-room rule would do for a Codes/ collision).
+export interface ProjectDiagnostic {
+  code: "assets" | "codes-duplicate" | "room-unreadable";
+  level: "error" | "warn" | "info";
+  message: string;
+  subject?: string;
+  paths?: string[];
+}
+
+export interface RoomDiagnostic {
+  name: string;
+  findings: Finding[]; // core lint(), same rule vocabulary the CLI and the canvas use
+  problems: ReplayProblem[]; // the log no longer replays: the room cannot compile
+}
+
+export interface Diagnostics {
+  rooms: RoomDiagnostic[];
+  project: ProjectDiagnostic[];
+  // rooms[].findings ∪ project[] counted by level, so the UI renders one badge
+  totals: { error: number; warn: number; info: number };
+}
+
 export class Store {
   private docs = new Map<string, Doc>();
   private know: Knowledge | null = null;
+  private objects: Record<string, ObjInfo> | null = null;
   private vanillaIndex: Record<string, string> | null = null;
 
   private cfg: SvreConfig;
@@ -77,16 +101,93 @@ export class Store {
 
   // ---------------- knowledge (for rules) ----------------
 
+  // objects.json is an extract artifact, never hand-edited while a server runs: parse once.
+  private objectsJson(): Record<string, ObjInfo> {
+    const cached = this.objects;
+    if (cached) return cached;
+    const parsed: Record<string, ObjInfo> = JSON.parse(fs.readFileSync(path.join(this.cfg.assetsDir, "objects.json"), "utf8"));
+    this.objects = parsed;
+    return parsed;
+  }
+
+  // MSL's GetCode resolves a creation code by LEAF FILENAME anywhere under Codes/ (the
+  // directory is not part of the name -- ModFiles.GetFile -> Path.GetFileName), which is
+  // why the mod's own Codes/README.md makes global leaf uniqueness the author's first rule.
+  // A flat <codesDir>/<name>.gml join therefore finds nothing at all in a mod that keeps
+  // Codes/ in subdirectories -- and then every creation code "resolves to nothing", which
+  // is two false-positive rules at once (missing-code, plus door-unlinked for the same
+  // door, since links() reads target/position_tag out of that same text).
+  //
+  // The vanilla side stays flat: a UTMT "Decompile all code" dump is 27k files in zero
+  // subdirectories (measured), so walking it per lookup would be pure regression.
+  private codesIndex(): { byLeaf: Map<string, string>; dups: Map<string, string[]> } {
+    const byLeaf = new Map<string, string>(); // leaf filename -> absolute path of the winner
+    const dups = new Map<string, string[]>(); // leaf filename -> every absolute path, when >1
+    const rel = (p: string) => path.relative(this.codesDir, p).replace(/\\/g, "/");
+    // MSL leaves a leaf-name collision undefined; the editor must not. Shallowest wins
+    // (depth reads as "the one the author meant"), ties by path -- stable on every platform.
+    const wins = (a: string, b: string) => {
+      const ra = rel(a), rb = rel(b);
+      const da = (ra.match(/\//g) ?? []).length, db = (rb.match(/\//g) ?? []).length;
+      return da !== db ? da < db : ra < rb;
+    };
+    const walk = (dir: string) => {
+      let ents: fs.Dirent[];
+      try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; } // one unreadable dir must not brick lint
+      for (const e of ents) {
+        const full = path.join(dir, e.name);
+        // symlinked dirs report isDirectory() false, so this cannot loop
+        if (e.isDirectory()) { if (e.name !== "node_modules" && !e.name.startsWith(".")) walk(full); continue; }
+        if (!e.name.endsWith(".gml")) continue;
+        const prev = byLeaf.get(e.name);
+        if (prev === undefined) { byLeaf.set(e.name, full); continue; }
+        const list = dups.get(e.name) ?? [prev];
+        if (!list.includes(full)) list.push(full);
+        dups.set(e.name, list);
+        if (wins(full, prev)) byLeaf.set(e.name, full);
+      }
+    };
+    if (fs.existsSync(this.codesDir)) walk(this.codesDir);
+    return { byLeaf, dups };
+  }
+
+  // duplicate leaf names under Codes/, as project-level warnings (see diagnostics()). Only
+  // Codes/-internal collisions count: a mod file shadowing a same-named vanilla one is
+  // deliberate (that is how a mod overrides a vanilla code), not an ambiguity.
+  codeCollisions(): { leaf: string; winner: string; all: string[] }[] {
+    const { byLeaf, dups } = this.codesIndex();
+    const rel = (p: string) => path.relative(this.cfg.modDir, p).replace(/\\/g, "/");
+    const depth = (p: string) => (rel(p).match(/\//g) ?? []).length;
+    return [...dups]
+      .sort(([a], [b]) => (a < b ? -1 : 1))
+      .map(([leaf, all]) => {
+        const winner = byLeaf.get(leaf) ?? all[0];
+        // list the winner FIRST, then the rest in the same order the resolver would pick
+        // them: readdir order is not stable across platforms, and the caller renders this
+        // list verbatim (and a test asserts on it)
+        const rest = all.filter((p) => p !== winner).sort((a, b) => (depth(a) !== depth(b) ? depth(a) - depth(b) : rel(a) < rel(b) ? -1 : 1));
+        return { leaf, winner: rel(winner), all: [winner, ...rest].map(rel) };
+      });
+  }
+
   knowledge(): Knowledge {
-    if (!this.know) {
-      const objects = JSON.parse(fs.readFileSync(path.join(this.cfg.assetsDir, "objects.json"), "utf8"));
-      const codeText = (name: string) => {
-        for (const p of [path.join(this.codesDir, `${name}.gml`), path.join(this.cfg.sourceDir, `${name}.gml`)])
-          if (fs.existsSync(p)) return fs.readFileSync(p, "utf8");
-        return null;
-      };
-      this.know = { objects, modObjects: new Set<string>(), codeText };
-    }
+    // Rebuilt per call and folded into the one cached container -- the same freshness
+    // argument the modObjects block below spells out: agents and MSL add and remove .gml
+    // files between calls, and lint/grid/describe must see the current truth. The mod's
+    // Codes/ is a few dozen files, so one walk is cheaper than the per-instance existsSync
+    // it replaces.
+    const { byLeaf } = this.codesIndex();
+    const sourceDir = this.cfg.sourceDir;
+    const memo = new Map<string, string | null>(); // one code is often shared by many instances
+    const codeText = (name: string): string | null => {
+      if (memo.has(name)) return memo.get(name)!;
+      const p = byLeaf.get(`${name}.gml`) ?? path.join(sourceDir, `${name}.gml`);
+      const text = fs.existsSync(p) ? fs.readFileSync(p, "utf8") : null;
+      memo.set(name, text);
+      return text;
+    };
+    if (!this.know) this.know = { objects: this.objectsJson(), modObjects: new Set<string>(), codeText };
+    this.know.codeText = codeText;
     // mod object names come from the manifest the editor owns (assets.json -> generated
     // C#), not from parsing the mod's C#. Tiny file, re-read per call: agents edit it
     // between calls, and lint/grid/query must see the current truth.
@@ -103,12 +204,21 @@ export class Store {
 
   // ---------------- listing ----------------
 
-  listRooms() {
+  // Modern projects under rooms/ plus the legacy Codes/<name>.gml artifacts. Shared by
+  // listRooms and diagnostics so the two can never disagree about what a room is.
+  // The legacy scan stays FLAT on purpose: those artifacts are top-level by construction
+  // (a generator era wrote Codes/<room>.gml), and isRoomFile would cost an open+read per
+  // file if it ran over a whole sub-tree.
+  private roomNames(): string[] {
     const names = new Set<string>();
     if (fs.existsSync(this.roomsDir)) for (const f of fs.readdirSync(this.roomsDir)) if (f.endsWith(".room.json")) names.add(f.slice(0, -".room.json".length));
     if (fs.existsSync(this.codesDir)) for (const f of fs.readdirSync(this.codesDir)) if (f.endsWith(".gml") && isRoomFile(path.join(this.codesDir, f))) names.add(f.slice(0, -4));
+    return [...names].sort();
+  }
+
+  listRooms() {
     const owners = generatorsOf(this.cfg.modDir);
-    return [...names].sort().map((name) => {
+    return this.roomNames().map((name) => {
       const hasProject = fs.existsSync(this.projectPath(name));
       let dirty = false, drift = false;
       if (hasProject) {
@@ -118,6 +228,41 @@ export class Store {
       }
       return { name, hasProject, hasCompiled: fs.existsSync(this.compiledPath(name)) || fs.existsSync(this.codesPath(name)), dirty, drift, generatedBy: owners.get(`${name}.gml`) ?? [] };
     });
+  }
+
+  // One project-wide pass for the diagnostics panel: every room's findings, so the user can
+  // see the whole project at once instead of opening rooms one by one, plus the warnings
+  // that have no room to belong to.
+  //
+  // Cheap, and deliberately not cached. listRooms() already opens (reads base + replays the
+  // log for) every room that has a project in order to report dirty/drift, and open() memoizes
+  // by project hash -- so a diagnostics call after /api/rooms pays only the lints. knowledge()
+  // is built once here and shared by every room. A per-rev cache would have to re-derive the
+  // very invalidation open() already does, for no saving.
+  diagnostics(opts: { projectWarnings?: ProjectDiagnostic[] } = {}): Diagnostics {
+    const k = this.knowledge();
+    const project: ProjectDiagnostic[] = [
+      ...(opts.projectWarnings ?? []),
+      ...this.codeCollisions().map((c): ProjectDiagnostic => ({
+        code: "codes-duplicate", level: "warn", subject: c.leaf, paths: c.all,
+        message: `Codes/ 里有 ${c.all.length} 个文件都叫 ${c.leaf}：MSL 的 GetCode 取哪一个不确定，编辑器固定用 ${c.winner}（层数最浅，其次按路径排序）`,
+      })),
+    ];
+    const rooms: RoomDiagnostic[] = [];
+    for (const name of this.roomNames()) {
+      if (!fs.existsSync(this.projectPath(name))) continue; // legacy Codes/<name>.gml, no project to lint
+      try {
+        const d = this.open(name);
+        rooms.push({ name, findings: lint(k, d.room), problems: d.problems });
+      } catch (e) {
+        // one unreadable project must not blank the whole report
+        project.push({ code: "room-unreadable", level: "error", subject: name, message: `${name}: ${(e as Error).message}` });
+      }
+    }
+    const totals = { error: 0, warn: 0, info: 0 };
+    for (const r of rooms) for (const f of r.findings) totals[f.level]++;
+    for (const p of project) totals[p.level]++;
+    return { rooms, project, totals };
   }
 
   searchVanilla(q: string, limit = 40) {
