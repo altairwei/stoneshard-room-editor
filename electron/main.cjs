@@ -29,8 +29,11 @@ const DEV_PORT = 5186;
 
 let win = null;
 let baseUrl = "";
-let menuState = { theme: "dark", zmode: "game", tool: "select", toggles: {} };
-let modDirCache = null;
+// The renderer's snapshot of everything the native menu reflects. The shell NEVER fetches
+// its own copy of anything (the old modDirCache did, and went stale on every project
+// switch): whatever the page pushed last is the truth.
+let menuState = { theme: "dark", zmode: "game", tool: "select", toggles: {}, mode: "welcome", project: null, recent: [] };
+let menuKey = ""; // JSON of the last template built, so identical pushes are a no-op
 
 // frameless chrome: the OS title bar is hidden (titleBarStyle:"hidden" keeps the native
 // frame -- resize borders/snap/shadow all keep working) and the page draws its own
@@ -83,15 +86,14 @@ async function startBackend() {
   return `http://127.0.0.1:${port}`;
 }
 
-async function modDir() {
-  if (!modDirCache) {
-    const cfg = await (await fetch(`${baseUrl}/api/config`)).json();
-    modDirCache = cfg.modDir;
-  }
-  return modDirCache;
-}
-
 const send = (id) => win?.webContents.send("svre:menu", id);
+// recent entries ride one string (a menu item carries a single channel) -- see
+// RECENT_MENU_PREFIX in src/main.ts, which splits them back apart
+const RECENT_MENU_PREFIX = "project.openRecent\u0000";
+// Anything that needs an open document (and a healthy machine behind it) is disabled
+// until the page says so. The project items stay live: the welcome page is exactly where
+// they are needed.
+const ready = (s) => s.mode === "ready";
 const VIEW_TOGGLES = [
   ["snap", "吸附 (S)"],
   ["hidden", "隐形对象 (Shift+H)"],
@@ -112,7 +114,15 @@ const TOOLS = [
 ];
 
 function buildMenu(s) {
+  // applyVisibility() pushes on every scene refresh, so this is called constantly with
+  // the same content: rebuilding the whole menu each time is pure churn (and re-creating
+  // accelerators). One stringify is far cheaper than the rebuild it skips.
+  const key = JSON.stringify(s);
+  if (key === menuKey) return;
+  menuKey = key;
   menuState = s;
+  const proj = s.project;
+  const recent = s.recent ?? [];
   const devItems = DEV
     ? [
         { label: "开发", submenu: [{ role: "reload", label: "重新加载" }, { role: "toggleDevTools", label: "开发者工具" }] },
@@ -122,16 +132,34 @@ function buildMenu(s) {
     {
       label: "文件",
       submenu: [
-        { label: "新建房间…", accelerator: "CmdOrCtrl+N", click: () => send("file.new") },
-        { label: "打开原版房间（只读）…", accelerator: "CmdOrCtrl+O", click: () => send("file.vanilla") },
+        // A project IS the working directory, so these are the first thing in the menu --
+        // and they stay enabled with nothing open, because that is the welcome page.
+        { label: "新建项目…", click: () => send("project.new") },
+        { label: "打开项目…", accelerator: "CmdOrCtrl+K CmdOrCtrl+O", click: () => send("project.open") },
+        {
+          label: "最近打开",
+          enabled: recent.length > 0,
+          submenu: recent.map((r) => ({
+            // no digit accelerators: CmdOrCtrl+1 is 实际像素, and a path is not a
+            // keyboard target anyway
+            label: r.exists ? `${r.name}  (${r.path})` : `${r.name}  (${r.path}) — 文件夹不在了`,
+            click: () => send(RECENT_MENU_PREFIX + r.path),
+          })),
+        },
+        { label: "关闭项目", enabled: !!proj, click: () => send("project.close") },
         { type: "separator" },
-        { label: "导入 sprite…", click: () => send("file.importSprite") },
+        { label: "新建房间…", accelerator: "CmdOrCtrl+N", enabled: ready(s), click: () => send("file.new") },
+        { label: "打开原版房间（只读）…", accelerator: "CmdOrCtrl+O", enabled: ready(s), click: () => send("file.vanilla") },
         { type: "separator" },
-        { label: "编译", accelerator: "CmdOrCtrl+S", click: () => send("file.compile") },
+        { label: "导入 sprite…", enabled: ready(s), click: () => send("file.importSprite") },
+        { type: "separator" },
+        { label: "编译", accelerator: "CmdOrCtrl+S", enabled: ready(s), click: () => send("file.compile") },
         { type: "separator" },
         {
           label: "打开 mod 目录",
-          click: async () => shell.openPath(await modDir()),
+          // the path comes from the pushed state, not from a cached fetch of our own
+          enabled: !!proj?.exists,
+          click: () => shell.openPath(proj?.path ?? ""),
         },
         { type: "separator" },
         { role: "quit", label: "退出" },
@@ -183,14 +211,19 @@ function buildMenu(s) {
     {
       label: "帮助",
       submenu: [
+        // machine-level only (game data / UTMT / cache / decompiled source): this is not
+        // project setup, and the game gets updated while the app does not
+        { label: "本机设置…", click: () => send("help.setup") },
+        { type: "separator" },
         {
           label: "关于 Stoneshard Room Editor",
-          click: async () => {
+          click: () => {
             dialog.showMessageBox(win, {
               type: "info",
               title: "关于",
               message: `Stoneshard Room Editor v${app.getVersion()}`,
-              detail: `后端：${baseUrl}\nmod 目录：${await modDir()}\n模式：${DEV ? "开发（vite HMR）" : "打包（内嵌后端 + dist）"}`,
+              // from the pushed snapshot: the shell holds no path of its own to go stale
+              detail: `后端：${baseUrl}\n项目：${menuState.project?.path ?? "（未打开项目）"}\n模式：${DEV ? "开发（vite HMR）" : "打包（内嵌后端 + dist）"}`,
             });
           },
         },
@@ -209,6 +242,7 @@ function createWindow() {
     show: !SMOKE,
     backgroundColor: "#1b1b1d",
     title: "Stoneshard Room Editor",
+    icon: path.join(__dirname, "..", "build", "icon.ico"),
     // custom title bar: hide the OS caption, keep the native frame (resize/snap/shadow);
     // the page's #titlebar supplies drag area, ☰ menu and min/max/close
     titleBarStyle: "hidden",
@@ -241,11 +275,16 @@ function createWindow() {
           }
           const probe = await Promise.race([
             win.webContents.executeJavaScript(
-              `JSON.stringify({ bridge: typeof window.svreHost, ready: document.readyState, title: document.title, bodyClass: document.body?.className ?? null, bNew: document.getElementById("b-new") ? getComputedStyle(document.getElementById("b-new")).display : null, loadState: document.getElementById("load-state")?.textContent ?? null })`
+              // a fresh profile now lands on the welcome page, so `mode` is the field to read
+              // first: bNew/loadState only mean anything once a project is open
+              `JSON.stringify({ bridge: typeof window.svreHost, ready: document.readyState, title: document.title, bodyClass: document.body?.className ?? null, mode: window.svre?.mode ?? null, project: window.svre?.project?.path ?? null, welcome: !document.getElementById("welcome")?.hidden, bNew: document.getElementById("b-new") ? getComputedStyle(document.getElementById("b-new")).display : null, loadState: document.getElementById("load-state")?.textContent ?? null })`
             ),
             new Promise((res) => setTimeout(() => res("WEDGED"), 6000)),
           ]);
           console.log(`SMOKE PROBE ${probe}`);
+          // the native menu is invisible to the page, so nothing else can check it
+          const help = (Menu.getApplicationMenu()?.items ?? []).find((i) => i.label === "帮助");
+          console.log(`SMOKE MENU ${JSON.stringify((help?.submenu?.items ?? []).map((i) => i.label ?? i.type))}`);
           const png = (await win.webContents.capturePage()).toPNG();
           fs.mkdirSync(path.dirname(SMOKE_SHOT), { recursive: true });
           fs.writeFileSync(SMOKE_SHOT, png);
@@ -285,10 +324,19 @@ else {
       else if (action === "max") { if (win.isMaximized()) win.unmaximize(); else win.maximize(); }
       else if (action === "close") win.close();
     });
-    // native pickers for the setup wizard (renderer never gets raw dialog access)
-    ipcMain.handle("svre:pick-dir", async () => {
-      const r = await dialog.showOpenDialog(win, { title: "选择工作目录", properties: ["openDirectory", "createDirectory"] });
+    // native pickers (renderer never gets raw dialog access)
+    ipcMain.handle("svre:pick-dir", async (_e, title) => {
+      // createDirectory is what makes this a "new folder" dialog too: 打开项目 and 新建项目
+      // are the same picker with a different title
+      const r = await dialog.showOpenDialog(win, {
+        title: title || "选择文件夹",
+        properties: ["openDirectory", "createDirectory"],
+      });
       return r.canceled ? null : r.filePaths[0];
+    });
+    // the welcome page's recent rows: show a project folder in Explorer/Finder
+    ipcMain.handle("svre:reveal-path", async (_e, p) => {
+      if (typeof p === "string" && p) shell.showItemInFolder(p);
     });
     ipcMain.handle("svre:pick-file", async () => {
       const r = await dialog.showOpenDialog(win, {

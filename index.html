@@ -70,6 +70,29 @@
       <button id="b-1x" class="menu-only" title="实际像素 (1 / Ctrl+1)">1:1</button>
     </div>
     <div id="banner" hidden></div>
+    <!-- No project open. A sibling of <main>, not a <dialog>: showModal() would make the
+         title bar and its ☰ menu inert, and in the Electron shell "文件 → 打开项目…" is
+         the main entry point. body.no-project swaps this in for the editor chrome. -->
+    <section id="welcome" hidden>
+      <div class="wc-wrap">
+        <div class="wc-head">
+          <span class="brand-logo" data-icon="logo"></span>
+          <div>
+            <h1>Stoneshard Room Editor</h1>
+            <p class="muted">打开一个 mod 源码目录作为项目。房间工程、sprite 与注册清单都写在里面。</p>
+          </div>
+        </div>
+        <div class="wc-actions">
+          <button id="wc-new" class="primary">新建项目…</button>
+          <button id="wc-open">打开文件夹…</button>
+        </div>
+        <div id="wc-machine"></div>
+        <div class="wc-recent">
+          <div class="wc-recent-head">最近项目</div>
+          <ul id="wc-recent-list"></ul>
+        </div>
+      </div>
+    </section>
     <main>
       <nav id="toolbox">
         <button data-tool="select" class="on" title="选择 (V)" aria-pressed="true"><i data-icon="select"></i><span class="txt">选择</span></button>
@@ -193,36 +216,49 @@
     <dialog id="setup-dialog">
       <!-- first-run only; no cancel affordance at all (Esc is preventDefault'ed in JS) -->
       <div class="form setup-form">
-        <div class="insp-title" style="grid-column: 1 / -1">首次运行设置</div>
+        <div class="insp-title" style="grid-column: 1 / -1">本机设置</div>
         <div class="muted" style="grid-column: 1 / -1">
-          资产缓存不随应用分发（版权）：用你自己正版游戏的 data 文件在本地提取一份。提取只读游戏文件，不会修改它。
+          这些是<b>这台机器</b>的东西，与项目无关：换项目不会重来一遍。资产缓存不随应用分发
+          （版权）：用你自己正版游戏的 data 文件在本地提取一份。提取只读游戏文件，不会修改它。
         </div>
-        <section id="setup-step-moddir" style="grid-column: 1 / -1" hidden>
-          <h3>1 · 工作目录</h3>
-          <p class="muted">房间工程、sprite 与注册清单都放这里；交付时把整个文件夹发回即可。</p>
-          <div class="setup-row">
-            <input id="setup-moddir" spellcheck="false" autocomplete="off" />
-            <button id="setup-moddir-pick" type="button">选择文件夹…</button>
-          </div>
-          <div class="setup-actions"><button id="setup-moddir-ok" type="button" class="primary">继续</button></div>
-        </section>
         <section id="setup-step-win" style="grid-column: 1 / -1" hidden>
-          <h3>2 · 游戏数据文件</h3>
-          <p class="muted">编辑器钉的参考版本：<b id="setup-expected">…</b>。版本不一致会导致房间基底漂移。</p>
+          <h3>1 · 游戏数据文件</h3>
+          <p class="muted">开发侧的参考版本：<b id="setup-expected">…</b>。版本不同多半只是游戏更新了——照常提取，统计差异只作提示。</p>
           <div id="setup-detected"></div>
+          <div id="setup-utmt"></div>
           <div class="setup-row">
             <input id="setup-win" spellcheck="false" autocomplete="off" placeholder="vallina.win 或 data.win 的完整路径" />
             <button id="setup-win-pick" type="button">浏览…</button>
           </div>
           <div class="setup-actions"><button id="setup-extract" type="button" class="primary">开始提取（约几分钟）</button></div>
         </section>
+        <section id="setup-step-create" style="grid-column: 1 / -1" hidden>
+          <h3>3 · 反编译源码（深度事实）</h3>
+          <p class="muted">
+            对象在 <code>Create</code> 里写的 <code>depth = -y + 18</code> 这类代码决定游戏内的
+            遮挡顺序，这些事实不在 data 文件里。用 UTMT 的「Decompile all code」把 GML 导出一份，
+            指向那个目录（含 <code>gml_Object_*.gml</code>），一次即可；游戏更新后重来一遍。
+          </p>
+          <div class="setup-row">
+            <input id="setup-source" spellcheck="false" autocomplete="off" placeholder="反编译源码目录的完整路径" />
+            <button id="setup-source-pick" type="button">浏览…</button>
+          </div>
+          <div id="setup-source-hint" class="muted"></div>
+          <div class="setup-actions">
+            <button id="setup-create-run" type="button" class="primary">扫描源码（十几秒～一分钟）</button>
+            <button id="setup-create-skip" type="button">跳过：遮挡顺序回退</button>
+          </div>
+        </section>
         <section id="setup-step-run" style="grid-column: 1 / -1" hidden>
-          <h3>3 · 提取资产缓存</h3>
+          <h3 id="setup-run-title">2 · 提取资产缓存</h3>
           <div id="setup-phase" class="muted">正在启动…</div>
           <pre id="setup-log"></pre>
           <div id="setup-result"></div>
           <div class="setup-actions">
             <button id="setup-retry" type="button" hidden>返回重试</button>
+            <!-- only when the machine is already usable: an extract run blocks (it writes
+                 straight into the live cache), so the button stays hidden until it is done -->
+            <button id="setup-close" type="button" hidden>关闭</button>
             <button id="setup-done" type="button" class="primary" hidden>进入编辑器</button>
           </div>
         </section>

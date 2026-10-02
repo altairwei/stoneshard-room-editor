@@ -11,7 +11,11 @@ contextBridge.exposeInMainWorld("svreHost", {
   // ...and run the window controls (max state comes back over svre:win-state)
   winControl: (action) => ipcRenderer.send("svre:win-control", action),
   onWinState: (cb) => ipcRenderer.on("svre:win-state", (_e, s) => cb(s)),
-  // first-run wizard pickers (native open dialogs answered by the main process)
-  pickDir: () => ipcRenderer.invoke("svre:pick-dir"),
+  // native folder/file pickers. The title is the caller's: the same dialog serves
+  // 打开项目 ("打开项目文件夹") and 新建项目 ("新建项目文件夹" -- createDirectory is what
+  // makes it a new-folder dialog).
+  pickDir: (title) => ipcRenderer.invoke("svre:pick-dir", title),
   pickFile: () => ipcRenderer.invoke("svre:pick-file"),
+  // reveal a project folder in Explorer/Finder (the welcome page's recent rows)
+  revealPath: (p) => ipcRenderer.invoke("svre:reveal-path", p),
 });

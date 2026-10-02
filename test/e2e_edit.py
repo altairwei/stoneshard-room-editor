@@ -12,6 +12,8 @@ StoneValley room files, so nothing here can touch the real mod. Two halves:
      an agent edit over HTTP shows up in the open page (websocket), palette placement,
      Ctrl+S compiles.
 """
+import functools
+import http.server
 import json
 import os
 import re
@@ -19,9 +21,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.request
 import urllib.error
+import zipfile
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
@@ -32,7 +36,18 @@ ROOM = "r_sv_hut_inside2"
 PORT = 5179
 SETUP_PORT = 5181
 SETUP_UI_PORT = 5183
+SETUP_SCAN_PORT = 5185
+SETUP_UTMT_PORT = 5187      # the wizard's own server (UTMT CLI download)
+UTMT_ZIP_PORT = 5189        # stands in for the github.com release asset
+PROJ_PORT = 5191            # the project model: welcome page, open/close/switch
+SLOW_ZIP_PORT = 5193        # a download that never answers, to hold utmtState.running
 BASE = f"http://localhost:{PORT}"
+
+# Opening the palette rebuilds the whole object library (innerHTML + one thumbnail per
+# object) on the renderer's main thread, so the round-trip behind this wait can take
+# seconds even though the dialog is open by the time the click returns (measured ~3.5s
+# idle; the full suite is heavier). The app is honest here -- only the timeout was tight.
+PALETTE_WAIT = 30000
 
 failures = []
 
@@ -563,7 +578,7 @@ def main():
             pg.click(".tabs button[data-tab=layers]")
             pg.locator("#layer-list li", has_text="ForegroundInstances").first.click()
             pg.click("#toolbox button[data-tool=place]")
-            pg.wait_for_selector("#palette-dialog[open]", timeout=5000)
+            pg.wait_for_selector("#palette-dialog[open]", timeout=PALETTE_WAIT)
             pg.fill("#palette-q", "o_sv_house01")
             # renderPalette is debounced (80ms) off the input event; wait for the list to
             # actually reflect the query rather than guessing how long that takes
@@ -627,7 +642,7 @@ def main():
                 "frames": [{"data": f0}]})
             check(st == 200, "a second sprite lands while the page is open")
             pg.click("#toolbox button[data-tool=place]")
-            pg.wait_for_selector("#palette-dialog[open]", timeout=5000)
+            pg.wait_for_selector("#palette-dialog[open]", timeout=PALETTE_WAIT)
             pg.fill("#palette-q", "o_e2e_vase")
             try:
                 pg.wait_for_function("document.querySelector('#palette-list li[data-o]')?.dataset.o === 'o_e2e_vase'", timeout=8000)
@@ -640,7 +655,7 @@ def main():
 
             print("palette placement")
             pg.click("#toolbox button[data-tool=place]")
-            pg.wait_for_selector("#palette-dialog[open]", timeout=5000)
+            pg.wait_for_selector("#palette-dialog[open]", timeout=PALETTE_WAIT)
             pg.fill("#palette-q", "o_chest")
             pg.wait_for_function("document.querySelector('#palette-list li[data-o]')?.dataset.o?.includes('chest')", timeout=5000)
             first = pg.locator("#palette-list li[data-o]").first
@@ -1113,10 +1128,12 @@ def main():
 
         print("C. first-run setup wizard (degraded backend)")
         # a second server whose config points at nothing: no moddir, no cache. SVRE_CONFIG
-        # keeps every write the wizard makes inside the scratch dir.
+        # keeps every write it makes inside the scratch dir. This is the packaged fresh
+        # install, and it is the welcome state, not a defect: the machine gaps (cache) and
+        # "no project open" are two different axes.
         ss = Path(tempfile.mkdtemp(prefix="svre-e2e-setup-"))
         scfg = ss / "svre.config.json"
-        scfg.write_text(json.dumps({"modDir": str(ss / "mod"), "assetsDir": str(ss / "no-cache"),
+        scfg.write_text(json.dumps({"modDir": "", "assetsDir": str(ss / "no-cache"),
                                     "sourceDir": "", "vanillaWin": "", "utmtCli": ""}), encoding="utf-8")
         base2 = f"http://localhost:{SETUP_PORT}"
 
@@ -1145,23 +1162,51 @@ def main():
                     time.sleep(0.5)
 
             st, s = call2("GET", "/api/setup")
-            check(st == 200 and s["needed"] and set(s["reasons"]) == {"moddir", "cache"}, f"degraded: reasons = moddir+cache ({s})")
+            check(st == 200 and s["mode"] == "welcome" and s["reasons"] == ["cache"],
+                  f"no project is welcome mode, not a machine gap ({s.get('mode')} / {s.get('reasons')})")
+            check(s["project"] is None and "needed" not in s, "no project object, and no `needed` flag survives")
             check(s.get("expected", {}).get("game") == "0.9.4.25", "the pinned version fingerprint ships with the editor")
             check(isinstance(s.get("detected"), list), "setup reports detected game installs")
+            st, p = call2("GET", "/api/projects")
+            check(st == 200 and p["current"] is None and p["recent"] == [], f"projects answers even with nothing open ({p})")
             st, r = call2("GET", "/api/rooms")
-            check(st == 503 and r.get("setup") is True, "every other /api route 503s while degraded")
+            check(st == 503 and r.get("setup") is True and r.get("mode") == "welcome",
+                  "every other /api route 503s, and says which screen to go to")
             st, r = call2("GET", "/api/config")
             check(st == 200, "/api/config still answers (the shell needs it)")
 
-            st, r = call2("POST", "/api/setup/moddir", {})
+            # opening a folder IS the old "workdir step", and it is not a step in a wizard:
+            # it is what the welcome page's 打开文件夹… does. A bare folder gets one
+            # confirmation (the open fills in a skeleton), never a refusal.
+            st, r = call2("POST", "/api/projects/open", {"path": str(ss / "mod")})
+            check(st == 409 and r.get("detail", {}).get("code") == "unfamiliar",
+                  f"a folder that is not a mod tree asks once ({st})")
+            check(not (ss / "mod").exists(), "and nothing is written before the user confirms")
+            st, r = call2("POST", "/api/projects/open", {"path": str(ss / "mod"), "force": True})
             check(st == 200 and (ss / "mod" / "assets.json").exists() and (ss / "mod" / "rooms").is_dir(),
-                  "moddir step creates the workdir skeleton")
-            check(r["setup"]["reasons"] == ["cache"], "after moddir only the cache is missing")
+                  "confirming creates the project skeleton")
+            check(r["setup"]["mode"] == "setup" and r["setup"]["reasons"] == ["cache"],
+                  "open succeeds; the machine is the thing still missing")
             check(json.loads(scfg.read_text(encoding="utf-8"))["modDir"] == str(ss / "mod"), "the choice persists to the scratch config")
+            st, p = call2("GET", "/api/projects")
+            check(p["current"]["exists"] is True and [x["name"] for x in p["recent"]] == ["mod"],
+                  f"the opened project is current and heads the recent list ({p})")
             st, r = call2("GET", "/api/rooms")
-            check(st == 503, "still degraded until the extract lands")
-            st, r = call2("POST", "/api/setup/moddir", {"path": "C:\\"})
-            check(st == 400, "a drive root is refused as workdir")
+            check(st == 503 and r.get("mode") == "setup", "still degraded until the extract lands")
+            st, r = call2("POST", "/api/projects/open", {"path": "C:\\"})
+            check(st == 400, "a drive root is refused as a project")
+
+            # a project whose folder vanished (deleted on disk, or a config copied from
+            # another machine) is welcome mode too -- and survives a restart of the server
+            st, r = call2("POST", "/api/projects/close")
+            check(st == 200 and r["setup"]["mode"] == "welcome" and r["setup"]["project"] is None,
+                  "closing a project lands on the welcome page")
+            check(json.loads(scfg.read_text(encoding="utf-8"))["modDir"] == "", "and it persists as no project")
+            st, p = call2("GET", "/api/projects")
+            check([x["name"] for x in p["recent"]] == ["mod"] and p["current"] is None,
+                  "关闭项目 keeps the folder in the recent list (that is the way back)")
+            st, r = call2("GET", "/api/rooms")
+            check(st == 503 and r.get("mode") == "welcome", "and the gate closes again")
 
             st, r = call2("POST", "/api/setup/extract", {"vanillaWin": str(ss / "nope.win")})
             check(st == 400, "extract refuses a missing data file")
@@ -1174,9 +1219,9 @@ def main():
             subprocess.run(f"taskkill /PID {server2.pid} /T /F", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             shutil.rmtree(ss, ignore_errors=True)
 
-        print("C2. wizard UI in the browser (fresh degraded backend)")
-        # its own scratch + server: the HTTP pins above already satisfied this server's
-        # moddir step, and the wizard's first step depends on what is still missing
+        print("C2. welcome page + machine setup in the browser (fresh degraded backend)")
+        # its own scratch + server: the HTTP pins above already opened a project here, and
+        # the app's first screen depends on what is still missing
         ss2 = Path(tempfile.mkdtemp(prefix="svre-e2e-setupui-"))
         scfg2 = ss2 / "svre.config.json"
         scfg2.write_text(json.dumps({"modDir": str(ss2 / "mod"), "assetsDir": str(ss2 / "no-cache"),
@@ -1198,14 +1243,29 @@ def main():
                 b2 = p2.chromium.launch()
                 pg2 = b2.new_page(viewport={"width": 1280, "height": 860})
                 pg2.goto(base3)
-                pg2.wait_for_selector("#setup-dialog[open]", timeout=60000)
-                check(True, "wizard opens by itself on a degraded backend")
-                check(pg2.evaluate("document.getElementById('setup-step-moddir').hidden") is False, "workdir step shows first (moddir missing)")
+                # no project: the welcome page, NOT the wizard. The editor chrome is gone but
+                # the titlebar (drag region + window buttons) stays.
+                pg2.wait_for_selector("#welcome:not([hidden])", timeout=60000)
+                check(pg2.evaluate("getComputedStyle(document.getElementById('appbar')).display") == "none",
+                      "with no project the editor chrome is hidden")
+                # #titlebar exists only in the shell, where the page carries body.electron:
+                # what the welcome page must not do is take it away (drag region + window
+                # buttons). Wearing the class is the only way to see that from a browser.
+                pg2.evaluate("document.body.classList.add('electron')")
+                check(pg2.evaluate("getComputedStyle(document.getElementById('titlebar')).display") != "none",
+                      "the title bar stays (it is the drag region and holds the window buttons)")
+                pg2.evaluate("document.body.classList.remove('electron')")
+                check(pg2.evaluate("document.getElementById('setup-dialog').open") is False,
+                      "the wizard does not open by itself when there is no project")
+                check("资产缓存" in pg2.inner_text("#wc-machine"),
+                      "the welcome page's machine strip names what this install is missing")
+                pg2.click("#wc-machine button")
+                pg2.wait_for_selector("#setup-dialog[open]", timeout=10000)
+                check(pg2.evaluate("document.getElementById('setup-step-win').hidden") is False,
+                      "本机设置 starts at the data file (step 1 of 3)")
                 pg2.keyboard.press("Escape")
-                check(pg2.evaluate("document.getElementById('setup-dialog').open") is True, "Esc cannot dismiss the wizard")
-                pg2.click("#setup-moddir-ok")
-                pg2.wait_for_selector("#setup-step-win:not([hidden])", timeout=10000)
-                check((ss2 / "mod" / "assets.json").exists(), "the UI's workdir step created the skeleton")
+                check(pg2.evaluate("document.getElementById('setup-dialog').open") is True,
+                      "Esc cannot dismiss it: the cache is missing, so there is nothing behind it")
                 check("0.9.4.25" in pg2.inner_text("#setup-expected"), "win step names the pinned game version")
                 pg2.click("#setup-extract")
                 pg2.wait_for_selector("#msg-dialog[open]", timeout=5000)
@@ -1222,6 +1282,522 @@ def main():
         finally:
             subprocess.run(f"taskkill /PID {server3.pid} /T /F", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             shutil.rmtree(ss2, ignore_errors=True)
+
+        print("C3. source scan step: create.json from decompiled GML")
+        # a fourth server: cache present, create.json missing. The cache here is synthetic
+        # (two objects, one of them with Create/Draw source) so the scan is a REAL child
+        # process -- scan-create.mjs -- just a tiny one. create.json is the only cache file
+        # data.win cannot produce, so this step is what makes the wizard's output complete.
+        ss4 = Path(tempfile.mkdtemp(prefix="svre-e2e-scan-"))
+        cache4 = ss4 / "cache"
+        src4 = ss4 / "src"
+        (cache4 / "rooms").mkdir(parents=True)
+        src4.mkdir()
+        (ss4 / "mod").mkdir()
+        (ss4 / "mod" / "assets.json").write_text('{"sprites": {}, "objects": {}}', encoding="utf-8")
+        (cache4 / "objects.json").write_text(json.dumps({
+            "o_test_parent": {"parent": "", "events": [], "sprite": -1},
+            "o_test_child": {"parent": "o_test_parent", "events": [[0, 0], [8, 0]], "sprite": -1},
+        }), encoding="utf-8")
+        (cache4 / "sprites.json").write_text("{}", encoding="utf-8")
+        (cache4 / "rooms.json").write_text("[]", encoding="utf-8")
+        (cache4 / "rooms" / "_index.json").write_text("{}", encoding="utf-8")
+        # the shapes the scanner knows: a Create that moves itself, a Draw that draws its sprite
+        (src4 / "gml_Object_o_test_child_Create_0.gml").write_text("depth = -y + 18;\n", encoding="utf-8")
+        (src4 / "gml_Object_o_test_child_Draw_0.gml").write_text("draw_self();\n", encoding="utf-8")
+        scfg4 = ss4 / "svre.config.json"
+        scfg4.write_text(json.dumps({"modDir": str(ss4 / "mod"), "assetsDir": str(cache4),
+                                     "sourceDir": "", "vanillaWin": "", "utmtCli": ""}), encoding="utf-8")
+        base4 = f"http://localhost:{SETUP_SCAN_PORT}"
+        env4 = {**os.environ, "SVRE_CONFIG": str(scfg4)}
+
+        def call4(method, path, body=None):
+            req = urllib.request.Request(base4 + path, method=method,
+                                         data=json.dumps(body).encode() if body is not None else None,
+                                         headers={"Content-Type": "application/json"} if body is not None else {})
+            try:
+                with urllib.request.urlopen(req, timeout=30) as r:
+                    return r.status, json.loads(r.read().decode("utf-8"))
+            except urllib.error.HTTPError as e:
+                try:
+                    return e.code, json.loads(e.read().decode("utf-8"))
+                except json.JSONDecodeError:
+                    return e.code, None
+
+        server4 = subprocess.Popen("npx vite --port %d --strictPort" % SETUP_SCAN_PORT, cwd=ROOT, env=env4, shell=True,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
+        try:
+            for _ in range(120):
+                try:
+                    urllib.request.urlopen(f"{base4}/api/setup", timeout=1)
+                    break
+                except Exception:
+                    time.sleep(0.5)
+
+            st, s = call4("GET", "/api/setup")
+            check(st == 200 and s["reasons"] == ["create"], f"a complete cache without depth facts asks for exactly that ({s.get('reasons')})")
+            check(s["sourceGml"] == 0, "no source tree remembered yet")
+            st, r = call4("GET", "/api/rooms")
+            check(st == 503, "the app stays degraded until the depth facts exist")
+
+            st, r = call4("POST", "/api/setup/create", {"sourceDir": str(ss4 / "nope")})
+            check(st == 400 and "gml_Object_" in str(r.get("error", "")), "a folder with no decompiled GML is refused")
+
+            with sync_playwright() as p4:
+                b4 = p4.chromium.launch()
+                pg4 = b4.new_page(viewport={"width": 1280, "height": 860})
+                pg4.goto(base4)
+                pg4.wait_for_selector("#setup-dialog[open]", timeout=60000)
+                check(pg4.evaluate("document.getElementById('setup-step-create').hidden") is False,
+                      "with only the depth facts missing the wizard opens straight on that step")
+                check(pg4.evaluate("document.getElementById('setup-source-pick').hidden") is True,
+                      "the native folder picker is hidden in a plain browser")
+                pg4.click("#setup-create-run")
+                pg4.wait_for_selector("#msg-dialog[open]", timeout=5000)
+                check(True, "an empty source path gets an in-page warning")
+                pg4.click("#md-ok")
+                pg4.fill("#setup-source", str(ss4 / "nope"))
+                pg4.click("#setup-create-run")
+                pg4.wait_for_selector("#setup-step-run:not([hidden]) #setup-result .warn", timeout=20000)
+                check(pg4.evaluate("document.getElementById('setup-retry').hidden") is False, "a refused source folder offers retry")
+                pg4.click("#setup-retry")
+                pg4.wait_for_selector("#setup-step-create:not([hidden])", timeout=5000)
+                pg4.fill("#setup-source", str(src4))
+                pg4.click("#setup-create-run")
+                # the scan spawns node; the fingerprint pins 8688 entries, this scratch cache
+                # has 1, so the honest outcome is a difference against the reference -- which
+                # is also the check that the scan really reported facts back. It is stated as
+                # information (.info), not as a warning about the user's install: the pinned
+                # version is the builder's reference, not a claim about the user's game.
+                pg4.wait_for_selector("#setup-step-run:not([hidden]) #setup-result .info", timeout=60000)
+                check("深度事实条目" in pg4.inner_text("#setup-result"), "the scan's result is checked against the pinned fingerprint")
+                check(pg4.evaluate("document.querySelectorAll('#setup-result .warn').length") == 0,
+                      "a version difference is not dressed up as a hard warning")
+                check(pg4.evaluate("document.getElementById('setup-result').textContent.includes('✓')") is True,
+                      "the completed scan still reads as completed")
+                check(pg4.evaluate("document.getElementById('setup-done').hidden") is False, "the wizard offers the way in after the scan")
+                b4.close()
+
+            facts = json.loads((cache4 / "create.json").read_text(encoding="utf-8"))
+            check(facts.get("o_test_child", {}).get("depth") == {"mode": "y", "from": "o_test_child", "offset": 18},
+                  f"the scanned Create depth is recorded ({facts.get('o_test_child')})")
+            check(facts.get("o_test_child", {}).get("draw", {}).get("mode") == "self", "the scanned Draw mode is recorded")
+            check("o_test_parent" not in facts, "objects with nothing to say are left out")
+
+            st, s = call4("GET", "/api/setup")
+            check(s["mode"] == "ready", "the scan completes the cache: the backend leaves degraded mode")
+            check(s["sourceGml"] == 2, "the source tree is remembered and re-counted (Create_0 + Draw_0)")
+            check(json.loads(scfg4.read_text(encoding="utf-8"))["sourceDir"] == str(src4), "the source dir persists to the config")
+            st, r = call4("GET", "/api/rooms")
+            check(st == 200, "the editor answers after the scan")
+
+            # the escape hatch: no source tree on this machine. boot() is what re-reads the
+            # reasons, so removing the file alone does not re-degrade a running server --
+            # the skip route calls boot() itself, exactly as a restart would
+            (cache4 / "create.json").unlink()
+            st, r = call4("POST", "/api/setup/create", {"skip": True})
+            check(st == 200 and r.get("skipped") is True and r["setup"]["mode"] == "ready",
+                  "skipping writes the empty table and still lets the app in")
+            check(json.loads((cache4 / "create.json").read_text(encoding="utf-8")) == {}, "the skipped table is empty, not absent")
+
+            print("C4. 本机设置 on a working install (game update)")
+            # 帮助 → 本机设置… is machine-level and must NOT cost the user their editor: it
+            # opens the same dialog, dismissibly, and touches nothing on disk. Only a real
+            # round (a completed step) rebuilds anything -- so an abandoned visit is free.
+            before = (cache4 / "create.json").read_text(encoding="utf-8")
+            with sync_playwright() as p5:
+                b5 = p5.chromium.launch()
+                pg5 = b5.new_page(viewport={"width": 1280, "height": 860})
+                pg5.goto(base4)
+                pg5.wait_for_selector("#appbar", timeout=60000)
+                check(pg5.evaluate("document.getElementById('setup-dialog').open") is False,
+                      "the install is healthy: the editor loads with no wizard")
+                check(pg5.evaluate("svre.menu('help.setup')") is True, "the menu id is accepted")
+                pg5.wait_for_selector("#setup-dialog[open]", timeout=10000)
+                check(pg5.evaluate("document.getElementById('setup-step-win').hidden") is False,
+                      "the by-hand visit starts at the data file (what a game update changes)")
+                check(pg5.evaluate("document.getElementById('setup-close').hidden") is False,
+                      "and it is dismissible: nothing is actually broken")
+                pg5.keyboard.press("Escape")
+                check(pg5.evaluate("document.getElementById('setup-dialog').open") is False,
+                      "Esc closes it -- the editor is still there underneath")
+                check(pg5.evaluate("document.getElementById('appbar') !== null") is True, "the editor never went away")
+                b5.close()
+            check((cache4 / "create.json").read_text(encoding="utf-8") == before,
+                  "opening 本机设置 deletes nothing")
+
+            # the round itself: nothing on disk is touched up front, so the old cache keeps
+            # serving until a new extract lands
+            st, r = call4("POST", "/api/setup/restart")
+            check(st == 200, f"a round can be asked for over HTTP ({st})")
+            st, s = call4("GET", "/api/setup")
+            check(s["mode"] == "setup" and s["forced"] is True and s["reasons"] == [],
+                  f"the backend is behind the wizard again with nothing actually broken ({s.get('mode')} / {s.get('reasons')})")
+            st, r = call4("GET", "/api/rooms")
+            check(st == 503, "and the editor's routes are closed while the round runs")
+
+            # the round ends the way the wizard ends one: a step completes -> boot() -> healthy.
+            # (a real extract also deletes the now-stale create.json when the round was asked
+            # for; that half needs a real data.win, so only a real-data run covers it)
+            st, r = call4("POST", "/api/setup/create", {"sourceDir": str(src4)})
+            check(st == 202, "the scan starts")
+            s = {"mode": "setup"}
+            for _ in range(120):
+                st, s = call4("GET", "/api/setup")
+                if s["mode"] == "ready":
+                    break
+                time.sleep(0.5)
+            check(s["mode"] == "ready" and s["forced"] is False, "a completed step ends the asked-for round")
+            check(s["reasons"] == [], "and the reasons are empty, not just overridden")
+            st, r = call4("GET", "/api/rooms")
+            check(st == 200, "the editor answers again")
+        finally:
+            subprocess.run(f"taskkill /PID {server4.pid} /T /F", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            shutil.rmtree(ss4, ignore_errors=True)
+
+        print("C5. UTMT CLI: fetching one when the machine has none")
+        # A clone has no vendor/utmt/ (gitignored: `npm run vendor:utmt` fills it) and a build
+        # made without that step ships none either -- the extract then cannot run at all. This
+        # serves a stand-in release zip over http (SVRE_UTMT_URL) and checks the whole path the
+        # wizard's button drives: resolve -> refuse -> download + unpack + swap -> resolve again.
+        ss5 = Path(tempfile.mkdtemp(prefix="svre-e2e-utmt-"))
+        install5 = ss5 / "utmt"  # SVRE_UTMT_DIR, so the repo's own vendor/utmt is never touched
+        (ss5 / "mod").mkdir()
+        (ss5 / "mod" / "assets.json").write_text('{"sprites": {}, "objects": {}}', encoding="utf-8")
+        (ss5 / "cache").mkdir()  # empty cache: the wizard opens on step 2, which carries the panel
+        fakewin = ss5 / "fake.win"
+        with fakewin.open("wb") as f:
+            f.truncate(65 * 1024 * 1024)  # the endpoint's "is this Stoneshard's data file" gate
+        with zipfile.ZipFile(ss5 / "release.zip", "w") as z:
+            root = "UTMT_CLI_v0.9.2.0-Windows/"  # the release asset wraps its payload in a folder
+            # a real (if unrelated) executable stands in for the CLI: the extract has to be
+            # able to start it at all. What it then makes of a fake data file is not this
+            # test's business -- it exits non-zero, which the run panel reports as a failure.
+            z.writestr(root + "UndertaleModCli.exe", (Path(os.environ.get("SystemRoot", "C:/Windows")) / "System32" / "where.exe").read_bytes())
+            z.writestr(root + "UndertaleModLib.dll", b"")
+            z.writestr(root + "UndertaleModCli.runtimeconfig.json", "{}")
+        scfg5 = ss5 / "svre.config.json"
+        scfg5.write_text(json.dumps({"modDir": str(ss5 / "mod"), "assetsDir": str(ss5 / "cache"),
+                                     "sourceDir": "", "vanillaWin": str(fakewin), "utmtCli": ""}), encoding="utf-8")
+        base5 = f"http://localhost:{SETUP_UTMT_PORT}"
+
+        def call5(method, path, body=None):
+            req = urllib.request.Request(base5 + path, method=method,
+                                         data=json.dumps(body).encode() if body is not None else None,
+                                         headers={"Content-Type": "application/json"} if body is not None else {})
+            try:
+                with urllib.request.urlopen(req, timeout=30) as r:
+                    return r.status, json.loads(r.read().decode("utf-8"))
+            except urllib.error.HTTPError as e:
+                try:
+                    return e.code, json.loads(e.read().decode("utf-8"))
+                except json.JSONDecodeError:
+                    return e.code, None
+
+        class Quiet(http.server.SimpleHTTPRequestHandler):
+            def log_message(self, *a):  # the test output is not an access log
+                pass
+
+        srv5 = http.server.ThreadingHTTPServer(("127.0.0.1", UTMT_ZIP_PORT),
+                                               functools.partial(Quiet, directory=str(ss5)))
+        srv5.daemon_threads = True
+        threading.Thread(target=srv5.serve_forever, daemon=True).start()
+        env5 = {**os.environ, "SVRE_CONFIG": str(scfg5),
+                "SVRE_UTMT_URL": f"http://127.0.0.1:{UTMT_ZIP_PORT}/release.zip",
+                "SVRE_UTMT_DIR": str(install5)}
+        server5 = subprocess.Popen("npx vite --port %d --strictPort" % SETUP_UTMT_PORT, cwd=ROOT, env=env5, shell=True,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
+        try:
+            for _ in range(120):
+                try:
+                    urllib.request.urlopen(f"{base5}/api/setup", timeout=1)
+                    break
+                except Exception:
+                    time.sleep(0.5)
+
+            st, s = call5("GET", "/api/setup")
+            u = s["utmt"]
+            check(u["cli"] is None and u["installed"] is False, f"no CLI on this machine ({u['cli']})")
+            check(u["dir"] == str(install5), "the state says where a download would land")
+            check(u["release"]["version"] == "0.9.2.0" and u["release"]["bytes"] > 0,
+                  f"and which release it would fetch (v{u['release']['version']})")
+            st, r = call5("POST", "/api/setup/extract", {"vanillaWin": str(fakewin)})
+            check(st == 400 and "UndertaleModCli" in str(r.get("error", "")), "the extract refuses without one")
+
+            with sync_playwright() as p6:
+                b6 = p6.chromium.launch()
+                pg6 = b6.new_page(viewport={"width": 1280, "height": 860})
+                pg6.goto(base5)
+                pg6.wait_for_selector("#setup-step-win:not([hidden])", timeout=60000)
+                check("还没找到 UndertaleModCli.exe" in pg6.inner_text("#setup-utmt"),
+                      "step 2 says the extract tool is missing before the user tries to extract")
+                check("下载并安装" in pg6.inner_text("#setup-utmt-get"), "and offers to fetch it")
+                pg6.click("#setup-utmt-get")
+                pg6.wait_for_selector("#setup-utmt:has-text('已就绪')", timeout=60000)
+                check(str(install5) in pg6.inner_text("#setup-utmt") and "0.9.2.0" in pg6.inner_text("#setup-utmt"),
+                      "the panel reports the installed copy and its version")
+                check(pg6.inner_text("#setup-utmt-get").startswith("重新下载"), "the button turns into an update")
+                b6.close()
+
+            check((install5 / "UndertaleModCli.exe").exists(), "the CLI landed where the state said it would")
+            check((install5 / "UndertaleModLib.dll").exists() and (install5 / "UndertaleModCli.runtimeconfig.json").exists(),
+                  "the whole runtime set came with it, not just the exe")
+            check(json.loads((install5 / "svre-utmt.json").read_text(encoding="utf-8"))["version"] == "0.9.2.0",
+                  "the download is marked with the release it came from")
+            leftover = [p.name for p in install5.parent.iterdir() if p.name != install5.name and p.name != "mod"
+                        and p.name != "cache" and p.name not in ("svre.config.json", "release.zip", "fake.win")]
+            check(leftover == [], f"no staging leftovers next to it ({leftover})")
+
+            st, s = call5("GET", "/api/setup")
+            check(s["utmt"]["cli"] == str(install5 / "UndertaleModCli.exe") and s["utmtCli"] == s["utmt"]["cli"],
+                  "resolveUtmtCli now finds the downloaded copy")
+            check(s["utmt"]["installed"] is True and s["utmt"]["version"] == "0.9.2.0", "and knows what it is")
+            st, r = call5("POST", "/api/setup/extract", {"vanillaWin": str(fakewin)})
+            # the very request that was refused a moment ago now starts: the CLI gate is past
+            check(st == 202, f"the same extract is accepted once the CLI is there ({r})")
+            for _ in range(40):
+                _, s5 = call5("GET", "/api/setup")
+                if not s5["running"]:
+                    break
+                time.sleep(0.5)
+            check(s5["running"] is False and s5["utmt"]["cli"] is not None,
+                  "the run it started is over and the CLI is still resolved (the stand-in is not a real CLI)")
+        finally:
+            srv5.shutdown()
+            subprocess.run(f"taskkill /PID {server5.pid} /T /F", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            shutil.rmtree(ss5, ignore_errors=True)
+
+        print("D. projects: open / switch / close (the welcome page's routes)")
+        # A scratch config with NO project but a COMPLETE machine: assetsDir and sourceDir
+        # point at this machine's real cache and source tree (machine-level facts, shared by
+        # every project), so opening a folder lands straight in the editor -- which is what
+        # makes the switch/reload protocol below observable.
+        sd = Path(tempfile.mkdtemp(prefix="svre-e2e-proj-"))
+
+        def abs_key(key):
+            v = CFG.get(key, "")
+            return str(v if os.path.isabs(v) else (ROOT / v).resolve())
+
+        scfgd = sd / "svre.config.json"
+        scfgd.write_text(json.dumps({"modDir": "", "assetsDir": abs_key("assetsDir"),
+                                     "sourceDir": abs_key("sourceDir"), "vanillaWin": abs_key("vanillaWin"),
+                                     "utmtCli": ""}), encoding="utf-8")
+        base6 = f"http://localhost:{PROJ_PORT}"
+        cfgd = lambda: json.loads(scfgd.read_text(encoding="utf-8"))
+
+        def call6(method, path, body=None, timeout=15):
+            req = urllib.request.Request(base6 + path, method=method,
+                                         data=json.dumps(body).encode() if body is not None else None,
+                                         headers={"Content-Type": "application/json"} if body is not None else {})
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as r:
+                    return r.status, json.loads(r.read().decode("utf-8"))
+            except urllib.error.HTTPError as e:
+                try:
+                    return e.code, json.loads(e.read().decode("utf-8"))
+                except json.JSONDecodeError:
+                    return e.code, None
+
+        # D3 needs a download that never finishes: it parks utmtState.running so the switch
+        # guard can be tested without racing a real job. The URL has to be in the server's
+        # environment from the start (the process gets a copy of it, not a live view).
+        hold = threading.Event()
+
+        class Hold(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):  # blocks until the test releases it (the timeout is a guard)
+                hold.wait(60)
+                self.send_response(404)
+                self.end_headers()
+
+        srv6 = http.server.ThreadingHTTPServer(("127.0.0.1", SLOW_ZIP_PORT), Hold)
+        srv6.daemon_threads = True
+        threading.Thread(target=srv6.serve_forever, daemon=True).start()
+        env6 = {**os.environ, "SVRE_CONFIG": str(scfgd),
+                "SVRE_UTMT_URL": f"http://127.0.0.1:{SLOW_ZIP_PORT}/never.zip"}
+        server6 = subprocess.Popen("npx vite --port %d --strictPort" % PROJ_PORT, cwd=ROOT, env=env6, shell=True,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
+        try:
+            for _ in range(120):
+                try:
+                    urllib.request.urlopen(f"{base6}/api/setup", timeout=1)
+                    break
+                except Exception:
+                    time.sleep(0.5)
+
+            st, s = call6("GET", "/api/setup")
+            check(s["mode"] == "welcome" and s["reasons"] == [] and s["project"] is None,
+                  f"no project + a healthy machine is still welcome mode ({s.get('mode')} / {s.get('reasons')})")
+            st, p = call6("GET", "/api/projects")
+            check(st == 200 and p["current"] is None and p["recent"] == [], f"empty recent list ({p})")
+
+            # not a mod tree: one confirmation's worth of 409, and nothing written
+            bare = sd / "BareFolder"
+            bare.mkdir()
+            st, r = call6("POST", "/api/projects/open", {"path": str(bare)})
+            check(st == 409 and (r.get("detail") or {}).get("code") == "unfamiliar", f"an empty folder warns first ({st} {r})")
+            check(not (bare / "assets.json").exists(), "the refused open wrote nothing")
+
+            # a folder name that cannot become `namespace X;`: a hard 400, force or not. This
+            # check runs BEFORE the familiarity one -- it is the error the user cannot fix
+            # from inside the app, so it must be the one that comes back.
+            bad = sd / "my mod!"
+            bad.mkdir()
+            st, r = call6("POST", "/api/projects/open", {"path": str(bad), "force": True})
+            check(st == 400, f"a non-identifier basename is refused even with force ({st} {str(r.get('error'))[:60]})")
+            check(not (bad / "assets.json").exists(), "and it wrote nothing either")
+
+            proj = sd / "StoneValley"
+            proj.mkdir()
+            st, r = call6("POST", "/api/projects/open", {"path": str(proj), "force": True})
+            check(st == 200 and r["ok"] is True, f"force opens the unfamiliar folder ({st} {r})")
+            check((proj / "rooms").is_dir() and (proj / "Sprites").is_dir() and (proj / "Codes").is_dir()
+                  and (proj / "assets.json").is_file(), "the skeleton is created")
+            check(sorted(r.get("created", [])) == ["Codes/", "Sprites/", "assets.json", "rooms/"],
+                  f"the reply names what it made ({r.get('created')})")
+            check(r["setup"]["mode"] == "ready" and r["setup"]["project"]["name"] == "StoneValley",
+                  "opened: the machine was already fine, so this lands in the editor")
+            check(cfgd()["modDir"] == str(proj), "modDir persists to the scratch config")
+            check([x["name"] for x in cfgd()["recent"]] == ["StoneValley"], "and the project is in the recent list")
+            st, r = call6("GET", "/api/rooms")
+            check(st == 200, "the routes open up for the new project")
+
+            marker = proj / "rooms" / "keep.txt"
+            marker.write_text("x", encoding="utf-8")
+            st, r = call6("POST", "/api/projects/open", {"path": str(proj)})
+            check(st == 200 and r["created"] == [], f"re-opening needs no force and creates nothing ({r.get('created')})")
+            check(marker.read_text(encoding="utf-8") == "x", "an existing project is left untouched")
+
+            second = sd / "SecondMod"
+            second.mkdir()
+            st, r = call6("POST", "/api/projects/open", {"path": str(second), "force": True})
+            st, p = call6("GET", "/api/projects")
+            check([x["name"] for x in p["recent"]] == ["SecondMod", "StoneValley"], f"newest first ({[x['name'] for x in p['recent']]})")
+            check(p["current"]["name"] == "SecondMod", "current follows the switch")
+            call6("POST", "/api/projects/open", {"path": str(proj)})
+            st, p = call6("GET", "/api/projects")
+            check([x["name"] for x in p["recent"]] == ["StoneValley", "SecondMod"], "re-opening moves it to the front")
+
+            # a folder that vanished behind the app's back: the entry stays, greyed out (only
+            # an explicit 移除 drops it -- the app never guesses that a folder is gone for good)
+            shutil.rmtree(second, ignore_errors=True)
+            st, p = call6("GET", "/api/projects")
+            gone = [x for x in p["recent"] if x["name"] == "SecondMod"]
+            check(len(gone) == 1 and gone[0]["exists"] is False, f"a deleted folder is listed as missing ({gone})")
+
+            st, r = call6("POST", "/api/projects/forget", {"path": str(second)})
+            check(st == 200, f"forget answers ({st})")
+            st, p = call6("GET", "/api/projects")
+            check([x["name"] for x in p["recent"]] == ["StoneValley"], "the forgotten entry is gone")
+            check(p["current"]["name"] == "StoneValley", "the current project is untouched")
+
+            # forgetting the OPEN project is a list operation, never a close
+            call6("POST", "/api/projects/forget", {"path": str(proj)})
+            st, p = call6("GET", "/api/projects")
+            check(p["recent"] == [] and p["current"]["name"] == "StoneValley",
+                  "forgetting the open project empties the list but leaves it open")
+            st, s = call6("GET", "/api/setup")
+            check(s["mode"] == "ready", "and the editor is still there")
+
+            print("D2. bad paths")
+            st, r = call6("POST", "/api/projects/open", {"path": "C:\\"})
+            check(st == 400, f"a drive root is refused ({st} {str(r.get('error'))[:40]})")
+            st, r = call6("POST", "/api/projects/open", {"path": ""})
+            check(st == 400, f"an empty path is refused ({st})")
+            afile = sd / "a.txt"
+            afile.write_text("x", encoding="utf-8")
+            st, r = call6("POST", "/api/projects/open", {"path": str(afile)})
+            check(st == 400 and "文件" in str(r.get("error", "")), f"a plain file is refused ({st} {str(r.get('error'))[:40]})")
+            fresh = sd / "nope" / "deep" / "NewMod"
+            st, r = call6("POST", "/api/projects/open", {"path": str(fresh)})
+            check(st == 409 and (r.get("detail") or {}).get("code") == "unfamiliar", "a brand-new nested path warns too")
+            st, r = call6("POST", "/api/projects/open", {"path": str(fresh), "force": True})
+            check(st == 200 and fresh.is_dir(), f"force creates the whole path (新建项目) ({st})")
+
+            print("D3. a project cannot be switched out from under a running job")
+            st, r = call6("POST", "/api/setup/utmt")
+            check(st == 202, f"the download starts ({st} {r})")
+            running = False
+            for _ in range(20):
+                _, s6 = call6("GET", "/api/setup")
+                if s6["utmt"]["running"]:
+                    running = True
+                    break
+                time.sleep(0.2)
+            check(running, "the backend reports the download as running")
+            st, r = call6("POST", "/api/projects/open", {"path": str(second)})
+            check(st == 409 and "UTMT" in str(r.get("error", "")), f"switching is refused while it runs ({st} {r})")
+            st, r = call6("POST", "/api/projects/close")
+            check(st == 409, f"closing is refused too ({st})")
+            hold.set()  # let the request answer (404): the job fails, the guard lifts
+            for _ in range(60):
+                _, s6 = call6("GET", "/api/setup")
+                if not s6["utmt"]["running"]:
+                    break
+                time.sleep(0.5)
+            check(s6["utmt"]["running"] is False, "the job is over")
+            check(s6["mode"] == "ready" and s6["project"]["name"] == "NewMod", "and the project never changed")
+
+            print("D4. the welcome page and the switch, in two browser tabs")
+            # back to nothing open, so the page starts on the welcome screen
+            st, r = call6("POST", "/api/projects/close")
+            check(st == 200, f"close answers ({st})")
+            st, s = call6("GET", "/api/setup")
+            check(s["mode"] == "welcome" and s["project"] is None, f"back to welcome ({s.get('mode')})")
+            check([x["name"] for x in cfgd()["recent"]] == ["NewMod"], "closing does not forget the project")
+            st, r = call6("GET", "/api/rooms")
+            check(st == 503, "and the routes close again")
+            st, p = call6("GET", "/api/projects")
+            check(p["current"] is None and [x["name"] for x in p["recent"]] == ["NewMod"],
+                  f"the recent list is still there with nothing open ({p})")
+
+            with sync_playwright() as p7:
+                b7 = p7.chromium.launch()
+                pga = b7.new_page(viewport={"width": 1280, "height": 860})
+                pgb = b7.new_page(viewport={"width": 1280, "height": 860})
+                pga.goto(base6)
+                pgb.goto(base6)
+                pga.wait_for_selector("#welcome:not([hidden])", timeout=60000)
+                pgb.wait_for_selector("#welcome:not([hidden])", timeout=60000)
+                check(pga.evaluate("document.querySelectorAll('#wc-recent-list .wc-row').length") == 1,
+                      "the recent list is rendered on the welcome page")
+                check(pga.inner_text("#wc-machine").startswith("✓"), "and the machine strip is green on a ready machine")
+                pgb.evaluate("window.__tab = 'B'")  # a marker a reload would wipe
+                # A opens a project; the server emits {type:"project"} and BOTH tabs reload
+                pga.evaluate("void svre.openProject('%s')" % str(proj).replace("\\", "\\\\"))
+                pga.wait_for_selector("#appbar", timeout=60000)
+                check("StoneValley" in pga.title(), f"the title names the project ({pga.title()})")
+                # the editor chrome is up before /api/rooms has answered, so wait for the
+                # room list itself -- #appbar alone would let this race the fetch
+                try:
+                    pga.wait_for_function(
+                        "document.querySelector('#room-select optgroup')?.label === 'StoneValley'", timeout=60000)
+                    grouped = True
+                except Exception:
+                    grouped = False
+                check(grouped, "A's room dropdown is grouped under the project name")
+                pgb.wait_for_selector("#appbar", timeout=60000)
+                check(pgb.evaluate("window.__tab === undefined") is True, "B reloaded itself: the marker is gone")
+                check(pgb.evaluate("location.search") == "", f"and the reload dropped the old query ({pgb.evaluate('location.search')})")
+                try:
+                    pgb.wait_for_function(
+                        "document.querySelector('#room-select optgroup')?.label === 'StoneValley'", timeout=60000)
+                    grouped_b = True
+                except Exception:
+                    grouped_b = False
+                check(grouped_b, "B sees the same project without being told")
+                b7.close()
+
+            st, s = call6("GET", "/api/setup")
+            check(s["mode"] == "ready" and s["project"]["exists"] is True, "the server agrees the project is open")
+        finally:
+            hold.set()
+            if srv6 is not None:
+                srv6.shutdown()
+            subprocess.run(f"taskkill /PID {server6.pid} /T /F", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            shutil.rmtree(sd, ignore_errors=True)
     finally:
         subprocess.run(f"taskkill /PID {server.pid} /T /F", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         shutil.rmtree(scratch, ignore_errors=True)

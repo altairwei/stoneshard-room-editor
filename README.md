@@ -40,14 +40,15 @@ npm run dev         # http://localhost:5178/?room=r_sv_hut_inside1
 
 | 键 | 含义 |
 |---|---|
-| `modDir` | mod 源码目录；房间工程与编译快照在 `<modDir>/rooms/`，生成的 `<Mod>.Rooms.g.cs` 在根目录 |
+| `modDir` | **当前项目**：一个 mod 的源码目录。房间工程与编译快照在 `<modDir>/rooms/`，生成的 `<Mod>.Rooms.g.cs` 在根目录。空 = 没有项目（欢迎页） |
+| `recent` | 最近打开的项目（最新在前，上限 10）。由应用维护，手改无害 |
 | `assetsDir` | 资产缓存（游戏美术）。**必须在 git 和任何 mod 目录树之外** |
 | `sourceDir` | 反编译源码（`gml_Object_*_Create_0.gml` 等），供事件扫描用 |
 | `vanillaWin` | 未改动的原版 data 文件（`data.win` 是 patch 产物，不能用） |
 | `utmtCli` | `UndertaleModCli.exe` |
 
 环境变量覆盖（测试 / 打包用）：`SVRE_CONFIG`（改读另一个配置文件）、`SVRE_MOD_DIR`、
-`SVRE_ASSETS_DIR`。向导写配置永不碰仓库里的 `svre.config.json`：开发机落在 gitignore 的
+`SVRE_ASSETS_DIR`。应用写配置永不碰仓库里的 `svre.config.json`：开发机落在 gitignore 的
 `svre.config.local.json`，打包安装落在 userData 的 `svre.config.json`。
 
 ## 人：浏览器
@@ -96,12 +97,12 @@ npm run app:dev     # 开发形态：壳里拉一个 vite（5186，带 HMR），
 
 | 菜单 | 内容 |
 |---|---|
-| 文件 | 新建房间… Ctrl+N · 打开原版房间（只读）… Ctrl+O · 导入 sprite… · 编译 Ctrl+S · 打开 mod 目录 · 退出 |
+| 文件 | 新建项目… · 打开项目… Ctrl+K Ctrl+O · 最近打开 ▸ · 关闭项目 —— （打开项目后）新建房间… Ctrl+N · 打开原版房间（只读）… Ctrl+O · 导入 sprite… · 编译 Ctrl+S · 打开 mod 目录 · 退出 |
 | 编辑 | 撤销 Ctrl+Z · 重做 Ctrl+Y · 查找实例 Ctrl+F（聚焦实例筛选框） |
 | 视图 | 主题 白天/黑夜（单选）· 顺序 游戏/静态（单选）· 吸附/隐形/碰撞/标记/网格/便签（勾选）· 放大 Ctrl+= · 缩小 Ctrl+- · 适配 Ctrl+0 · 实际像素 Ctrl+1 · 全屏 |
 | 工具 | 选择/抓手/放置/碰撞矩形/屏障涂刷/区域/标记/便签（单选，与工具箱同步） |
 | 开发（仅 app:dev） | 重新加载 · 开发者工具 |
-| 帮助 | 关于（版本、后端地址、mod 目录） |
+| 帮助 | 本机设置… · 关于（版本、后端地址、当前项目） |
 
 壳是 **VS Code 式无边框窗口**：系统标题栏隐藏（`titleBarStyle:"hidden"`，原生边框/吸附/
 阴影全保留），页面自绘 36px 标题栏 = 拖拽区 + ☰（在按钮处弹出同一套原生菜单）+ 跟随
@@ -112,24 +113,65 @@ document.title 的房间名标题 + 自绘最小化/最大化/关闭（titleBarO
 避免在输入框里打字被抢。注意：**Electron 不会弹出网页的 confirm/alert/prompt**
 （调用即渲染进程死等），所有确认/输入框都是应用内对话框，别改回原生调用。
 
-### 首次运行向导（分发形态）
+### 项目制：mod 源码目录就是工作目录
+
+应用只有一条「当前项目」，就是配置里的 `modDir`——一个 mod 的源码目录。房间工程、
+sprite、`assets.json` 注册清单、编译产物全写在里面，所以**美术交付 = 把那个文件夹发回**。
+
+启动时服务端算清三个状态（`GET /api/setup` 的 `mode`），客户端只跟着分支，不重算：
+
+| mode | 何时 | 页面 |
+|---|---|---|
+| `welcome` | 没有项目，或项目目录已经不在了 | 欢迎页（最近项目 / 打开文件夹… / 新建项目…） |
+| `setup` | 有项目，但**本机**还没就绪（`reasons` 非空），或用户主动重跑 | 「本机设置」对话框盖在欢迎页/编辑器上 |
+| `ready` | 两者都就位 | 编辑器 |
+
+**「没有项目」不是缺陷，是正常状态**，所以它不混进 `reasons`——`reasons` 只记机器级
+的缺口。两条轴因此独立：机器全新 + 项目齐全 = 直接编辑；机器就绪 + 没有项目 = 欢迎页
+不弹任何向导。降级时只有 `/api/projects*`、`/api/setup*`、`/api/config` 应答，其余 503。
+
+- **打开项目**（欢迎页、`文件 → 打开项目…`、`Ctrl+K Ctrl+O`、最近列表）：目录不像 mod
+  源码（没有 `Codes/`、`Sprites/`、`assets.json`、`*.csproj` 任一）时提示一次，确认后
+  照样打开并补齐骨架。目录名必须能当 C# 标识符（`/^[A-Za-z_]\w*$/`）——它会被写进
+  `namespace` 与 `<Mod>.Rooms.g.cs`，不合法直接 400，请重命名文件夹（`force` 也不行）。
+- **新建项目…** = 「打开」一个还不存在的文件夹（同一个对话框、同一条路由），只建编辑器
+  骨架（`rooms/`、`Sprites/`、`Codes/`、空的 `assets.json`）；mod 本身交给 MSL。
+- **切换项目后所有页面一律重载**：对象库只会并集、`/mod-assets/pages/<i>.png` 的页号只对
+  当次扫描有效，软切换会把上一个项目的对象留在界面上。资产缓存与项目无关，**切项目
+  永不重提取**。
+- 正在提取/下载/切换时 `open`/`close` 一律 409。
+
+### 本机设置（分发形态，与项目无关）
 
 打包产物里**没有一字节资产缓存**（版权）——每台机器用机主自己正版游戏的 data 文件
-现场提取。第一次启动时后端是降级的（只有 `/api/config` 与 `/api/setup/*` 应答，其余
-503），页面自动弹出向导：
+现场提取。这是**这台机器**的事：换项目不会重来一遍。第一次启动（或缓存被删）时自动
+弹出，之后从 `帮助 → 本机设置…` 打开：
 
-1. **工作目录**：房间工程、sprite 与注册清单的家（默认 `<userData>/work`，可换）；
-   美术交付 = 把整个文件夹发回。
-2. **游戏数据文件**：自动探测所有 Steam 库（解析 `libraryfolders.vdf`）里的
-   `vallina.win`（MSL 留的原版备份，优先）与 `data.win`，也可手选/手填。编辑器钉的
-   参考版本（`extract/fingerprint.json`）就写在这一步。
-3. **提取**：随包 UTMT CLI 一次载入连跑两个导出脚本（对象/sprite/贴图页 + 全部
-   1067 个房间，约几分钟），完成后与钉住的版本指纹比对——不一致给硬警告（版本不符
-   或 data.win 被 patch 过都会在这里现形），确认后仍可进入。
+1. **游戏数据文件**：自动探测所有 Steam 库（解析 `libraryfolders.vdf`）里的
+   `vallina.win`（MSL 留的原版备份，优先）与 `data.win`，也可手选/手填。开发侧的
+   参考版本（`extract/fingerprint.json`）就写在这一步。这一步同时显示**提取工具**
+   （UTMT CLI）的状态：随包或已配置的副本直接用；一个都没有时（源码 clone——`vendor/`
+   是 gitignored 的）给一个「下载并安装」按钮，从 GitHub 取钉住版本的官方 release
+   （v0.9.2.0，约 60 MB）解到安装目录（打包形态 `<userData>/utmt`，开发形态
+   `vendor/utmt/`，可用 `SVRE_UTMT_DIR` 改）。
+2. **提取资产缓存**：UTMT CLI 一次载入连跑两个导出脚本（对象/sprite/贴图页 + 全部
+   1067 个房间，约几分钟），完成后与开发侧钉的版本指纹比对：统计有出入只作**提示**
+   （游戏更新、data.win 被 patch 过都会显示在这里），不是失败，照常继续。
+3. **反编译源码**：`create.json` 是唯一**提取不出来**的缓存文件——对象的 `depth =
+   -y + 18` 这类事实写在 GML 代码里，不在 data 文件里。用 UTMT 的「Decompile all
+   code」把源码导出一份，把目录填进来，扫描（十几秒～一分钟，随包 `scan-create.mjs`，
+   跑在 Electron 自己的 node 模式上，机器上不需要装 node）生成它；条目数与参考版本的
+   差异同样只作提示。没有源码树可以**跳过**：编辑器照常能用，只是「游戏顺序」画布
+   回退图层深度、启动时弹条提示；之后补上（`帮助 → 本机设置…`）即可。
 
-后端热重进健康模式，不用重启。游戏更新后：开发机 `npm run extract` +
-`node extract/fingerprint.mjs <新版本号>`；打包安装删掉 `<userData>/cache/` 重开即
-重走向导（工作目录已存在会直跳第 2 步）。
+后端热重进健康模式，不用重启。机器还没就绪时对话框是阻塞的（Esc 关不掉，提取会直接
+写进正在用的缓存）；机器已经能用时它只是「来看一眼/重跑一遍」——关掉按钮就在，改完
+照常编辑，不用重载。游戏更新后：开发机 `npm run extract` +
+`node extract/fingerprint.mjs <新版本号>`（指纹含 `create` 条目数）；打包安装走菜单
+**帮助 → 本机设置…**，用新的 data 文件重提取、再重扫源码（`sourceDir` 记着，直接回车
+即可）。**旧缓存一直可用到新的一次提取成功**：途中关掉应用或提取失败都没有损失（提取
+成功时才把过期的 `create.json` 一并作废，让第 3 步重新出现）。清空档案重来仍然可行：
+删掉 `<userData>/cache/` 与配置里的 `assetsDir`。
 
 ### 打包分发（electron-builder）
 
@@ -138,12 +180,16 @@ npm run dist   # = build:app + vendor:utmt + electron-builder --win zip
 ```
 
 产物 `release/Stoneshard Room Editor-<版本>-win.zip`：解压即用的绿色版，含应用、
-内嵌后端、导出脚本与 UTMT CLI（MIT，可随包）；**不含**资产缓存（版权，首启向导
+内嵌后端、导出脚本与 UTMT CLI（MIT，可随包）；**不含**资产缓存（版权，首次的本机设置
 现场提取），也不含 node_modules（前端 pixi 与后端依赖全部打进 bundle，运行时零
 外部依赖）。
 
 - `vendor/utmt/` 由 `npm run vendor:utmt` 从本机 `utmtCli` 的安装目录取（gitignored，
-  每次打包前自动重跑）。
+  每次打包前自动重跑）。用源码跑（`npm run dev`）而没跑过 vendor 的话，本机设置第 1 步会
+  直接下载一份官方 release（钉在 `server/setup.ts` 的 `UTMT_RELEASE`，脚本只对那个
+  版本测过）；网络不通时可用 `SVRE_UTMT_URL` 指向镜像或本地 zip，或手动解压一份到
+  `vendor/utmt/`。若想去掉随包的 115 MB，就把 `electron-builder.yml` 里的
+  `vendor/utmt` 从 `asarUnpack`/`files` 拿掉，让每台机器首启自取。
 - UTMT CLI 与 `.csx` 脚本必须 `asarUnpack`（子进程与外部进程读取进不了 asar）；
   server 对这几条路径做 `app.asar → app.asar.unpacked` 改写（`unpackedPath()`）。
 - zip 目标不签名，一般无需联网；若卡在 winCodeSign/nsis 下载，设

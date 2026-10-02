@@ -518,6 +518,61 @@ body.render #stage { position: fixed; inset: 0; background: #0d0e11; }
 /* Electron: controls whose job the native menu took over stay in plain browsers */
 body.electron .menu-only { display: none !important; }
 
+/* ---------------- welcome page (no project open) ----------------
+   The editor chrome has nothing to show without a project, so it is swapped out
+   wholesale. #titlebar stays: it is the drag region and the window buttons. */
+body.no-project #appbar, body.no-project #options, body.no-project #banner,
+body.no-project main, body.no-project #status { display: none !important; }
+/* the menus live in the title bar, and the native menu is the only way to open a
+   project in the shell -- but the toasts still belong to nobody, so send them here */
+body.no-project #toasts { right: 14px; }
+
+#welcome { flex: 1; min-height: 0; overflow: auto; display: flex; justify-content: center; }
+.wc-wrap { width: 100%; max-width: 720px; padding: 48px 20px 40px; display: flex; flex-direction: column; gap: 22px; }
+.wc-head { display: flex; gap: 14px; align-items: flex-start; }
+.wc-head .brand-logo { width: 40px; height: 40px; flex: none; margin-top: 2px; }
+.wc-head .brand-logo svg { width: 34px; height: 34px; display: block; }
+.wc-head h1 { margin: 0 0 4px; font-size: 20px; font-weight: 600; letter-spacing: .02em; color: var(--strong); }
+.wc-head p { margin: 0; font-size: 12px; line-height: 1.6; max-width: 52em; }
+.wc-actions { display: flex; gap: 8px; }
+.wc-actions button { padding: 6px 16px; }
+#wc-new { width: 132px; }
+
+#wc-machine { font-size: 12px; }
+.wc-machine-ok { color: var(--faint); }
+.wc-machine-warn {
+  display: flex; align-items: center; gap: 10px; padding: 8px 12px;
+  background: var(--chip-warn-bg); border: 1px solid var(--chip-warn-line); border-radius: 6px; color: var(--warn);
+}
+.wc-machine-warn button { margin-left: auto; flex: none; }
+
+.wc-recent { display: flex; flex-direction: column; gap: 6px; min-height: 0; }
+.wc-recent-head { font-size: 11px; font-weight: 600; letter-spacing: .06em; color: var(--muted); }
+#wc-recent-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.wc-recent-empty { padding: 10px 2px; font-size: 12px; color: var(--faint); }
+.wc-row { display: flex; align-items: center; gap: 6px; border-radius: 6px; padding: 0 4px 0 0; }
+.wc-row:hover { background: var(--hover); }
+.wc-row-open {
+  flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 10px;
+  text-align: left; background: transparent; border-color: transparent; padding: 7px 8px;
+}
+.wc-row-open:hover { background: transparent; border-color: transparent; }
+.wc-row-name { font-size: 13px; color: var(--strong); flex: none; }
+.wc-row-path {
+  font-size: 11px; color: var(--muted); flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left;
+}
+.wc-row-at { font-size: 11px; color: var(--faint); flex: none; font-variant-numeric: tabular-nums; }
+.wc-row-tools { display: none; gap: 2px; flex: none; }
+.wc-row:hover .wc-row-tools { display: flex; }
+.wc-row-tools button { width: 24px; height: 24px; padding: 0; font-size: 12px; line-height: 1; background: transparent; border-color: transparent; color: var(--muted); }
+.wc-row-tools button:hover { background: var(--raised); border-color: var(--btn-line); color: var(--text); }
+/* a recent entry whose folder is gone: still listed (a moved project is one click
+   away from being re-pointed at), but visibly not openable as-is */
+.wc-row.missing .wc-row-name, .wc-row.missing .wc-row-path { color: var(--faint); }
+.wc-row.missing .wc-row-path { text-decoration: line-through; }
+.wc-row-missing { font-size: 11px; color: var(--warn); flex: none; }
+
 /* ---------------- first-run setup wizard ---------------- */
 #setup-dialog { width: 620px; }
 .setup-form { display: block; }
@@ -539,3 +594,10 @@ body.electron .menu-only { display: none !important; }
 }
 #setup-result .ok { color: var(--ok, #6d6); font-size: 13px; }
 #setup-result .warn { color: var(--warn, #da4); font-size: 13px; line-height: 1.6; }
+/* the reference-version comparison: information, not a warning about the user's install */
+#setup-result .info { color: var(--muted); font-size: 12px; line-height: 1.6; margin-top: 6px; }
+#setup-utmt { margin: 6px 0; }
+#setup-utmt .setup-row > div { flex: 1; min-width: 0; font-size: 12px; word-break: break-all; }
+#setup-utmt .setup-row button { white-space: nowrap; }
+#setup-utmt .warn { color: var(--warn, #da4); }
+#setup-utmt > div + div { margin-top: 2px; font-size: 11px; }

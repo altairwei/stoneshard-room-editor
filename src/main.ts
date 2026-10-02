@@ -110,6 +110,26 @@ const paintLabel = (object: string) => (object === BARRIER_PAINT ? "屏障" : "�
 const hiddenInsts = new Set<number>(); // per-instance editor-local hide (the eyes in the 图层 tab)
 let dragRowId: number | null = null; // instance row mid-drag in the 图层 tab
 
+// ---------------- project state (welcome page vs. editor) ----------------
+// A mirror of the backend's three-state model (server/api.ts modeOf): "welcome" = no
+// project open, which is a normal state and not a defect; "setup" = machine-level
+// pieces (the asset cache, the depth facts) still missing; "ready" = the editor has
+// both. The server decides, this side only renders -- no re-derivation, or the two
+// drift apart on the first edge case.
+type UiMode = "welcome" | "setup" | "ready";
+interface ProjectInfo { path: string; name: string; exists: boolean }
+interface RecentEntry extends ProjectInfo { at: string }
+let uiMode: UiMode = "welcome";
+let projectInfo: ProjectInfo | null = null;
+let recentList: RecentEntry[] = [];
+// A switch THIS tab started: the POST is in flight and the server's "project" event can
+// land either before or after it returns. Both orders are fine -- the event just must
+// not trigger a second, competing reload while the first one is on its way.
+let switching = false;
+// when Ctrl+K was last pressed: the second half of the Ctrl+K Ctrl+O chord. A timestamp
+// rather than a boolean so a stray Ctrl+K cannot leave the chord armed forever.
+let chordArmed = 0;
+
 // Edge auto-scroll while dragging a row: HTML5 drags suppress the wheel and give no
 // native edge scrolling, so a row could only move within one viewport. While a drag is
 // active a rAF loop scrolls the tab's section proportionally to how deep the pointer
@@ -342,7 +362,35 @@ async function init() {
   if (renderMode) document.body.classList.add("render");
   hydrateIcons();
   wireWs(); // connect early: the setup wizard's progress rides this same channel
-  await runSetupIfNeeded(); // first run: workdir + extract wizard; reloads when done
+  // Three states, decided once by the server (see setupState): no project (welcome),
+  // project but an incomplete machine (wizard), or both (the editor).
+  const st: SetupState = await api("/api/setup");
+  uiMode = st.mode;
+  projectInfo = st.project;
+  if (st.mode === "welcome") {
+    // Nothing below has anything to work on: no store behind /api/rooms, no room, no
+    // assets to load. `render` still gets its ready flag -- a screenshotter pointed at
+    // an install with no project must get a blank canvas, not a hang.
+    if (renderMode) { (window as any).svreReady = true; return; }
+    await showWelcome(st);
+    booted = true; // chrome-level menus (project.*, help.setup) are live from here
+    return;
+  }
+  if (st.mode === "setup") {
+    // A blocking dialog never resolves -- that is the whole point of this branch.
+    await showSetupDialog(st);
+    // Non-blocking + setup mode means nothing is missing and a round was asked for by hand
+    // (POST /api/setup/restart): the gate is still closed, so there is no editor to boot.
+    // What sits behind the dialog is the welcome page, whose machine strip names the round.
+    if (renderMode) { (window as any).svreReady = true; return; }
+    await showWelcome(st);
+    booted = true;
+    return;
+  }
+
+  // The window names the project from here on -- not only once a room is open: /api/rooms
+  // is still a fetch away, and until then the title would claim to be nothing at all.
+  setTitle(null);
 
   const host = $("stage");
   await app.init({ resizeTo: host, background: renderMode ? 0x0d0e11 : THEME_CANVAS[uiTheme()].voidBg, antialias: false, roundPixels: true, autoDensity: true, resolution: devicePixelRatio });
@@ -361,6 +409,11 @@ async function init() {
 
   $("load-state").textContent = "加载资产…";
   await db.load();
+  // the cache can be complete and still carry no depth facts (the wizard's scan step was
+  // skipped, or create.json was emptied by hand): the game-order canvas is then really the
+  // static one. Say it once, loudly, rather than drawing a wrong occlusion order silently.
+  if (!Object.keys(db.create).length)
+    toast("缺深度事实（create.json 为空）：对象写在 Create 里的 depth 代码读不到，「游戏顺序」已回退图层深度，遮挡可能与游戏内不一致", 15000);
   await refreshRooms();
 
   for (const t of Object.values(toggles)) t.onchange = () => { applyVisibility(); };
@@ -391,8 +444,10 @@ async function init() {
   wireInsts();
   wireViewport(host);
   wireKeys(host);
-  wireMenu();
-  pushMenuState(); // seat the native menu's checkmarks on the boot state
+  // the chrome has been up since bootChrome(); this is just the "data is in" gate on the
+  // menu actions (the checkmarks were already seated there, and setZMode/setUiTheme keep
+  // them in sync from here on)
+  booted = true;
 
   const initial = params.get("room");
   const wantVanilla = params.get("vanilla") === "1";
@@ -423,12 +478,21 @@ async function refreshRooms(selectAfter?: string) {
   const vg = doc?.vanilla
     ? `<option value="${esc(doc.name)}" data-vanilla="1">${esc(doc.name)} · 查看中</option>`
     : "";
-  sel.innerHTML = rooms
-    .map((r) => {
-      const marks = `${r.hasProject ? "" : " · 未导入"}${r.dirty ? " ●" : ""}${r.drift ? " ⚠ 漂移" : ""}`;
-      return `<option value="${esc(r.name)}">${esc(r.name)}${marks}</option>`;
-    })
-    .join("") + `<optgroup label="原版（只读）">${vg}<option value="__vanilla_pick__">打开原版房间…</option></optgroup>`;
+  // Two groups, because the two things in here are not the same kind of thing: rooms of
+  // the open project (writable, compiled, drift-checked) and vanilla cache rooms (read
+  // only, no project behind them). An <optgroup> with no options is not rendered at all
+  // by Chrome, so an empty project needs a placeholder or the group silently disappears.
+  const own = rooms.length
+    ? rooms
+        .map((r) => {
+          const marks = `${r.hasProject ? "" : " · 未导入"}${r.dirty ? " ●" : ""}${r.drift ? " ⚠ 漂移" : ""}`;
+          return `<option value="${esc(r.name)}">${esc(r.name)}${marks}</option>`;
+        })
+        .join("")
+    : `<option disabled>（工程还没有房间：用「新建…」从原版房间派生一个）</option>`;
+  sel.innerHTML =
+    `<optgroup label="${esc(projectInfo?.name ?? "工程")}">${own}</optgroup>` +
+    `<optgroup label="原版（只读）">${vg}<option value="__vanilla_pick__">打开原版房间…</option></optgroup>`;
   sel.onchange = () => {
     const v = sel.value;
     if (v === "__vanilla_pick__") {
@@ -444,6 +508,223 @@ async function refreshRooms(selectAfter?: string) {
   };
   if (selectAfter) sel.value = selectAfter;
   else if (doc) sel.value = doc.name;
+  // Nothing on screen yet (a brand-new project, or the room list came back before the
+  // ?room= open did): updateChrome only runs once a room is open, so the title has to be
+  // seated here or the window names the app instead of the project.
+  if (!doc) setTitle(null);
+  // A brand-new project (新建项目…) has no rooms yet, so nothing below will open one and the
+  // status line would sit on "加载资产…" forever. Say what this state is instead.
+  if (!rooms.length && !doc)
+    $("load-state").textContent = `${projectInfo?.name ?? "工程"} · 还没有房间 · 用「新建…」从原版房间派生一个`;
+}
+
+// ================= welcome page (no project open) =================
+// The window (and the Electron title bar, which mirrors document.title) names the open
+// project: this app holds one at a time, and the title is the only place that says which.
+const APP_NAME = "Stoneshard Room Editor";
+function setTitle(roomName: string | null) {
+  document.title = `${roomName ? `${roomName} — ` : ""}${projectInfo ? `${projectInfo.name} — ` : ""}${APP_NAME}`;
+}
+
+// The one way this tab leaves a project behind: a full reload. Not reload() -- that would
+// keep ?room=<old> and try to open a room the new project does not have -- and not "/" --
+// that breaks the moment the app is served under a base path. replace() also keeps the
+// dead project out of the back button's history.
+const hardReset = () => location.replace(location.pathname);
+
+async function showWelcome(st: SetupState) {
+  document.body.classList.add("no-project");
+  document.body.classList.remove("vanilla-ro");
+  $("welcome").hidden = false;
+  setTitle(null); // the app names itself; there is no project to name
+  paintMachineBar(st);
+  $("wc-open").onclick = () => void openProjectDialog("打开项目");
+  $("wc-new").onclick = () => void openProjectDialog("新建项目");
+  await refreshProjects();
+}
+
+// The machine-level strip: what this install still needs before any project can open.
+// It is about the MACHINE, so it does not change when the project does.
+function paintMachineBar(st: SetupState) {
+  const box = $("wc-machine");
+  box.textContent = "";
+  const missing: string[] = [];
+  if (st.reasons.includes("cache")) missing.push("资产缓存");
+  if (st.reasons.includes("create")) missing.push("深度事实（create.json）");
+  if (!missing.length) {
+    if (st.forced) missing.push("资产缓存（已请求重新提取）");
+    else {
+      const ok = document.createElement("div");
+      ok.className = "wc-machine-ok";
+      ok.textContent = `✓ 本机已就绪（资产缓存 · 深度事实）${st.expected ? ` · 参考版本 ${st.expected.game}` : ""}`;
+      box.append(ok);
+      return;
+    }
+  }
+  const bar = document.createElement("div");
+  bar.className = "wc-machine-warn";
+  const txt = document.createElement("span");
+  // a missing cache blocks every project; a missing source tree only costs the
+  // game-order canvas, which the editor already warns about on its own
+  const soft = missing.length === 1 && missing[0].startsWith("深度事实");
+  txt.textContent = `⚠ 本机还缺：${missing.join(" · ")}${soft ? "（不影响打开项目，遮挡顺序会回退图层深度）" : ""}`;
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.textContent = "运行本机设置…";
+  btn.onclick = () => void openMachineSetup();
+  bar.append(txt, btn);
+  box.append(bar);
+}
+
+async function refreshProjects() {
+  const p = await api("/api/projects");
+  if (p.current) projectInfo = p.current;
+  recentList = p.recent ?? [];
+  renderRecent();
+  pushMenuState(); // 最近打开 lives in the native menu, and the shell keeps no copy of its own
+}
+
+function renderRecent() {
+  const list = $("wc-recent-list");
+  list.textContent = "";
+  if (!recentList.length) {
+    const li = document.createElement("li");
+    li.className = "wc-recent-empty";
+    li.textContent = "还没有打开过项目。";
+    list.append(li);
+    return;
+  }
+  for (const r of recentList) {
+    const li = document.createElement("li");
+    li.className = `wc-row${r.exists ? "" : " missing"}`;
+    li.dataset.path = r.path;
+
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "wc-row-open";
+    open.title = r.exists ? `打开 ${r.path}` : `${r.path} 已经不在了`;
+    open.innerHTML = `<span class="wc-row-name">${esc(r.name)}</span><span class="wc-row-path">${esc(r.path)}</span>`;
+    open.onclick = () => void openProject(r.path);
+    li.append(open);
+
+    if (!r.exists) {
+      const gone = document.createElement("span");
+      gone.className = "wc-row-missing";
+      gone.textContent = "文件夹不在了";
+      li.append(gone);
+    } else {
+      const at = document.createElement("span");
+      at.className = "wc-row-at";
+      at.textContent = relTime(r.at);
+      li.append(at);
+    }
+
+    const tools = document.createElement("span");
+    tools.className = "wc-row-tools";
+    if (hostBridge?.revealPath && r.exists) {
+      const show = document.createElement("button");
+      show.type = "button";
+      show.title = "在文件管理器中显示";
+      show.textContent = "📁";
+      show.onclick = () => void hostBridge!.revealPath!(r.path);
+      tools.append(show);
+    }
+    const forget = document.createElement("button");
+    forget.type = "button";
+    forget.title = "从列表移除（磁盘上的文件夹不动）";
+    forget.textContent = "✕";
+    forget.onclick = () => void forgetRecent(r.path);
+    tools.append(forget);
+    li.append(tools);
+    list.append(li);
+  }
+}
+
+// "3 天前" reads better than a timestamp in a shortlist, but a time of day never does:
+// anything older than a week gets the date.
+function relTime(iso: string): string {
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return "";
+  const s = Math.max(0, (Date.now() - t) / 1000);
+  if (s < 90) return "刚刚";
+  if (s < 3600) return `${Math.round(s / 60)} 分钟前`;
+  if (s < 86400) return `${Math.round(s / 3600)} 小时前`;
+  if (s < 86400 * 7) return `${Math.round(s / 86400)} 天前`;
+  const d = new Date(t);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+async function forgetRecent(dir: string) {
+  try {
+    const r = await api("/api/projects/forget", "POST", { path: dir });
+    recentList = r.recent ?? [];
+    renderRecent();
+    pushMenuState();
+  } catch (e) {
+    toast(`移除失败：${(e as Error).message}`);
+  }
+}
+
+// 打开项目… and 新建项目… are the same gesture: pick (or type) a folder, then open it.
+// The OS picker's createDirectory is what makes 新建项目 a new-folder dialog, so there is
+// no second form to keep in sync -- and one route keeps the force/confirm semantics.
+async function openProjectDialog(_kind: "打开项目" | "新建项目") {
+  if (switching) return;
+  const title = _kind === "新建项目" ? "新建项目文件夹" : "打开项目文件夹";
+  const picked = hostBridge?.pickDir
+    ? await hostBridge.pickDir(title)
+    : await promptDialog(`${_kind}：mod 源码目录的完整路径\n\n（目录不存在则新建；文件夹名会成为生成的 C# 命名空间，只能用字母、数字、下划线，且不以数字开头）`);
+  if (picked) await openProject(picked);
+}
+
+async function openProject(dir: string, force = false) {
+  if (switching) return;
+  switching = true;
+  try {
+    await api("/api/projects/open", "POST", { path: dir, force });
+  } catch (e) {
+    switching = false;
+    // Not a mod tree: worth exactly one confirmation, then it opens anyway (the server
+    // fills in the skeleton). Note the error body carries the machine-readable code in
+    // `detail` -- that is what ApiError surfaces.
+    if (e instanceof ApiError && e.status === 409 && (e.detail as { code?: string } | null)?.code === "unfamiliar") {
+      if (await confirmDialog(e.message)) return openProject(dir, true);
+      return;
+    }
+    await alertDialog(`${force ? "打开" : ""}项目失败：${e instanceof Error ? e.message : e}`);
+    return;
+  }
+  hardReset(); // a switch rebuilds every cache in this tab; only a reload is honest
+}
+
+async function closeProject() {
+  if (switching) return;
+  // Nothing is lost -- every edit is already in rooms/<name>.room.json; only the compiled
+  // snapshot is stale -- but "关闭" is exactly the word a user reads as "save and close".
+  if (doc?.dirty && !(await confirmDialog(`房间 ${doc.name} 有未编译的改动。\n\n关闭项目只是回到欢迎页：工程文件都在磁盘上，改动不会丢，只是还没编译进快照。`))) return;
+  switching = true;
+  try {
+    await api("/api/projects/close", "POST", {});
+  } catch (e) {
+    switching = false;
+    return alertDialog(`关闭项目失败：${e instanceof Error ? e.message : e}`);
+  }
+  hardReset();
+}
+
+// The machine-level setup, reachable with or without a project open (菜单 帮助 → 本机设置…,
+// or the welcome page's strip). With a project open and the machine ready it is not a
+// blocker: the dialog closes and the editor is still there underneath.
+//
+// Deliberately NOT POST /api/setup/restart, which would flip every client of this backend
+// into the blocking wizard. The old cache stays valid while a new extract runs, so the run
+// itself is enough -- and it does not have to cost the user their editor.
+async function openMachineSetup() {
+  if (switching) return;
+  const st: SetupState = await api("/api/setup");
+  uiMode = st.mode;
+  projectInfo = st.project;
+  await showSetupDialog(st);
 }
 
 // ---------------- open / sync ----------------
@@ -686,7 +967,7 @@ function updateChrome() {
     bc.innerHTML = `${ICONS.compile}<span>编译</span>`;
     $<HTMLButtonElement>("b-undo").disabled = true;
     $<HTMLButtonElement>("b-redo").disabled = true;
-    document.title = `${room().name}（原版 · 只读） — Stoneshard Room Editor`;
+    setTitle(`${room().name}（原版 · 只读）`);
     $("load-state").innerHTML =
       `${esc(room().name)} · 原版缓存 · 只读 · ${room().width}×${room().height}` +
       ` · 可见 ${counts.drawn ?? 0} · 隐形 ${counts.hidden ?? 0} · 碰撞 ${counts.collision ?? 0} · 标记 ${counts.marker ?? 0}`;
@@ -704,7 +985,7 @@ function updateChrome() {
   const canRedo = doc.redoable.includes(BY);
   $<HTMLButtonElement>("b-undo").disabled = !canUndo;
   $<HTMLButtonElement>("b-redo").disabled = !canRedo;
-  document.title = `${dirty ? "● " : ""}${room().name} — Stoneshard Room Editor`;
+  setTitle(`${dirty ? "● " : ""}${room().name}`);
   $("load-state").innerHTML =
     `${esc(room().name)} · r${doc.rev}${doc.compiledRev !== null ? ` · 编译于 r${doc.compiledRev}` : " · 从未编译"}` +
     ` · ${room().width}×${room().height} · 可见 ${counts.drawn ?? 0} · 隐形 ${counts.hidden ?? 0} · 碰撞 ${counts.collision ?? 0} · 标记 ${counts.marker ?? 0}` +
@@ -2100,7 +2381,22 @@ function wireKeys(host: HTMLElement) {
     const k = e.key.toLowerCase();
 
     if (ctrl && k === "s") { e.preventDefault(); compileDoc(); return; }
-    if (ctrl && k === "k") { e.preventDefault(); openPalette(); return; }
+    // Ctrl+K opens the object palette, and doubles as the first half of the VS Code
+    // chord for 打开项目 (Ctrl+K Ctrl+O). Both live before the inField/doc guards: they
+    // are chrome-level, so they work from a search box and from the welcome page.
+    if (ctrl && k === "k") {
+      e.preventDefault();
+      chordArmed = performance.now();
+      if (uiMode === "ready") openPalette();
+      return;
+    }
+    if (ctrl && k === "o" && performance.now() - chordArmed < 2000) {
+      e.preventDefault();
+      chordArmed = 0;
+      $<HTMLDialogElement>("palette-dialog").close(); // Ctrl+K already opened it
+      void openProjectDialog("打开项目");
+      return;
+    }
     if (inField) return;
     if (!doc) return;
 
@@ -2422,19 +2718,32 @@ function openVanillaFromPicker(name: string) {
 interface SvreHost {
   isElectron: boolean;
   onMenu(cb: (id: string) => void): void;
-  pushState(s: { theme: UiTheme; zmode: ZMode; tool: Tool["kind"]; toggles: Record<string, boolean> }): void;
+  pushState(s: {
+    theme: UiTheme; zmode: ZMode; tool: Tool["kind"]; toggles: Record<string, boolean>;
+    mode: UiMode; project: ProjectInfo | null; recent: Pick<RecentEntry, "path" | "name" | "exists">[];
+  }): void;
+  // show a folder in Explorer/Finder (the welcome page's recent rows)
+  revealPath?(path: string): Promise<void>;
   // custom titlebar: pop the native menu at the given page coords
   popupMenu?(x: number, y: number): void;
   // ...and run the window controls; the shell answers with svre:win-state
   winControl?(action: "min" | "max" | "close"): void;
   onWinState?(cb: (s: { maximized: boolean }) => void): void;
-  // first-run wizard pickers; absent in plain browsers (the text inputs suffice there)
-  pickDir?(): Promise<string | null>;
+  // native folder/file pickers; absent in plain browsers (the text inputs suffice there)
+  pickDir?(title?: string): Promise<string | null>;
   pickFile?(): Promise<string | null>;
 }
 const hostBridge = (window as any).svreHost as SvreHost | undefined;
+// Menu actions act on a loaded document; init() flips this when the app is actually up.
+// The chrome is wired long before that (see bootChrome), so a click can land mid-boot.
+let booted = false;
 
-function wireMenu() {
+// The window chrome, and it goes up the instant this module runs -- NOT at the end of
+// init(). The shell hides the OS caption (titleBarStyle:"hidden"), so this bar is the
+// only drag region and the only min/max/close the window has: it must not sit behind
+// asset loading, a 503 backend or a pixi failure. Whatever init() does, the user can
+// still move, maximise and close the window.
+function bootChrome() {
   if (!hostBridge) return;
   document.body.classList.add("electron"); // hides the controls that moved into menus
   hostBridge.onMenu((id) => menuAction(id));
@@ -2461,9 +2770,35 @@ function wireMenu() {
     new MutationObserver(syncTitle).observe(titleEl, { childList: true });
     syncTitle();
   }
+  pushMenuState(); // seat the native menu's checkmarks before the data even starts loading
 }
 
+// bootChrome() runs here, at module scope: before init(), before any await, and before
+// anything that can throw. Do not move it into init() -- that is the bug this fixes.
+bootChrome();
+
+// Recent entries travel as one string (the renderer only gets a single channel per menu
+// item) and a path contains both ':' and '\', so the separator has to be a character no
+// path can hold.
+const RECENT_MENU_PREFIX = "project.openRecent\u0000";
+
 function menuAction(id: string): boolean {
+  // Project management and the machine setup are CHROME-level: they must work with no
+  // document at all, which is exactly the state the welcome page is in. So they are
+  // handled before the booted/ready gate, not after it.
+  if (id.startsWith(RECENT_MENU_PREFIX)) { void openProject(id.slice(RECENT_MENU_PREFIX.length)); return true; }
+  switch (id) {
+    case "project.new": void openProjectDialog("新建项目"); return true;
+    case "project.open": void openProjectDialog("打开项目"); return true;
+    case "project.close": void closeProject(); return true;
+    case "help.setup": void openMachineSetup(); return true;
+  }
+  if (!booted || uiMode !== "ready") {
+    // booted flips at different points per mode: welcome sets it as soon as the page is
+    // up (there is no data to wait for), the editor only after the room is on screen.
+    toast(booted ? "先打开一个项目" : "正在启动，请稍候…");
+    return false;
+  }
   const stage = $("stage");
   if (id.startsWith("view.toggle.")) {
     const key = id.slice("view.toggle.".length) as keyof typeof toggles;
@@ -2505,12 +2840,17 @@ function menuAction(id: string): boolean {
 }
 
 // the native menu's checkmarks/radios are only honest when rebuilt on every change
+// (it also carries the project state: the shell builds 最近打开 from it rather than
+// keeping a copy of its own, which is what went stale before)
 function pushMenuState() {
   hostBridge?.pushState({
     theme: uiTheme(),
     zmode: zMode,
     tool: tool.kind,
     toggles: Object.fromEntries(Object.entries(toggles).map(([k, el]) => [k, el.checked])),
+    mode: uiMode,
+    project: projectInfo,
+    recent: recentList.map((r) => ({ path: r.path, name: r.name, exists: r.exists })),
   });
 }
 
@@ -2521,48 +2861,171 @@ function pushMenuState() {
 // into the healthy backend. In-page UI only (Electron never answers native renderer
 // dialogs -- they would wedge the page).
 interface SetupState {
-  needed: boolean;
-  reasons: string[];
+  // the three-state model (see UiMode): the server decides, this side only branches
+  mode: UiMode;
+  reasons: string[]; // MACHINE-level gaps only: config | cache | create
+  project: ProjectInfo | null;
+  forced: boolean; // a re-run the user asked for (game update): nothing is missing, still show
   running: boolean;
-  current: { modDir: string; assetsDir: string; vanillaWin: string };
+  current: { modDir: string; assetsDir: string; vanillaWin: string; sourceDir: string };
+  sourceGml: number; // gml_Object_*.gml files in current.sourceDir (0 = not a source tree)
   detected: { path: string; kind: "vallina" | "data"; source: string }[];
   utmtCli: string | null;
-  expected: { game: string; objects: number; sprites: number; rooms: number } | null;
+  // the UTMT CLI the extract runs on: where it is, where a download would go, and what
+  // would be downloaded (an install with no vendor/utmt/ has nothing to extract with)
+  utmt: {
+    cli: string | null;
+    dir: string;
+    installed: boolean; // our own download is there (vs. one from the config or the bundle)
+    version: string | null;
+    running: boolean;
+    release: { version: string; url: string; bytes: number };
+  };
+  expected: { game: string; objects: number; sprites: number; rooms: number; create: number } | null;
 }
 
 const setupLog: string[] = [];
 
-async function runSetupIfNeeded() {
-  const st: SetupState = await api("/api/setup");
-  if (!st.needed) return;
-  $("load-state").textContent = "等待首次运行设置…";
+// step 3 and 4 share the run panel (log + phase + done/retry), so which job owns it has
+// to survive outside runSetupIfNeeded: the events that finish a job arrive later, on the
+// store channel
+// no "moddir" step any more: choosing a folder is 打开项目, not a step in a linear wizard
+type SetupStep = "win" | "create" | "run";
+type SetupJob = "extract" | "create";
+let setupRunJob: SetupJob = "extract";
+
+// The UTMT CLI panel (step 2): the export cannot run without the CLI and a clone without
+// vendor/utmt/ has none, so the wizard offers to fetch the pinned release. It is not one of
+// the two long jobs above -- no run panel, no setupRunJob -- just a status line and a button.
+let setupUtmt: SetupState["utmt"] | null = null;
+
+// the full state, as the server reports it
+function renderSetupUtmt(st: SetupState["utmt"], status?: string) {
+  setupUtmt = st;
+  paintSetupUtmt(status);
+}
+
+// a live event (the download's own progress): patched onto the state the panel was built from
+function patchSetupUtmt(patch: Partial<SetupState["utmt"]>, status?: string) {
+  if (!setupUtmt) return; // the wizard is not on the step that shows it
+  setupUtmt = { ...setupUtmt, ...patch };
+  paintSetupUtmt(status);
+}
+
+function paintSetupUtmt(status?: string) {
+  const st = setupUtmt;
+  const box = $("setup-utmt");
+  if (!st) return;
+  box.textContent = "";
+  const row = document.createElement("div");
+  row.className = "setup-row";
+  const info = document.createElement("div");
+  // a missing CLI is a real blocker (unlike a version difference), so it reads as one
+  info.className = (!st.cli && !st.running) || status?.startsWith("✗") ? "warn" : "muted";
+  info.textContent =
+    status ??
+    (st.running
+      ? "正在下载…"
+      : st.cli
+        ? `✓ 提取工具：${st.cli}`
+        : "还没找到 UndertaleModCli.exe：提取需要它（下载后会自动装到下面的目录）");
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.id = "setup-utmt-get";
+  btn.disabled = st.running;
+  btn.textContent = st.cli ? "重新下载安装…" : `下载并安装（约 ${Math.round(st.release.bytes / 1048576)} MB）`;
+  btn.onclick = () => void downloadUtmt();
+  row.append(info, btn);
+  box.append(row);
+  // when there is no CLI at all, name the source: it is 60 MB from github.com, and a user
+  // behind a wall needs to know what to fetch by hand (or which mirror to set SVRE_UTMT_URL to)
+  const hint = document.createElement("div");
+  hint.className = "muted";
+  hint.textContent = st.cli
+    ? st.version
+      ? `已安装 v${st.version} · ${st.dir}`
+      : ""
+    : `来源：UTMT v${st.release.version} ${st.release.url}`;
+  if (hint.textContent) box.append(hint);
+}
+
+async function downloadUtmt() {
+  patchSetupUtmt({ running: true }, "正在连接…");
+  try {
+    await api("/api/setup/utmt", "POST", {});
+  } catch (e) {
+    patchSetupUtmt({ running: false }, `✗ 无法开始下载：${(e as ApiError).message}`);
+  }
+}
+
+// the download reports on its own events (job "utmt"); the run panel belongs to the other jobs
+function onUtmtEvent(e: SetupEvent) {
+  if (!setupUtmt) return; // the wizard is not on the step that shows it
+  if (e.phase === "done") {
+    void (api("/api/setup") as Promise<SetupState>)
+      .then((s) => renderSetupUtmt(s.utmt, `✓ UTMT CLI v${s.utmt.version ?? ""} 已就绪`))
+      .catch(() => {});
+    return;
+  }
+  const failed = e.phase === "error";
+  patchSetupUtmt(
+    { running: !failed },
+    failed ? `✗ 下载失败：${e.detail ?? "未知原因"}` : e.phase === "unpack" ? "解压并安装…" : `下载中…${e.status ? ` ${e.status}` : ""}`,
+  );
+}
+
+function showSetupStep(k: SetupStep) {
+  const steps: Record<SetupStep, string> = { win: "setup-step-win", create: "setup-step-create", run: "setup-step-run" };
+  for (const [name, id] of Object.entries(steps)) $(id).hidden = name !== k;
+}
+
+// the run panel is shared by the two long steps; it says which one it is doing
+function startSetupRun(job: SetupJob) {
+  setupRunJob = job;
+  // The extract writes straight into the live cache (no staging dir), so from here on
+  // nothing may touch the editor: the dialog goes modal-blocking and stays that way until
+  // the page reloads into the rebuilt cache. (Another tab of the same server can still
+  // edit its rooms -- harmless -- but it may draw half-written texture pages until it
+  // reloads; the damage is cosmetic and gone after any reload.)
+  setupBlocking = true;
+  $("setup-close").hidden = true;
+  setupLog.length = 0;
+  $("setup-log").textContent = "";
+  $("setup-result").innerHTML = "";
+  $("setup-run-title").textContent = job === "extract" ? "2 · 提取资产缓存" : "3 · 扫描反编译源码";
+  $("setup-phase").textContent = job === "extract" ? "正在启动 UTMT CLI…" : "正在扫描反编译源码…";
+  $("setup-retry").hidden = true;
+  $("setup-done").hidden = true;
+  showSetupStep("run");
+}
+
+// The MACHINE-level wizard: game data file -> extract -> depth facts. There is no workdir
+// step any more -- choosing a folder is what 打开项目 does, and it is not a step in a
+// linear wizard. `blocking` is what the server's `reasons` say: a missing cache blocks
+// everything, so the dialog refuses to close; a healthy machine's by-hand visit does not.
+let setupBlocking = true;
+
+// Esc must not dismiss a blocking wizard: the asset cache is missing or half-written, and
+// there is no editor behind the dialog to fall back to. (`setupBlocking` is decided in
+// showSetupDialog; this listener is unconditional because the flag has to be readable at
+// cancel time, not at attach time.)
+$("setup-dialog").addEventListener("cancel", (e) => { if (setupBlocking) e.preventDefault(); });
+
+async function showSetupDialog(st: SetupState) {
   const dlg = $<HTMLDialogElement>("setup-dialog");
-  dlg.addEventListener("cancel", (e) => e.preventDefault()); // Esc must not dismiss
-  const steps = { moddir: $("setup-step-moddir"), win: $("setup-step-win"), run: $("setup-step-run") };
-  const show = (k: keyof typeof steps) => {
-    for (const [name, el] of Object.entries(steps)) (el as HTMLElement).hidden = name !== k;
-  };
+  setupBlocking = st.reasons.length > 0;
+  if (!st.project) uiMode = "welcome";
+  // only while the dialog really blocks: a dismissible one may have a live editor behind it,
+  // and stomping that editor's status line would be a lie
+  if (setupBlocking) $("load-state").textContent = "等待本机设置…";
+  // The success exit reloads (the backend just became healthy and every cache in this tab
+  // predates it). The by-hand visit on a healthy machine can also simply be dismissed.
+  const done = $<HTMLButtonElement>("setup-done");
+  done.textContent = projectInfo ? "进入编辑器" : "完成";
+  done.onclick = () => hardReset();
+  $<HTMLButtonElement>("setup-close").hidden = setupBlocking;
 
-  // ---- step 1: the workdir (skipped when only the cache is missing) ----
-  const moddirInput = $<HTMLInputElement>("setup-moddir");
-  moddirInput.value = st.current.modDir;
-  const moddirPick = $<HTMLButtonElement>("setup-moddir-pick");
-  moddirPick.hidden = !hostBridge?.pickDir;
-  moddirPick.onclick = async () => {
-    const p = await hostBridge!.pickDir!();
-    if (p) moddirInput.value = p;
-  };
-  $<HTMLButtonElement>("setup-moddir-ok").onclick = async () => {
-    try {
-      const r = await api("/api/setup/moddir", "POST", { path: moddirInput.value.trim() });
-      if ((r.setup as SetupState).needed) show("win");
-      else location.reload(); // only the workdir was missing -- healthy now
-    } catch (e) {
-      await alertDialog((e as ApiError).message);
-    }
-  };
-
-  // ---- step 2: the game data file ----
+  // ---- step 1: the game data file ----
   $("setup-expected").textContent = st.expected
     ? `${st.expected.game}（${st.expected.rooms} 房间 / ${st.expected.objects} 对象 / ${st.expected.sprites} sprite）`
     : "未知（缺 extract/fingerprint.json）";
@@ -2590,36 +3053,98 @@ async function runSetupIfNeeded() {
     const p = await hostBridge!.pickFile!();
     if (p) winInput.value = p;
   };
+  renderSetupUtmt(st.utmt); // step 2 shows which CLI the extract would use, and offers one
   $<HTMLButtonElement>("setup-extract").onclick = async () => {
     const win = winInput.value.trim();
     if (!win) return alertDialog("先选择或填写数据文件路径");
-    show("run");
-    setupLog.length = 0;
-    $("setup-log").textContent = "";
-    $("setup-result").innerHTML = "";
-    $("setup-phase").textContent = "正在启动 UTMT CLI…";
-    $("setup-retry").hidden = true;
-    $("setup-done").hidden = true;
+    startSetupRun("extract");
     try {
       await api("/api/setup/extract", "POST", { vanillaWin: win });
     } catch (e) {
-      onSetupEvent({ phase: "error", detail: (e as ApiError).message });
+      onSetupEvent({ phase: "error", detail: (e as ApiError).message, job: "extract" });
     }
   };
 
-  // ---- step 3: progress (events arrive on the store channel) ----
-  $<HTMLButtonElement>("setup-retry").onclick = () => show("win");
-  $<HTMLButtonElement>("setup-done").onclick = () => location.reload();
+  // ---- step 3: the decompiled source tree (create.json -- the facts data.win lacks) ----
+  const srcInput = $<HTMLInputElement>("setup-source");
+  srcInput.value = st.current.sourceDir;
+  const srcHint = $("setup-source-hint");
+  const srcHintText = (n: number, dir: string) =>
+    n
+      ? `✓ 找到 ${n} 个 gml_Object_*.gml`
+      : dir
+        ? "这个目录里没有 gml_Object_*.gml——UTMT 的「Decompile all code」导出的是整个源码目录"
+        : "还没有配置过源码目录：UTMT「Decompile all code」导出一份，填这里（可先跳过；之后从菜单「帮助 → 本机设置…」重来）";
+  srcHint.textContent = srcHintText(st.sourceGml, st.current.sourceDir);
+  const srcPick = $<HTMLButtonElement>("setup-source-pick");
+  srcPick.hidden = !hostBridge?.pickDir;
+  srcPick.onclick = async () => {
+    const p = await hostBridge!.pickDir!();
+    if (p) {
+      srcInput.value = p;
+      srcHint.textContent = "选择后由后端校验…";
+    }
+  };
+  $<HTMLButtonElement>("setup-create-run").onclick = async () => {
+    const src = srcInput.value.trim();
+    if (!src) return alertDialog("先选择或填写反编译源码目录");
+    startSetupRun("create");
+    try {
+      await api("/api/setup/create", "POST", { sourceDir: src });
+    } catch (e) {
+      onSetupEvent({ phase: "error", detail: (e as ApiError).message, job: "create" });
+    }
+  };
+  // the escape hatch: no source tree on this machine. The editor still works -- the canvas
+  // falls back to layer depth -- so this must not be a dead end for the user
+  $<HTMLButtonElement>("setup-create-skip").onclick = async () => {
+    if (!(await confirmDialog("跳过深度事实扫描？\n\n对象自己写在 Create 里的 depth 代码（如 depth = -y + 18）读不到，画布会按图层深度排，遮挡顺序可能与游戏内不一致（编辑器会持续提示）。\n\n之后随时可以用 UTMT 导出源码重来：菜单「帮助 → 本机设置…」。"))) return;
+    try {
+      await api("/api/setup/create", "POST", { skip: true });
+    } catch (e) {
+      return alertDialog((e as ApiError).message);
+    }
+    hardReset(); // healthy now, with the caveat banner
+  };
 
-  show(st.running ? "run" : st.reasons.includes("moddir") || st.reasons.includes("config") ? "moddir" : "win");
+  // ---- progress panel (shared by the two long steps; events arrive on the store channel) ----
+  $<HTMLButtonElement>("setup-retry").onclick = () => showSetupStep(setupRunJob === "extract" ? "win" : "create");
+  const close = $<HTMLButtonElement>("setup-close");
+  close.textContent = "关闭";
+  close.onclick = () => dlg.close();
+
+  if (st.running) {
+    setupRunJob = st.reasons.includes("create") && !st.reasons.includes("cache") ? "create" : "extract";
+    showSetupStep("run");
+  }
+  // A re-run the user asked for, or a missing cache: the data file is what a game update
+  // changes, so that is where a round starts.
+  else if (st.forced || st.reasons.includes("cache")) showSetupStep("win");
+  else if (st.reasons.includes("create")) showSetupStep("create");
+  // nothing is actually missing: this is a by-hand visit (菜单 帮助 → 本机设置…) on a
+  // healthy machine, and the data file is still the thing that goes stale
+  else showSetupStep("win");
   dlg.showModal();
-  // the only way out is the done button, which reloads the page into a healthy backend
+  if (!setupBlocking) return; // dismissible: the caller keeps going (or is the welcome page)
+  // Blocking: only the done button leaves, and it reloads into a healthy backend
   await new Promise<void>(() => {});
 }
 
-function onSetupEvent(e: { phase?: string; line?: string; detail?: string; mismatches?: string[] }) {
+interface SetupEvent {
+  phase?: string;
+  line?: string;
+  status?: string;
+  detail?: string;
+  mismatches?: string[];
+  count?: number;
+  job?: SetupJob | "utmt";
+}
+
+function onSetupEvent(e: SetupEvent) {
   const dlg = $<HTMLDialogElement>("setup-dialog");
   if (!dlg.open) return;
+  if (e.job === "utmt") return onUtmtEvent(e); // its own panel; the run panel is not involved
+  if (e.job) setupRunJob = e.job; // a run started elsewhere (another tab) owns the panel now
   if (e.line) {
     setupLog.push(e.line);
     if (setupLog.length > 400) setupLog.splice(0, setupLog.length - 400);
@@ -2630,19 +3155,45 @@ function onSetupEvent(e: { phase?: string; line?: string; detail?: string; misma
   const phases: Record<string, string> = {
     assets: "第 1/2 步：导出对象 / sprite / 贴图页…",
     rooms: "第 2/2 步：导出全部房间…",
+    create: "扫描反编译源码，重建深度事实…",
     check: "校验版本指纹…",
   };
   if (e.phase && phases[e.phase]) $("setup-phase").textContent = phases[e.phase];
   if (e.phase === "done") {
     $("setup-phase").textContent = "完成";
+    const scan = setupRunJob === "create";
+    // the pinned fingerprint belongs to whoever builds the editor: a different game version
+    // is expected (Stoneshard gets updated), so the comparison is stated as a fact about the
+    // reference, never as a warning about the user's copy
+    const done = `${scan ? `深度事实扫描完成（${e.count ?? 0} 条）` : "提取完成"}`;
     $("setup-result").innerHTML = e.mismatches?.length
-      ? `<div class="warn">⚠ 提取完成，但与编辑器钉的版本指纹不一致：<br>${e.mismatches.map(esc).join("<br>")}<br>房间基底可能与开发侧不一致——确认你的游戏版本后继续。</div>`
-      : `<div class="ok">✓ 提取完成，版本指纹一致。</div>`;
+      ? `<div class="ok">✓ ${done}。</div><div class="info">与开发侧参考版本的统计不同（仅提示，不影响使用）：<br>${e.mismatches.map(esc).join("<br>")}<br>${
+          scan
+            ? "源码树与参考版本不同时，深度事实按这份源码算——游戏更新后重新导出源码即可。"
+            : "游戏更新后房间基底按这份 data 文件算——下面继续按同一份数据走。"
+        }</div>`
+      : `<div class="ok">✓ ${done}，与开发侧参考版本的统计一致。</div>`;
+    if (!scan) {
+      // the cache is built in two passes: with the export done, the source scan is what is
+      // still owed -- go straight there rather than offering "enter the editor" on a
+      // half-built cache (which would boot into the fallback the user never chose)
+      void (api("/api/setup") as Promise<SetupState>).then((s) => {
+        if (s.reasons.includes("create")) {
+          $<HTMLInputElement>("setup-source").value = s.current.sourceDir;
+          $("setup-source-hint").textContent = s.sourceGml
+            ? `✓ 找到 ${s.sourceGml} 个 gml_Object_*.gml`
+            : "这个目录里没有 gml_Object_*.gml——UTMT「Decompile all code」导出的是整个源码目录";
+          setupRunJob = "create";
+          showSetupStep("create");
+        } else $("setup-done").hidden = false;
+      }).catch(() => { $("setup-done").hidden = false; });
+      return;
+    }
     $("setup-done").hidden = false;
   }
   if (e.phase === "error") {
     $("setup-phase").textContent = "失败";
-    $("setup-result").innerHTML = `<div class="warn">✗ 提取失败：${esc(e.detail ?? "未知错误")}</div>`;
+    $("setup-result").innerHTML = `<div class="warn">✗ ${setupRunJob === "create" ? "扫描失败" : "提取失败"}：${esc(e.detail ?? "未知错误")}</div>`;
     $("setup-retry").hidden = false;
   }
 }
@@ -2664,6 +3215,14 @@ function wireWs() {
 }
 
 async function onStoreEvent(e: any) {
+  // The project axis comes FIRST: every check below assumes the document we hold still
+  // belongs to the project on the server, which is exactly what this event invalidates.
+  if (e?.type === "project") {
+    if (switching) return; // we asked for this switch; our own hardReset is already on its way
+    if (e.mode !== "welcome") toast("项目已在另一处切换，正在重新加载…");
+    hardReset();
+    return;
+  }
   if (e?.type === "setup") { onSetupEvent(e); return; }
   if (e?.type === "created") { await refreshRooms(); return; }
   if (e?.type === "assets") {
@@ -2750,6 +3309,13 @@ const whoText = (by?: string) => (by === BY ? "你" : by ? `${by}` : "有人");
   toolKind() { return tool.kind; },
   menu(id: string) { return menuAction(id); },
   get electron() { return !!hostBridge; },
+  // the project axis, for the e2e that drives welcome/switch/close
+  get mode() { return uiMode; },
+  get project() { return projectInfo ? { ...projectInfo } : null; },
+  get recent() { return recentList.map((r) => ({ ...r })); },
+  openProject(path: string, force = false) { return openProject(path, force); },
+  closeProject() { return closeProject(); },
+  refreshProjects() { return refreshProjects(); },
   get readOnly() { return readOnly(); },
   get theme() { return uiTheme(); },
   get canvasColors() { return { ...THEME_CANVAS[uiTheme()] }; },
