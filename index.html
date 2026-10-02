@@ -135,12 +135,28 @@
         </section>
       </aside>
     </main>
+    <!-- Bottom panel: the whole project's diagnostics in one place (VS Code Problems style).
+         A sibling of <main>, not part of its grid, so opening it shrinks the canvas instead
+         of re-laying it out. body.render / body.no-project hide it with the rest of the chrome. -->
+    <section id="bottom-panel" hidden>
+      <div id="bp-resize" title="拖动调整高度"></div>
+      <nav class="tabs bp-tabs">
+        <button data-bptab="problems" class="on" title="整个项目的检查结果；点一条跳到出问题的实例">问题<span id="problems-badge"></span></button>
+        <button data-bptab="log" title="这个页面收到的服务端事件（不含服务端 console）">日志</button>
+        <span class="spacer"></span>
+        <button id="bp-refresh" class="bp-act" title="重新检查整个项目">重新检查</button>
+        <button id="bp-close" class="bp-act" title="关闭面板 (Ctrl+Shift+M)">×</button>
+      </nav>
+      <section id="bpt-problems"><ul id="problems-list"></ul></section>
+      <section id="bpt-log" hidden><ul id="log-list"></ul></section>
+    </section>
     <footer id="status">
       <span id="s-tool">选择</span>
       <span id="s-pos">—</span>
       <span id="s-cell">—</span>
       <span id="s-zoom">—</span>
       <span id="s-hover" class="grow">—</span>
+      <span id="s-problems" hidden title=""></span>
       <span id="s-hint">V 选择 · H 抓手 · P 放置 · C 碰撞 · B 屏障 · T 区域 · M 标记 · N 便签 · 空格/右键拖动平移 · Shift+H 隐形 · G 网格 · S 吸附 · F 适配</span>
     </footer>
     <div id="toasts"></div>

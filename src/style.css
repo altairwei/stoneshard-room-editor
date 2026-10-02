@@ -482,6 +482,83 @@ main {
 #s-hover.grow, .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 #s-hint { color: var(--faint); flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 
+/* ---------------- bottom panel (problems / log) ----------------
+   A sibling of <main>: it takes its height from the flex column, so opening it makes the
+   canvas shorter rather than re-laying it out. --bp-h is the dragged height (localStorage). */
+#bottom-panel {
+  /* the height is inline (dragged and persisted); this is what it is before anyone drags */
+  flex: none; height: 210px; min-height: 0;
+  display: flex; flex-direction: column;
+  background: var(--panel); border-top: 1px solid var(--line-2);
+}
+#bp-resize { flex: none; height: 5px; cursor: ns-resize; }
+#bp-resize:hover, #bp-resize.dragging { background: var(--accent); opacity: .45; }
+.bp-tabs button { flex: none; padding-left: 14px; padding-right: 14px; }
+.bp-tabs button.bp-act {
+  color: var(--muted); font-weight: 400; font-size: 11px; padding: 7px 10px 8px;
+  border-bottom-color: transparent;
+}
+.bp-tabs button.bp-act:hover { color: var(--text); }
+#bp-close { font-size: 14px; line-height: 1; padding-bottom: 5px !important; }
+#bottom-panel > section { flex: 1; overflow: auto; min-height: 0; }
+#problems-badge:not(:empty) {
+  margin-left: 5px; padding: 0 6px; border-radius: 8px;
+  background: var(--badge-bg); color: var(--badge-text); font-size: 10px;
+}
+#problems-list, #log-list { list-style: none; margin: 0; padding: 4px 0; }
+#problems-list li.grp {
+  display: flex; align-items: center; gap: 7px; padding: 5px 10px 3px; margin-top: 4px;
+  border-top: 1px solid var(--line-2);
+  font-size: 10px; font-weight: 700; letter-spacing: .06em; color: var(--muted);
+  /* the room a row belongs to stays visible while scrolling, so a long list never
+     leaves you guessing which room you are looking at */
+  position: sticky; top: 0; z-index: 1; background: var(--panel);
+}
+#problems-list li.grp:first-child { margin-top: 0; border-top: 0; }
+#problems-list .gname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#problems-list .gmeta, #problems-list .gcount { color: var(--faint); font-weight: 400; font-variant-numeric: tabular-nums; }
+.p-row {
+  display: flex; gap: 8px; align-items: baseline;
+  padding: 4px 10px 4px 22px; font-size: 12px;
+}
+.p-row.jump { cursor: pointer; }
+.p-row.jump:hover { background: var(--hover); }
+.p-row.muted { color: var(--faint); padding-left: 22px; }
+.p-lvl { flex: none; width: 12px; text-align: center; font-weight: 700; }
+.p-row.error .p-lvl { color: var(--bad); }
+.p-row.warn .p-lvl { color: var(--warn); }
+.p-row.info .p-lvl { color: var(--faint); }
+.p-msg { flex: 1; min-width: 0; }
+.p-loc { flex: none; color: var(--faint); font-variant-numeric: tabular-nums; }
+/* the rule name: how you would grep for it or look it up in analysis.ts */
+.p-rule {
+  flex: none; color: var(--faint); font-size: 10px; letter-spacing: .04em;
+  opacity: .7; padding-left: 6px;
+}
+.p-row:hover .p-rule { opacity: 1; }
+/* Codes/ leaf collisions list every path, one per line */
+.p-paths { color: var(--faint); font-size: 11px; padding: 0 10px 3px 32px; }
+#bp-retry { margin-left: 8px; padding: 1px 8px; font-size: 11px; }
+#log-list li { display: flex; gap: 10px; padding: 3px 10px; font-size: 12px; }
+#log-list li:hover { background: var(--hover); }
+#log-list .l-at { flex: none; color: var(--faint); font-variant-numeric: tabular-nums; }
+#log-list .l-kind { flex: none; width: 84px; color: var(--accent); }
+#log-list .l-text { flex: 1; min-width: 0; }
+
+/* the top bar's problem count: a button in the load-state line, styled to read as text
+   until you hover it (it replaces a <span> that only had a native tooltip) */
+#load-state .load-link {
+  background: none; border: 0; padding: 0; font: inherit; color: var(--warn);
+  cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px;
+}
+#load-state .load-link.bad { color: var(--bad); }
+#load-state .load-link:hover { text-decoration: underline solid; }
+
+/* the status bar's copy of the count; the top bar button is the accessible one, this is
+   the glanceable one */
+#s-problems { color: var(--warn); cursor: pointer; font-variant-numeric: tabular-nums; }
+#s-problems.bad { color: var(--bad); }
+
 /* ---------------- toasts & dialog ---------------- */
 #toasts { position: fixed; right: calc(var(--dock-w) + 14px); bottom: 38px; display: flex; flex-direction: column; gap: 6px; z-index: 50; }
 .toast {
@@ -511,7 +588,7 @@ dialog select[size] { height: 170px; }
 /* ---------------- render mode (svre render): the canvas alone ---------------- */
 body.render #appbar, body.render #options, body.render #banner,
 body.render #toolbox, body.render #ruler-corner, body.render #ruler-x, body.render #ruler-y,
-body.render #dock, body.render #status, body.render #toasts { display: none !important; }
+body.render #dock, body.render #status, body.render #bottom-panel, body.render #toasts { display: none !important; }
 body.render #canvas-area { display: block; }
 body.render #stage { position: fixed; inset: 0; background: #0d0e11; }
 
@@ -522,7 +599,7 @@ body.electron .menu-only { display: none !important; }
    The editor chrome has nothing to show without a project, so it is swapped out
    wholesale. #titlebar stays: it is the drag region and the window buttons. */
 body.no-project #appbar, body.no-project #options, body.no-project #banner,
-body.no-project main, body.no-project #status { display: none !important; }
+body.no-project main, body.no-project #status, body.no-project #bottom-panel { display: none !important; }
 /* the menus live in the title bar, and the native menu is the only way to open a
    project in the shell -- but the toasts still belong to nobody, so send them here */
 body.no-project #toasts { right: 14px; }

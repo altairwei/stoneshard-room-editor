@@ -19,6 +19,10 @@ import type { Note, ReplayProblem } from "./core/project.ts";
 import { applyZOrder, buildScene, drawBounds, drawGrid, markerView, spriteView, type InstanceNode, type RoomScene, type ZMode } from "./render";
 import { FAMILIES, searchObjects, thumbHtml, type Family } from "./palette";
 import { ICONS, hydrateIcons } from "./icons.ts";
+// the real Finding, not a narrow copy: the bottom panel needs `rule`/`ids`/`cells` to
+// say where a problem is and to jump to it. analysis.ts only imports core/room.ts, so it
+// is renderer-safe (server/store.ts uses the same types).
+import type { Finding } from "./core/analysis.ts";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const esc = (s: unknown) => String(s).replace(/[&<>"]/g, (c) => `&${{ "&": "amp", "<": "lt", ">": "gt", '"': "quot" }[c]};`);
@@ -29,7 +33,11 @@ const BY = "human"; // this client's author identity in the log
 
 interface RoomEntry { name: string; hasProject: boolean; hasCompiled: boolean; dirty: boolean; drift: boolean; generatedBy: string[] }
 interface LogSummary { rev: number; by: string; at: string; label: string; note?: string; undoOf?: number; ops: number; ids: number[] }
-interface Finding { level: string; message: string }
+// GET /api/diagnostics. Declared here rather than imported from server/store.ts: that
+// module pulls node:fs, which the renderer bundle cannot have.
+interface ProjectDiagnostic { code: string; level: "error" | "warn" | "info"; message: string; subject?: string; paths?: string[] }
+interface RoomDiagnostic { name: string; findings: Finding[]; problems: ReplayProblem[] }
+interface Diagnostics { rooms: RoomDiagnostic[]; project: ProjectDiagnostic[]; totals: { error: number; warn: number; info: number } }
 interface DocSnapshot {
   name: string; rev: number; compiledRev: number | null; dirty: boolean; drift: boolean;
   base: unknown; baseChanged: boolean; problems: ReplayProblem[]; notes: Note[];
@@ -438,6 +446,7 @@ async function init() {
   wireToolbox();
   wireTabs();
   wireDock();
+  wireBottomPanel();
   wirePalette();
   wireSpriteImport();
   wireVanillaDialog();
@@ -800,6 +809,7 @@ async function openRoom(name: string, opts: { silent?: boolean; vanilla?: boolea
   await refreshRooms(name); // sync the dropdown (deep links, the vanilla marker option)
   updateChrome();
   refreshLint();
+  refreshDiagnostics(true); // the panel covers every room, so opening one is a good moment
   history.replaceState(null, "", `?room=${encodeURIComponent(name)}${opts.vanilla ? "&vanilla=1" : ""}`);
 }
 
@@ -810,6 +820,7 @@ async function syncDoc() {
   for (const id of [...selection]) if (!findInstance(room(), id)) selection.delete(id);
   await refreshScene();
   updateChrome();
+  refreshDiagnostics(); // wholesale resync: adopt, undo/redo, 409 recovery, external reload
 }
 
 // the layer new things go to: a well-known one, else the first instance layer
@@ -847,6 +858,7 @@ async function commitNow(label: string, ops: Op[]): Promise<boolean> {
     lintFindings = r.findings ?? lintFindings;
     await refreshScene();
     updateChrome();
+    refreshDiagnostics(); // an edit anywhere moves the project-wide list, not just this room's
     return true;
   } catch (e) {
     if (e instanceof ApiError && e.status === 409) {
@@ -878,6 +890,7 @@ async function compileDoc() {
     lintFindings = r.findings ?? [];
     toast(`已编译 ${r.file}（r${r.rev}），已同步 ${r.roomsCs}${lintFindings.length ? ` · ⚠ ${lintFindings.length} 条检查警告` : ""}`);
     await syncDoc();
+    refreshDiagnostics(true);
   } catch (e) {
     if (e instanceof ApiError && e.status === 409) {
       if (Array.isArray(e.detail)) {
@@ -970,8 +983,10 @@ function updateChrome() {
     setTitle(`${room().name}（原版 · 只读）`);
     $("load-state").innerHTML =
       `${esc(room().name)} · 原版缓存 · 只读 · ${room().width}×${room().height}` +
-      ` · 可见 ${counts.drawn ?? 0} · 隐形 ${counts.hidden ?? 0} · 碰撞 ${counts.collision ?? 0} · 标记 ${counts.marker ?? 0}`;
+      ` · 可见 ${counts.drawn ?? 0} · 隐形 ${counts.hidden ?? 0} · 碰撞 ${counts.collision ?? 0} · 标记 ${counts.marker ?? 0}` +
+      problemsHtml();
     $("history-badge").textContent = "";
+    $("load-state").querySelector<HTMLButtonElement>("#b-problems")?.addEventListener("click", () => bpShow("problems"));
     const banner = $("banner");
     banner.hidden = false;
     banner.innerHTML = "原版缓存房间 · 只读查看，任何编辑都不会落盘。要基于它修改：「新建…」以它为基底派生工程（写入 mod 的 rooms/）。";
@@ -989,7 +1004,11 @@ function updateChrome() {
   $("load-state").innerHTML =
     `${esc(room().name)} · r${doc.rev}${doc.compiledRev !== null ? ` · 编译于 r${doc.compiledRev}` : " · 从未编译"}` +
     ` · ${room().width}×${room().height} · 可见 ${counts.drawn ?? 0} · 隐形 ${counts.hidden ?? 0} · 碰撞 ${counts.collision ?? 0} · 标记 ${counts.marker ?? 0}` +
-    (lintFindings.length ? ` · <span style="color:var(--warn)" title="${esc(lintFindings.map((f) => f.message).join("\n"))}">⚠ ${lintFindings.length} 条检查警告</span>` : "");
+    problemsHtml();
+
+  // The count used to be an inert <span> whose only detail was a native tooltip -- which
+  // is what "app 显示有 6 条警告，我去哪看" was asking about. It is a button now.
+  $("load-state").querySelector<HTMLButtonElement>("#b-problems")?.addEventListener("click", () => bpShow("problems"));
 
   // badge = entries arrived since the history tab was last open
   const unseen = doc.log.filter((e) => e.rev > lastSeenRev).length;
@@ -1010,6 +1029,299 @@ function updateChrome() {
   banner.hidden = !html;
   banner.innerHTML = html;
   banner.querySelector('button[data-act="adopt"]')?.addEventListener("click", adoptDoc);
+}
+
+// ================= bottom panel: 问题 / 日志 =================
+// Where the answer to "app 显示有 6 条警告，我去哪看" lives. 「问题」is the whole project's
+// lint in one list -- every room at once, which is what the top bar's count was silently
+// summarising -- and each row jumps to the instance it is about. 「日志」is what this page
+// received from the server's event stream: the same events the sync logic below already
+// consumes and mostly discards, kept instead of dropped.
+
+interface LogLine { at: string; kind: string; text: string; room?: string; key?: string; n: number }
+
+const BP_OPEN = "svre.panel.open";
+const BP_H = "svre.panel.h";
+const BP_TAB = "svre.panel.tab";
+const BP_MIN_H = 90; // the tab strip plus one line; below this it is not worth opening
+const LOG_MAX = 500; // ring buffer: the panel is a session view, not an audit log
+
+const LVL: Record<string, string> = { error: "✕", warn: "⚠", info: "ℹ" };
+const KIND: Record<string, string> = {
+  project: "项目", setup: "本机设置", assets: "资产", created: "新建房间", change: "改动",
+  undo: "撤销", compiled: "编译", notes: "便签", selection: "选区", reloaded: "重载",
+  local: "本页",
+};
+
+// undefined = never asked, null = the ask failed, an object = the answer. The panel says
+// something different for each, so "还没有结果" never reads as "没有问题".
+let diag: Diagnostics | null | undefined;
+let diagTimer: number | null = null;
+let diagBusy = false; // a second pass arrived while the first was in flight
+let bpTab: "problems" | "log" = "problems";
+let logLines: LogLine[] = [];
+
+// "is the panel actually on screen": `hidden` alone is not enough, because body.no-project
+// hides it with CSS too, and the banner-style rules must not think it is up then.
+const bpUp = () => !$("bottom-panel").hidden && uiMode === "ready" && !renderMode;
+
+function bpShow(tab?: "problems" | "log") {
+  $("bottom-panel").hidden = false;
+  if (tab) setBpTab(tab);
+  else setBpTab(bpTab);
+  try { localStorage.setItem(BP_OPEN, "1"); } catch { /* private mode */ }
+  refreshDiagnostics(true);
+}
+
+function bpHide() {
+  $("bottom-panel").hidden = true;
+  try { localStorage.setItem(BP_OPEN, "0"); } catch { /* private mode */ }
+  syncProblemsChrome();
+}
+
+// the menu item and the shortcut toggle; an explicit tab switches to it instead of closing,
+// so "视图 → 日志" always lands on the log rather than making the user press it twice
+function bpToggle(tab?: "problems" | "log") {
+  if ($("bottom-panel").hidden) bpShow(tab);
+  else if (tab && bpTab !== tab) setBpTab(tab);
+  else bpHide();
+}
+
+function setBpTab(tab: "problems" | "log", remember = true) {
+  bpTab = tab;
+  if (remember) try { localStorage.setItem(BP_TAB, tab); } catch { /* private mode */ }
+  document.querySelectorAll<HTMLButtonElement>(".bp-tabs button[data-bptab]").forEach((b) => b.classList.toggle("on", b.dataset.bptab === tab));
+  $("bpt-problems").hidden = tab !== "problems";
+  $("bpt-log").hidden = tab !== "log";
+  if (tab === "log") renderLog();
+  else renderProblems();
+  syncProblemsChrome();
+}
+
+// The top bar entry point. Prefers the project-wide count once /api/diagnostics has
+// answered, and falls back to the open room's own lint until then (so the number never
+// blinks away while the panel is closed).
+function problemsHtml(): string {
+  const n = diag ? diag.totals.error + diag.totals.warn : lintFindings.length;
+  if (!n) return "";
+  const bad = diag ? diag.totals.error > 0 : lintFindings.some((f) => f.level === "error");
+  const title = diag
+    ? `${diag.totals.error} 个错误 · ${diag.totals.warn} 个警告 · ${diag.totals.info} 条提示（整个项目）\n点击打开问题面板`
+    : lintFindings.map((f) => f.message).join("\n");
+  return ` · <button id="b-problems" class="load-link${bad ? " bad" : ""}" title="${esc(title)}">⚠ ${n} ${diag ? "个项目问题" : "条检查警告"}</button>`;
+}
+
+// the count is "things you would act on": errors and warnings, not the info notes.
+// It shows on the tab while the list is not the thing on screen.
+function syncProblemsChrome() {
+  const n = diag ? diag.totals.error + diag.totals.warn : 0;
+  $("problems-badge").textContent = n && !(bpUp() && bpTab === "problems") ? String(n) : "";
+  const s = $("s-problems");
+  s.hidden = !n;
+  s.textContent = n ? `⚠ ${n}` : "";
+  s.classList.toggle("bad", !!diag && diag.totals.error > 0);
+  s.title = !n ? "" : diag ? `${diag.totals.error} 个错误 · ${diag.totals.warn} 个警告 · 点击查看（Ctrl+Shift+M）` : "点击查看（Ctrl+Shift+M）";
+  updateChrome(); // the top bar carries the same count as a button
+}
+
+// lint is advisory and every edit invalidates it, so a burst of commits coalesces into
+// one pass. `immediate` is for the moments where waiting would be visible: the panel
+// opening, the 重新检查 button, a room load.
+function refreshDiagnostics(immediate = false) {
+  if (diagTimer !== null) { clearTimeout(diagTimer); diagTimer = null; }
+  if (immediate) { void loadDiagnostics(); return; }
+  diagTimer = window.setTimeout(() => { diagTimer = null; void loadDiagnostics(); }, 350);
+}
+
+async function loadDiagnostics() {
+  if (renderMode || uiMode !== "ready") return;
+  if (diagBusy) { refreshDiagnostics(); return; } // one at a time; re-arm for the latest state
+  diagBusy = true;
+  try {
+    diag = (await api("/api/diagnostics")) as Diagnostics;
+  } catch {
+    diag = null; // the panel says so rather than toasting on every retry
+  } finally {
+    diagBusy = false;
+  }
+  if (bpUp() && bpTab === "problems") renderProblems();
+  syncProblemsChrome();
+}
+
+function renderProblems() {
+  const list = $("problems-list");
+  const rows: string[] = [];
+  if (!diag)
+    rows.push(
+      diag === null
+        ? `<li class="p-row muted">检查失败。<button id="bp-retry" class="bp-act">重试</button></li>`
+        : `<li class="p-row muted">正在检查整个项目…</li>`,
+    );
+  else {
+    for (const r of diag.rooms) {
+      if (!r.findings.length && !r.problems.length) continue;
+      const n = r.findings.filter((f) => f.level !== "info").length + r.problems.length;
+      rows.push(`<li class="grp"><span class="gname">${esc(r.name)}</span><span class="gcount">${n || r.findings.length} 条</span></li>`);
+      // a replay problem blocks compilation and has no id list to select -- it is about the
+      // log against the base, not about an instance, so it is the one row that is not a link
+      for (const p of r.problems)
+        rows.push(`<li class="p-row error"><span class="p-lvl">${LVL.error}</span><span class="p-msg">日志无法在基底上重放：${esc(p.message ?? String(p))}</span></li>`);
+      for (const f of r.findings) rows.push(problemRow(r.name, f));
+    }
+    if (diag.project.length) {
+      rows.push(`<li class="grp"><span class="gname">项目</span></li>`);
+      for (const p of diag.project) {
+        rows.push(`<li class="p-row ${p.level}"><span class="p-lvl">${LVL[p.level] ?? "•"}</span><span class="p-msg">${esc(p.message)}</span></li>`);
+        if (p.paths?.length) rows.push(`<li class="p-paths">${p.paths.map(esc).join("<br>")}</li>`);
+      }
+    }
+    if (!rows.length) rows.push(`<li class="p-row muted">没有问题</li>`);
+  }
+  list.innerHTML = rows.join("");
+  list.querySelector<HTMLButtonElement>("#bp-retry")?.addEventListener("click", () => refreshDiagnostics(true));
+  list.querySelectorAll<HTMLElement>("li.p-row.jump").forEach((li) => {
+    li.onclick = () => void gotoProblem(li.dataset.room!, li.dataset.ids ?? "", li.dataset.cells ?? "");
+  });
+}
+
+function problemRow(roomName: string, f: Finding): string {
+  const ids = f.ids ?? [];
+  const cells = f.cells ?? [];
+  const jump = ids.length > 0 || cells.length > 0;
+  const where = cells.length ? `${cells[0][0]},${cells[0][1]}` : ids.length ? `#${ids[0]}${ids.length > 1 ? ` +${ids.length - 1}` : ""}` : "";
+  const title = `点击定位（${esc(roomName)}${doc && doc.name === roomName ? "" : " · 会先打开这个房间"}）`;
+  return `<li class="p-row ${f.level}${jump ? " jump" : ""}"${jump ? ` data-room="${esc(roomName)}" data-ids="${ids.join(",")}" data-cells="${cells.map((c) => c.join(",")).join(";")}" title="${title}"` : ""}>` +
+    `<span class="p-lvl">${LVL[f.level] ?? "•"}</span><span class="p-msg">${esc(f.message)}</span>` +
+    `<span class="p-loc">${esc(where)}</span>` +
+    `<span class="p-rule">${esc(f.rule)}</span></li>`;
+}
+
+// Jump to what a finding is about. A finding on another room has to open that room first
+// (the load is async and re-renders everything, so the locator runs after it settles).
+async function gotoProblem(roomName: string, idsCsv: string, cellsCsv: string) {
+  const ids = idsCsv ? idsCsv.split(",").map(Number).filter((n) => Number.isFinite(n)) : [];
+  const cells = cellsCsv ? (cellsCsv.split(";").map((c) => c.split(",").map(Number)) as [number, number][]) : [];
+  if (!doc || doc.name !== roomName) {
+    await openRoom(roomName);
+    if (!doc || doc.name !== roomName) return; // the open failed; the toast already said why
+  }
+  // a finding that names the instances it is about selects them; one that only knows a
+  // place (a missing starter, a leak) still gets the camera pointed at it
+  const live = ids.filter((id) => nodeById.has(id));
+  if (live.length) {
+    selection.clear();
+    for (const id of live) selection.add(id);
+    syncInstSelection(false);
+    inspect();
+    drawOverlay();
+    postSelection();
+    flashIds(live);
+  }
+  const [cx, cy] = cells[0] ?? [];
+  if (cx !== undefined && cy !== undefined) focusOn(cx * CELL + CELL / 2, cy * CELL + CELL / 2, Math.max(zoom, 1.5));
+  else if (live.length) {
+    const n = nodeById.get(live[0])!;
+    focusOn(n.inst.x, n.inst.y, Math.max(zoom, 1.5));
+  }
+}
+
+function renderLog() {
+  $("log-list").innerHTML = logLines.length
+    ? logLines
+        .slice()
+        .reverse()
+        .map((l) =>
+          `<li><span class="l-at">${esc(l.at.slice(11, 19))}</span><span class="l-kind">${esc(KIND[l.kind] ?? l.kind)}</span>` +
+          `<span class="l-text">${esc(l.text)}${l.n > 1 ? ` <span class="l-at">×${l.n}</span>` : ""}` +
+          `${l.room ? ` <span class="l-at">${esc(l.room)}</span>` : ""}</span></li>`,
+        )
+        .join("")
+    : `<li class="muted" style="padding:10px">还没有收到服务端事件</li>`;
+}
+
+// Called at the very top of onStoreEvent, before its early-returns throw events away.
+// Scope, stated plainly: only what this page received -- the server's own console output
+// is not in the stream, and a second tab's private traffic is not either.
+function recordLog(e: any) {
+  const kind = String(e?.type ?? "?");
+  if (kind === "setup") {
+    // first-run progress reports every file of an extract; collapse a run of the same
+    // job+phase into one line with a counter instead of flooding the buffer
+    const key = `${e.job ?? ""}/${e.phase ?? ""}`;
+    const text = [e.job, e.phase, e.line, e.detail].filter(Boolean).join(" · ") || (e.mismatches ? `${e.mismatches} 处统计差异` : "本机设置");
+    const last = logLines[logLines.length - 1];
+    if (last?.key === key) {
+      last.text = text;
+      last.at = e.at ?? new Date().toISOString();
+      last.n++;
+    } else pushLog({ at: e.at ?? new Date().toISOString(), kind, text, key, n: 1 });
+    return;
+  }
+  // Our own cursor moving is not an event worth recording: postSelection echoes every
+  // click back through the server, and a log where 90% of the lines are "你选中了 N 个实例"
+  // is a log nobody reads. Someone else's cursor moving still is.
+  if (kind === "selection" && e.by === BY) return;
+  let text: string;
+  switch (kind) {
+    case "project": text = e.mode === "welcome" ? "关闭了项目" : `打开项目 ${e.project?.name ?? ""}`; break;
+    case "created": text = `新建房间 ${e.name ?? ""}`; break;
+    case "assets": text = `${whoText(e.by)}导入了 ${e.object ?? "mod sprite"}`; break;
+    case "change": text = `${whoText(e.entry?.by)}：${e.entry?.label ?? "修改了房间"}（r${e.entry?.rev}）`; break;
+    case "undo": text = `${whoText(e.by)}撤销了 r${e.undone}`; break;
+    case "compiled": text = `编译完成（r${e.rev}）`; break;
+    case "notes": text = `${whoText(e.by)}修改了便签`; break;
+    case "selection": text = `${whoText(e.by)}选中了 ${e.ids?.length ?? 0} 个实例`; break;
+    case "reloaded": text = "工程文件在磁盘上变化，已重新加载"; break;
+    default: text = kind;
+  }
+  pushLog({ at: e.at ?? new Date().toISOString(), kind, text, room: e.room, n: 1 });
+}
+
+function pushLog(l: LogLine) {
+  logLines.push(l);
+  if (logLines.length > LOG_MAX) logLines = logLines.slice(-LOG_MAX);
+  if (bpUp() && bpTab === "log") renderLog();
+}
+
+function wireBottomPanel() {
+  document.querySelectorAll<HTMLButtonElement>(".bp-tabs button[data-bptab]").forEach((b) => {
+    b.onclick = () => setBpTab(b.dataset.bptab as "problems" | "log");
+  });
+  $("bp-close").onclick = () => bpHide();
+  $("bp-refresh").onclick = () => refreshDiagnostics(true);
+  $("s-problems").onclick = () => bpShow("problems");
+  // the whole strip is a drag handle: pointer capture means the drag survives the cursor
+  // leaving the 6px band, which it does immediately
+  const grip = $("bp-resize");
+  const panel = $("bottom-panel");
+  grip.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    grip.setPointerCapture(e.pointerId);
+    grip.classList.add("dragging");
+    const startY = e.clientY;
+    const startH = panel.getBoundingClientRect().height;
+    const move = (ev: PointerEvent) => {
+      // keep at least 160px of canvas: a panel that can swallow the editor is a trap
+      panel.style.height = `${Math.max(BP_MIN_H, Math.min(window.innerHeight - 160, startH + (startY - ev.clientY)))}px`;
+    };
+    const up = () => {
+      grip.classList.remove("dragging");
+      grip.removeEventListener("pointermove", move);
+      grip.removeEventListener("pointerup", up);
+      try { localStorage.setItem(BP_H, String(Math.round(panel.getBoundingClientRect().height))); } catch { /* private mode */ }
+    };
+    grip.addEventListener("pointermove", move);
+    grip.addEventListener("pointerup", up);
+  });
+  try {
+    const h = Number(localStorage.getItem(BP_H));
+    if (Number.isFinite(h) && h >= BP_MIN_H) panel.style.height = `${h}px`;
+    if (localStorage.getItem(BP_TAB) === "log") bpTab = "log";
+    // restored open even before a project is loaded: body.no-project hides it until there
+    // is an editor to put it under, which is exactly what the user left behind
+    if (localStorage.getItem(BP_OPEN) === "1") panel.hidden = false;
+  } catch { /* private mode: the defaults are fine */ }
+  setBpTab(bpTab, false);
 }
 
 // ================= layers panel =================
@@ -2397,6 +2709,9 @@ function wireKeys(host: HTMLElement) {
       void openProjectDialog("打开项目");
       return;
     }
+    // the bottom panel toggles from anywhere, like the other chrome-level chords: it is
+    // about the project as a whole, not about the room the focus happens to be in
+    if (ctrl && e.shiftKey && k === "m") { e.preventDefault(); bpToggle(); return; }
     if (inField) return;
     if (!doc) return;
 
@@ -2812,6 +3127,9 @@ function menuAction(id: string): boolean {
     return true;
   }
   switch (id) {
+    case "view.panel.problems": bpShow("problems"); return true;
+    case "view.panel.log": bpShow("log"); return true;
+    case "view.panel.toggle": bpToggle(); return true;
     case "file.new": openNewDialog(); return true;
     case "file.vanilla": openVanillaPicker(); return true;
     case "file.importSprite": openSpriteImport(); return true;
@@ -3204,6 +3522,7 @@ function wireWs() {
   const hot = (import.meta as any).hot;
   if (hot) {
     hot.on("svre:event", (e: any) => void onStoreEvent(e));
+    pushLog({ at: new Date().toISOString(), kind: "local", text: "已连接，开始记录服务端事件", n: 1 });
   } else {
     // no vite channel outside the dev server (electron prod): the standalone
     // backend emits the same events over SSE
@@ -3211,10 +3530,19 @@ function wireWs() {
     es.onmessage = (m) => {
       try { void onStoreEvent(JSON.parse(m.data)); } catch { /* malformed event: ignore */ }
     };
+    // A dropped stream used to be completely silent -- the page just stopped hearing
+    // about other editors. The log is the one place that can say so.
+    es.onopen = () => pushLog({ at: new Date().toISOString(), kind: "local", text: "已连接，开始记录服务端事件", n: 1 });
+    es.onerror = () => pushLog({ at: new Date().toISOString(), kind: "local", text: "与服务端的连接中断，正在重连…", n: 1 });
   }
 }
 
 async function onStoreEvent(e: any) {
+  recordLog(e); // before the early-returns below: most events are dropped, not acted on
+  // Anything that can change the project's shape or a room's contents invalidates the
+  // diagnostics. Not `selection` (a cursor moving is not a problem) and not `setup`
+  // (machine-level, and it is what the setup dialog is watching).
+  if (e?.type !== "selection" && e?.type !== "setup") refreshDiagnostics();
   // The project axis comes FIRST: every check below assumes the document we hold still
   // belongs to the project on the server, which is exactly what this event invalidates.
   if (e?.type === "project") {

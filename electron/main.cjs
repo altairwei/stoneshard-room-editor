@@ -190,6 +190,13 @@ function buildMenu(s) {
           click: () => send(`view.toggle.${key}`),
         })),
         { type: "separator" },
+        // the project's diagnostics; the same two panes the status bar's count opens
+        // the accelerator toggles (matching the renderer's own binding); the two entries
+        // below it land on a specific pane instead
+        { label: "问题与日志", accelerator: "CmdOrCtrl+Shift+M", click: () => send("view.panel.toggle") },
+        { label: "只看问题", click: () => send("view.panel.problems") },
+        { label: "只看日志", click: () => send("view.panel.log") },
+        { type: "separator" },
         { label: "放大", accelerator: "CmdOrCtrl+=", click: () => send("view.zoomIn") },
         { label: "缩小", accelerator: "CmdOrCtrl+-", click: () => send("view.zoomOut") },
         { label: "适配窗口", accelerator: "CmdOrCtrl+0", click: () => send("view.fit") },

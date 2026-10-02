@@ -403,6 +403,41 @@ def main():
             st, doc5 = call("GET", f"/api/doc/{ROOM}")
             check(find_inst(doc5, tid)["x"] == src["x"], "Ctrl+Z undid the drag on the server")
 
+            print("bottom panel: the project's problems, and the events this page received")
+            # the answer to "app 显示有 6 条警告，我去哪看": the top bar count is a button,
+            # and the panel behind it is the whole project, not just the open room
+            check(pg.eval_on_selector("#bottom-panel", "e => e.hidden"), "the panel starts closed")
+            check("问题" in pg.inner_text("#b-problems"), f"the top bar count is a button ({pg.inner_text('#b-problems')!r})")
+            pg.keyboard.press("Control+Shift+KeyM")
+            check(not pg.eval_on_selector("#bottom-panel", "e => e.hidden"), "Ctrl+Shift+M opens it")
+            check(pg.eval_on_selector("#bpt-problems", "e => !e.hidden"), "it opens on 问题")
+
+            # guarantee a row to look at, and prove the list is live rather than a snapshot
+            # taken at load: take one nested creation code away, then ask for a re-check
+            gone = nested / f"{only}.gml"
+            body = gone.read_bytes()
+            gone.unlink()
+            pg.click("#bp-refresh")
+            for _ in range(40):
+                if "missing-code" in " ".join(pg.eval_on_selector_all("#problems-list .p-rule", "els => els.map(e => e.textContent)")):
+                    break
+                pg.wait_for_timeout(250)
+            rows = pg.eval_on_selector_all("#problems-list li.p-row", "els => els.map(e => e.textContent)")
+            check(any("missing-code" in r for r in rows), f"重新检查 picked up a finding that appeared after load ({len(rows)} rows)")
+            check(code_of[only] in pg.eval_on_selector_all("#problems-list li.p-row.jump", "els => els.map(e => +e.dataset.ids.split(',')[0])"),
+                  "the row carries the instance id it is about")
+            gone.write_bytes(body)  # put it back before anything else runs
+
+            # the log holds what this page received: the drag and the undo above are in it,
+            # but our own cursor moving is not (that would be 90% of the lines)
+            pg.click('.bp-tabs button[data-bptab="log"]')
+            log = pg.eval_on_selector("#log-list", "e => e.textContent")
+            check("移动" in log, f"the drag is in the event log ({log[:100]!r})")
+            check("你选中了" not in log, "our own selection chatter is not")
+
+            pg.click("#bp-close")
+            check(pg.eval_on_selector("#bottom-panel", "e => e.hidden"), "the × closes it")
+
             print("drag-resize a coverage rectangle")
             pg.evaluate("svre.set('collision', true)")
             t = pg.evaluate("svre.pickRect()")
