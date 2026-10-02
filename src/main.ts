@@ -981,12 +981,11 @@ function updateChrome() {
     $<HTMLButtonElement>("b-undo").disabled = true;
     $<HTMLButtonElement>("b-redo").disabled = true;
     setTitle(`${room().name}（原版 · 只读）`);
-    $("load-state").innerHTML =
-      `${esc(room().name)} · 原版缓存 · 只读 · ${room().width}×${room().height}` +
-      ` · 可见 ${counts.drawn ?? 0} · 隐形 ${counts.hidden ?? 0} · 碰撞 ${counts.collision ?? 0} · 标记 ${counts.marker ?? 0}` +
-      problemsHtml();
+    // no room name here: the dropdown names it ("xxx · 查看中"), and so does the title bar
+    $("load-state").textContent =
+      `原版缓存 · 只读 · ${room().width}×${room().height}` +
+      ` · 可见 ${counts.drawn ?? 0} · 隐形 ${counts.hidden ?? 0} · 碰撞 ${counts.collision ?? 0} · 标记 ${counts.marker ?? 0}`;
     $("history-badge").textContent = "";
-    $("load-state").querySelector<HTMLButtonElement>("#b-problems")?.addEventListener("click", () => bpShow("problems"));
     const banner = $("banner");
     banner.hidden = false;
     banner.innerHTML = "原版缓存房间 · 只读查看，任何编辑都不会落盘。要基于它修改：「新建…」以它为基底派生工程（写入 mod 的 rooms/）。";
@@ -1001,14 +1000,11 @@ function updateChrome() {
   $<HTMLButtonElement>("b-undo").disabled = !canUndo;
   $<HTMLButtonElement>("b-redo").disabled = !canRedo;
   setTitle(`${dirty ? "● " : ""}${room().name}`);
-  $("load-state").innerHTML =
-    `${esc(room().name)} · r${doc.rev}${doc.compiledRev !== null ? ` · 编译于 r${doc.compiledRev}` : " · 从未编译"}` +
-    ` · ${room().width}×${room().height} · 可见 ${counts.drawn ?? 0} · 隐形 ${counts.hidden ?? 0} · 碰撞 ${counts.collision ?? 0} · 标记 ${counts.marker ?? 0}` +
-    problemsHtml();
-
-  // The count used to be an inert <span> whose only detail was a native tooltip -- which
-  // is what "app 显示有 6 条警告，我去哪看" was asking about. It is a button now.
-  $("load-state").querySelector<HTMLButtonElement>("#b-problems")?.addEventListener("click", () => bpShow("problems"));
+  // the room name is the dropdown's job and the title bar's; the problem count is the
+  // status bar's. What is left: how this room's log and contents stand right now.
+  $("load-state").textContent =
+    `r${doc.rev}${doc.compiledRev !== null ? ` · 编译于 r${doc.compiledRev}` : " · 从未编译"}` +
+    ` · ${room().width}×${room().height} · 可见 ${counts.drawn ?? 0} · 隐形 ${counts.hidden ?? 0} · 碰撞 ${counts.collision ?? 0} · 标记 ${counts.marker ?? 0}`;
 
   // badge = entries arrived since the history tab was last open
   const unseen = doc.log.filter((e) => e.rev > lastSeenRev).length;
@@ -1098,21 +1094,9 @@ function setBpTab(tab: "problems" | "log", remember = true) {
   syncProblemsChrome();
 }
 
-// The top bar entry point. Prefers the project-wide count once /api/diagnostics has
-// answered, and falls back to the open room's own lint until then (so the number never
-// blinks away while the panel is closed).
-function problemsHtml(): string {
-  const n = diag ? diag.totals.error + diag.totals.warn : lintFindings.length;
-  if (!n) return "";
-  const bad = diag ? diag.totals.error > 0 : lintFindings.some((f) => f.level === "error");
-  const title = diag
-    ? `${diag.totals.error} 个错误 · ${diag.totals.warn} 个警告 · ${diag.totals.info} 条提示（整个项目）\n点击打开问题面板`
-    : lintFindings.map((f) => f.message).join("\n");
-  return ` · <button id="b-problems" class="load-link${bad ? " bad" : ""}" title="${esc(title)}">⚠ ${n} ${diag ? "个项目问题" : "条检查警告"}</button>`;
-}
-
 // the count is "things you would act on": errors and warnings, not the info notes.
-// It shows on the tab while the list is not the thing on screen.
+// It lives on the status bar (and on the tab while the list is not the thing on screen);
+// the top bar's own copy was merged away with the appbar -- the status bar is the entry.
 function syncProblemsChrome() {
   const n = diag ? diag.totals.error + diag.totals.warn : 0;
   $("problems-badge").textContent = n && !(bpUp() && bpTab === "problems") ? String(n) : "";
@@ -1121,7 +1105,6 @@ function syncProblemsChrome() {
   s.textContent = n ? `⚠ ${n}` : "";
   s.classList.toggle("bad", !!diag && diag.totals.error > 0);
   s.title = !n ? "" : diag ? `${diag.totals.error} 个错误 · ${diag.totals.warn} 个警告 · 点击查看（Ctrl+Shift+M）` : "点击查看（Ctrl+Shift+M）";
-  updateChrome(); // the top bar carries the same count as a button
 }
 
 // lint is advisory and every edit invalidates it, so a burst of commits coalesces into

@@ -186,14 +186,10 @@ body.electron #titlebar .brand-logo svg { width: 16px; height: 16px; }
 #tb-max.maxed .i-max { display: none; }
 #tb-max.maxed .i-restore { display: block; }
 /* inside the shell the brand lives in the custom title bar -- don't repeat it */
-body.electron #appbar .brand { display: none; }
+body.electron #options .brand { display: none; }
 
-#appbar {
-  display: flex; align-items: center; gap: 8px; height: 44px; padding: 0 10px; flex: none;
-  background: linear-gradient(var(--appbar-from), var(--appbar-to)); border-bottom: 1px solid var(--line-2);
-}
-.brand { display: flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 600; letter-spacing: .03em; color: var(--strong); margin-right: 4px; }
-.brand-logo { width: 20px; height: 20px; display: grid; place-items: center; color: var(--accent); }
+.brand { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; letter-spacing: .03em; color: var(--strong); margin-right: 4px; white-space: nowrap; }
+.brand-logo { width: 20px; height: 20px; display: grid; place-items: center; color: var(--accent); flex: none; }
 .brand-logo svg { width: 18px; height: 18px; display: block; }
 #room-select { min-width: 190px; max-width: 260px; background: var(--input-bg); border-color: var(--line); }
 #load-state {
@@ -204,10 +200,10 @@ body.electron #appbar .brand { display: none; }
 #b-compile svg { width: 13px; height: 13px; display: block; }
 .dirty-dot { color: var(--warn); font-size: 9px; margin-left: 1px; }
 
-/* tool options bar sits flush under the app bar */
+/* the one top bar: document controls, tool context, view toggles, state text, 编译 */
 #options {
-  display: flex; align-items: center; gap: 5px; height: 34px; padding: 0 10px; flex: none;
-  background: var(--bg-2); border-bottom: 1px solid var(--line-2);
+  display: flex; align-items: center; gap: 5px; height: 36px; padding: 0 10px; flex: none;
+  background: linear-gradient(var(--appbar-from), var(--appbar-to)); border-bottom: 1px solid var(--line-2);
 }
 #opt-tool { font-weight: 600; color: var(--strong); min-width: 56px; margin-right: 4px; }
 .itoggle { position: relative; display: grid; place-items: center; width: 28px; height: 26px; border-radius: 6px; color: var(--muted); cursor: pointer; }
@@ -220,12 +216,21 @@ body.electron #appbar .brand { display: none; }
 #b-zmode { font-size: 11px; white-space: nowrap; }
 #b-zmode.static { border-color: var(--warn); color: var(--warn); } /* non-default audit view: mark it */
 #zoom-preset { width: 76px; text-align: right; background: var(--input-bg); border-color: var(--line); padding: 3px 4px; }
-/* 视口够宽时顶栏的图标按钮同时显示文本（窄窗口保持纯图标） */
+/* 视口够宽时顶栏的图标按钮同时显示文本（窄窗口保持纯图标）。壳里缩放组/品牌这些是
+   menu-only，行很空，1360 就够；浏览器里它们都占位置，门槛相应提高，否则 load-state
+   被挤没之后编译按钮会被推出右缘。 */
 .itoggle .txt, .icon-btn .txt { display: none; }
 @media (min-width: 1360px) {
-  #options .itoggle { width: auto; padding: 0 7px; grid-auto-flow: column; gap: 5px; }
-  #options .icon-btn { width: auto; padding: 0 7px; display: inline-flex; align-items: center; gap: 5px; }
-  #options .itoggle .txt, #options .icon-btn .txt {
+  body.electron #options .itoggle { width: auto; padding: 0 7px; grid-auto-flow: column; gap: 5px; }
+  body.electron #options .icon-btn { width: auto; padding: 0 7px; display: inline-flex; align-items: center; gap: 5px; }
+  body.electron #options .itoggle .txt, body.electron #options .icon-btn .txt {
+    display: block; font-size: 11px; white-space: nowrap; color: inherit;
+  }
+}
+@media (min-width: 1640px) {
+  body:not(.electron) #options .itoggle { width: auto; padding: 0 7px; grid-auto-flow: column; gap: 5px; }
+  body:not(.electron) #options .icon-btn { width: auto; padding: 0 7px; display: inline-flex; align-items: center; gap: 5px; }
+  body:not(.electron) #options .itoggle .txt, body:not(.electron) #options .icon-btn .txt {
     display: block; font-size: 11px; white-space: nowrap; color: inherit;
   }
 }
@@ -545,17 +550,8 @@ main {
 #log-list .l-kind { flex: none; width: 84px; color: var(--accent); }
 #log-list .l-text { flex: 1; min-width: 0; }
 
-/* the top bar's problem count: a button in the load-state line, styled to read as text
-   until you hover it (it replaces a <span> that only had a native tooltip) */
-#load-state .load-link {
-  background: none; border: 0; padding: 0; font: inherit; color: var(--warn);
-  cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px;
-}
-#load-state .load-link.bad { color: var(--bad); }
-#load-state .load-link:hover { text-decoration: underline solid; }
-
-/* the status bar's copy of the count; the top bar button is the accessible one, this is
-   the glanceable one */
+/* the status bar's problem count -- the one top-level entry to the panel since the
+   top bar's own copy was merged away (the count is also on the panel's 问题 tab) */
 #s-problems { color: var(--warn); cursor: pointer; font-variant-numeric: tabular-nums; }
 #s-problems.bad { color: var(--bad); }
 
@@ -586,7 +582,7 @@ dialog select[size] { height: 170px; }
 .vanilla-ro #toolbox .tsep { opacity: .35; }
 
 /* ---------------- render mode (svre render): the canvas alone ---------------- */
-body.render #appbar, body.render #options, body.render #banner,
+body.render #options, body.render #banner,
 body.render #toolbox, body.render #ruler-corner, body.render #ruler-x, body.render #ruler-y,
 body.render #dock, body.render #status, body.render #bottom-panel, body.render #toasts { display: none !important; }
 body.render #canvas-area { display: block; }
@@ -598,7 +594,7 @@ body.electron .menu-only { display: none !important; }
 /* ---------------- welcome page (no project open) ----------------
    The editor chrome has nothing to show without a project, so it is swapped out
    wholesale. #titlebar stays: it is the drag region and the window buttons. */
-body.no-project #appbar, body.no-project #options, body.no-project #banner,
+body.no-project #options, body.no-project #banner,
 body.no-project main, body.no-project #status, body.no-project #bottom-panel { display: none !important; }
 /* the menus live in the title bar, and the native menu is the only way to open a
    project in the shell -- but the toasts still belong to nobody, so send them here */

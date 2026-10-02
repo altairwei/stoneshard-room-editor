@@ -404,13 +404,19 @@ def main():
             check(find_inst(doc5, tid)["x"] == src["x"], "Ctrl+Z undid the drag on the server")
 
             print("bottom panel: the project's problems, and the events this page received")
-            # the answer to "app 显示有 6 条警告，我去哪看": the top bar count is a button,
-            # and the panel behind it is the whole project, not just the open room
+            # the answer to "app 显示有 6 条警告，我去哪看": the count lives on the status
+            # bar (the top bar's own copy was merged away with the appbar), and the panel
+            # behind it is the whole project, not just the open room
             check(pg.eval_on_selector("#bottom-panel", "e => e.hidden"), "the panel starts closed")
-            check("问题" in pg.inner_text("#b-problems"), f"the top bar count is a button ({pg.inner_text('#b-problems')!r})")
-            pg.keyboard.press("Control+Shift+KeyM")
-            check(not pg.eval_on_selector("#bottom-panel", "e => e.hidden"), "Ctrl+Shift+M opens it")
+            pg.wait_for_selector("#s-problems:not([hidden])", timeout=15000)
+            check("⚠" in pg.inner_text("#s-problems"), f"the status bar carries the count ({pg.inner_text('#s-problems')!r})")
+            pg.click("#s-problems")
+            check(not pg.eval_on_selector("#bottom-panel", "e => e.hidden"), "clicking the status-bar count opens the panel")
             check(pg.eval_on_selector("#bpt-problems", "e => !e.hidden"), "it opens on 问题")
+            pg.keyboard.press("Control+Shift+KeyM")
+            check(pg.eval_on_selector("#bottom-panel", "e => e.hidden"), "Ctrl+Shift+M toggles it closed")
+            pg.keyboard.press("Control+Shift+KeyM")
+            check(pg.eval_on_selector("#bpt-problems", "e => !e.hidden"), "and back open, still on 问题")
 
             # guarantee a row to look at, and prove the list is live rather than a snapshot
             # taken at load: take one nested creation code away, then ask for a re-check
@@ -1351,7 +1357,7 @@ def main():
                 # no project: the welcome page, NOT the wizard. The editor chrome is gone but
                 # the titlebar (drag region + window buttons) stays.
                 pg2.wait_for_selector("#welcome:not([hidden])", timeout=60000)
-                check(pg2.evaluate("getComputedStyle(document.getElementById('appbar')).display") == "none",
+                check(pg2.evaluate("getComputedStyle(document.getElementById('options')).display") == "none",
                       "with no project the editor chrome is hidden")
                 # #titlebar exists only in the shell, where the page carries body.electron:
                 # what the welcome page must not do is take it away (drag region + window
@@ -1514,7 +1520,7 @@ def main():
                 b5 = p5.chromium.launch()
                 pg5 = b5.new_page(viewport={"width": 1280, "height": 860})
                 pg5.goto(base4)
-                pg5.wait_for_selector("#appbar", timeout=60000)
+                pg5.wait_for_selector("#options", timeout=60000)
                 check(pg5.evaluate("document.getElementById('setup-dialog').open") is False,
                       "the install is healthy: the editor loads with no wizard")
                 check(pg5.evaluate("svre.menu('help.setup')") is True, "the menu id is accepted")
@@ -1526,7 +1532,7 @@ def main():
                 pg5.keyboard.press("Escape")
                 check(pg5.evaluate("document.getElementById('setup-dialog').open") is False,
                       "Esc closes it -- the editor is still there underneath")
-                check(pg5.evaluate("document.getElementById('appbar') !== null") is True, "the editor never went away")
+                check(pg5.evaluate("document.getElementById('options') !== null") is True, "the editor never went away")
                 b5.close()
             check((cache4 / "create.json").read_text(encoding="utf-8") == before,
                   "opening 本机设置 deletes nothing")
@@ -1872,14 +1878,14 @@ def main():
                 pgb.evaluate("window.__tab = 'B'")  # a marker a reload would wipe
                 # A opens a project; the server emits {type:"project"} and BOTH tabs reload
                 pga.evaluate("void svre.openProject('%s')" % str(proj).replace("\\", "\\\\"))
-                pga.wait_for_selector("#appbar", timeout=60000)
-                # the appbar is visible from the first paint (it is plain HTML; only the
+                pga.wait_for_selector("#options", timeout=60000)
+                # the top bar is visible from the first paint (it is plain HTML; only the
                 # welcome page's body class hides it), while the title is seated after
                 # /api/setup answers. Wait for the claim being tested, not for the chrome.
                 pga.wait_for_function("() => document.title.includes('StoneValley')", timeout=60000)
                 check("StoneValley" in pga.title(), f"the title names the project ({pga.title()})")
                 # the editor chrome is up before /api/rooms has answered, so wait for the
-                # room list itself -- #appbar alone would let this race the fetch
+                # room list itself -- the bar alone would let this race the fetch
                 try:
                     pga.wait_for_function(
                         "document.querySelector('#room-select optgroup')?.label === 'StoneValley'", timeout=60000)
@@ -1887,7 +1893,7 @@ def main():
                 except Exception:
                     grouped = False
                 check(grouped, "A's room dropdown is grouped under the project name")
-                pgb.wait_for_selector("#appbar", timeout=60000)
+                pgb.wait_for_selector("#options", timeout=60000)
                 check(pgb.evaluate("window.__tab === undefined") is True, "B reloaded itself: the marker is gone")
                 check(pgb.evaluate("location.search") == "", f"and the reload dropped the old query ({pgb.evaluate('location.search')})")
                 try:

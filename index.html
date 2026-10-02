@@ -28,19 +28,17 @@
       </button>
       <button id="tb-close" class="tb-win" title="关闭"><svg viewBox="0 0 10 10"><path d="M1.5 1.5l7 7M8.5 1.5l-7 7" stroke="currentColor" stroke-width="1"/></svg></button>
     </div>
-    <header id="appbar">
+    <!-- One top bar: document controls (room, undo) -> tool context -> view toggles ->
+         state text -> 编译. It used to be two rows (appbar + options); the appbar's text
+         blob repeated the room dropdown, the title bar and the status bar, and the options
+         row's right half sat empty in the shell, so the two are merged. -->
+    <div id="options">
       <span class="brand"><span class="brand-logo" data-icon="logo"></span>Stoneshard Room Editor</span>
       <select id="room-select" title="房间"></select>
       <button id="b-new" class="menu-only" title="基于一个原版房间新建">新建…</button>
-      <div class="sep"></div>
       <button id="b-undo" class="icon-btn" data-icon="undo" title="撤销 (Ctrl+Z)" disabled></button>
       <button id="b-redo" class="icon-btn" data-icon="redo" title="重做 (Ctrl+Y)" disabled></button>
-      <span class="spacer"></span>
-      <span id="load-state"></span>
-      <button id="b-compile" title="编译工程：重放日志生成编译快照，并同步 Rooms.g.cs（Ctrl+S）" disabled>编译</button>
-      <button id="b-theme" class="icon-btn menu-only" title="界面主题：白天 / 黑夜（点击切换）"></button>
-    </header>
-    <div id="options">
+      <div class="sep"></div>
       <span id="opt-tool">选择</span>
       <span id="opt-extra"></span>
       <div class="sep"></div>
@@ -68,6 +66,10 @@
       <div class="sep menu-only"></div>
       <button id="b-fit" class="menu-only" title="适配窗口 (F / Ctrl+0)">适配</button>
       <button id="b-1x" class="menu-only" title="实际像素 (1 / Ctrl+1)">1:1</button>
+      <div class="sep menu-only"></div>
+      <span id="load-state"></span>
+      <button id="b-compile" title="编译工程：重放日志生成编译快照，并同步 Rooms.g.cs（Ctrl+S）" disabled>编译</button>
+      <button id="b-theme" class="icon-btn menu-only" title="界面主题：白天 / 黑夜（点击切换）"></button>
     </div>
     <div id="banner" hidden></div>
     <!-- No project open. A sibling of <main>, not a <dialog>: showModal() would make the
