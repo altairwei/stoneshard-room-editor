@@ -6,3 +6,4 @@ vendor/
 release/
 svre.config.local.json
 __pycache__/
+test/shots/
