@@ -1192,6 +1192,7 @@ def main():
             bg_dark = pg.evaluate("getComputedStyle(document.documentElement).backgroundColor")
             sheet_dark = pg.evaluate("svre.canvasColors.sheet")
             check(sheet_dark == 0x0d0e11, "night canvas: dark artboard sheet")
+            pg.click("#b-view")  # theme lives in the 视图 dropdown now
             pg.click("#b-theme")
             pg.wait_for_timeout(200)
             check(pg.evaluate("svre.theme") == "light", "the toggle switches to the day theme")
@@ -1206,6 +1207,7 @@ def main():
             pg.reload()
             pg.wait_for_function("document.getElementById('load-state').textContent.includes('只读')", timeout=120000)
             check(pg.evaluate("svre.theme") == "light", "the theme survives a reload")
+            pg.click("#b-view")  # choosing a command closed the dropdown -- reopen it
             pg.click("#b-theme")
             pg.wait_for_timeout(200)
             check(pg.evaluate("svre.theme") == "dark", "and toggles back to night")

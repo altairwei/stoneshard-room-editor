@@ -317,8 +317,8 @@ type UiTheme = "dark" | "light";
 // chrome drawn over the sheet. The room's own background FILL layers (the black void
 // around interiors) are game data -- they are not here and never flip.
 const THEME_CANVAS: Record<UiTheme, { voidBg: number; sheet: number; gridLine: number; gridMajor: number; bounds: number; rulerMinor: string; rulerMajor: string; rulerText: string; rulerCursor: string }> = {
-  dark: { voidBg: 0x2a2a2a, sheet: 0x0d0e11, gridLine: 0xffffff, gridMajor: 0xffe08a, bounds: 0xffd479, rulerMinor: "#48484e", rulerMajor: "#6a6a70", rulerText: "#9a9aa0", rulerCursor: "#6cb6ff" },
-  light: { voidBg: 0xb9b6af, sheet: 0xd3d0c9, gridLine: 0x101014, gridMajor: 0xa67c00, bounds: 0xa67c00, rulerMinor: "#c3c3ca", rulerMajor: "#9a9aa2", rulerText: "#55555e", rulerCursor: "#2272c8" },
+  dark: { voidBg: 0x26282d, sheet: 0x0d0e11, gridLine: 0xffffff, gridMajor: 0xffe08a, bounds: 0xffd479, rulerMinor: "#3a414c", rulerMajor: "#565e6b", rulerText: "#8b93a1", rulerCursor: "#62a8ff" },
+  light: { voidBg: 0xb9b6af, sheet: 0xd3d0c9, gridLine: 0x101014, gridMajor: 0xa67c00, bounds: 0xa67c00, rulerMinor: "#c6cad2", rulerMajor: "#a2a8b2", rulerText: "#5d6470", rulerCursor: "#2568cc" },
 };
 
 function uiTheme(): UiTheme {
@@ -334,7 +334,7 @@ function setUiTheme(t: UiTheme) {
   }
   if (!renderMode) app.renderer.background.color = THEME_CANVAS[t].voidBg;
   // the button shows the current theme, like 顺序 shows the current z mode
-  $("b-theme").innerHTML = ICONS[t === "light" ? "sun" : "moon"];
+  $("b-theme").querySelector("i")!.innerHTML = ICONS[t === "light" ? "sun" : "moon"];
   drawRulers();
   redrawZoomDependent(); // re-paints artboard/grid/bounds with the theme's canvas colours
   pushMenuState();
@@ -443,6 +443,7 @@ async function init() {
   setZMode(zMode); // sync the button label with the persisted preference
   $("b-theme").onclick = () => setUiTheme(uiTheme() === "light" ? "dark" : "light");
   setUiTheme(uiTheme()); // sync the icon with the theme index.html painted at boot
+  wireViewMenu();
   wireToolbox();
   wireTabs();
   wireDock();
@@ -943,7 +944,6 @@ async function refreshScene() {
   applyVisibility();
   renderLayerList();
   renderInstList();
-  renderPaletteRoom();
   renderHistory();
   drawNotes();
   inspect();
@@ -1519,6 +1519,21 @@ function wireInsts() {
 
 // ---------------- toolbox & dock ----------------
 
+// 视图 dropdown: in a plain browser the top bar's view controls (order, zoom, theme)
+// collect into this popover; in the Electron shell the native menu owns them and the
+// button is menu-only, so this never shows there.
+function wireViewMenu() {
+  const btn = $("b-view"), menu = $("view-menu");
+  const close = () => { menu.hidden = true; };
+  btn.onclick = (e) => { e.stopPropagation(); menu.hidden = !menu.hidden; };
+  document.addEventListener("pointerdown", (e) => {
+    if (!menu.hidden && !menu.contains(e.target as Node) && !btn.contains(e.target as Node)) close();
+  });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") close(); });
+  // a command closes the menu; the zoom <select> stays open until the user picks
+  menu.addEventListener("click", (e) => { if ((e.target as HTMLElement).closest("button")) close(); });
+}
+
 function wireToolbox() {
   document.querySelectorAll<HTMLButtonElement>("#toolbox button[data-tool]").forEach((b) => {
     // 放置 opens the library modal; every other button arms its tool directly
@@ -1659,7 +1674,6 @@ async function addNoteAt(wx: number, wy: number) {
 function openPalette() {
   if (readOnly()) { toastReadOnly(); return; } // the library arms the place tool
   const dlg = $<HTMLDialogElement>("palette-dialog");
-  renderPaletteRoom();
   renderPalette();
   if (!dlg.open) dlg.showModal();
   const q = $<HTMLInputElement>("palette-q");
@@ -1716,30 +1730,6 @@ function renderPalette() {
   });
 }
 
-// objects already in the room, as quick chips: most placement is "another one of these".
-// They stay compact chips (row-ish), the library stays a card grid -- same shape
-// language only for things that really are room content.
-function renderPaletteRoom() {
-  if (!doc || !scene) return;
-  const counts = new Map<string, number>();
-  for (const L of room().layers)
-    if (L.layer_type === LayerType.Instances)
-      for (const inst of L.layer_data.instances as RoomInstance[])
-        if (inst.object_definition) counts.set(inst.object_definition, (counts.get(inst.object_definition) ?? 0) + 1);
-  const entries = [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-  $("palette-room-wrap").hidden = entries.length === 0;
-  const box = $("palette-room");
-  box.innerHTML = entries
-    .map(([o, n]) => {
-      const on = tool.kind === "place" && tool.object === o ? "on" : "";
-      return `<button class="chip ${on}" data-o="${esc(o)}" title="${esc(o)} · ${n} 个实例">${thumbHtml(db, o, 0, 22)}<span>${esc(o.replace(/^o_/, ""))}</span><b>×${n}</b></button>`;
-    })
-    .join("");
-  box.querySelectorAll<HTMLButtonElement>("button.chip").forEach((b) => {
-    b.onclick = () => { setTool({ kind: "place", object: b.dataset.o! }); closePalette(); };
-  });
-}
-
 // ---- sprite import (the artist flow: draw PNG -> register into the mod -> place) ----
 // Writes Sprites/*.png + an assets.json entry via the server; the generated C# and every
 // open client then heal/refresh off the same manifest, so what the artist places is what
@@ -1752,7 +1742,7 @@ function openSpriteImport() {
     // a fresh import starts from defaults, never from the previous one's leftovers
     spriteFiles = [];
     $<HTMLInputElement>("sd-files").value = "";
-    $("sd-preview").textContent = "可多选 = 多帧（按文件名 _N 排序）";
+    $("sd-preview").textContent = "可多选：多个文件按文件名 _N 顺序作为多帧";
     for (const id of ["sd-sprite", "sd-object", "sd-note"]) $<HTMLInputElement>(id).value = "";
     $<HTMLInputElement>("sd-ox").value = "0";
     $<HTMLInputElement>("sd-oy").value = "0";
@@ -1779,7 +1769,7 @@ function onSpriteFiles() {
   });
   const prev = $("sd-preview");
   prev.innerHTML = "";
-  if (!spriteFiles.length) { prev.textContent = "可多选 = 多帧（按文件名 _N 排序）"; return; }
+  if (!spriteFiles.length) { prev.textContent = "可多选：多个文件按文件名 _N 顺序作为多帧"; return; }
   const img = document.createElement("img");
   img.src = URL.createObjectURL(spriteFiles[0]);
   img.style.cssText = "image-rendering:pixelated;max-height:64px;max-width:96px;vertical-align:middle;margin-right:8px";
@@ -1856,7 +1846,7 @@ function setTool(t: Tool) {
     b.classList.toggle("on", on);
     b.setAttribute("aria-pressed", String(on));
   });
-  document.querySelectorAll<HTMLElement>("#palette-list li[data-o], #palette-room button[data-o]").forEach((el) => {
+  document.querySelectorAll<HTMLElement>("#palette-list li[data-o]").forEach((el) => {
     el.classList.toggle("on", t.kind === "place" && el.dataset.o === t.object);
   });
   if (t.kind === "place" || t.kind === "marker") buildGhost(t.object);
@@ -2846,7 +2836,7 @@ function inspect() {
   const at = doc ? instsOf(selection) : [];
   syncInstSelection(false);
   if (!doc || at.length === 0) {
-    body.innerHTML = `<span class="muted">单击选择实例；Shift 加选，空白处拖动框选。<br><br>工具：V 选择 · H 抓手 · P 放置 · C 碰撞涂刷 · T 区域 · M 标记 · N 便签。<br>「图层」页签中每个实例一行，拖动调整遮挡顺序。</span>`;
+    body.innerHTML = `<span class="muted">单击画布中的实例，查看并编辑它的属性。<br>拖动空白处可以框选多个；「图层」页签里拖动行可调整遮挡顺序。</span>`;
     return;
   }
   const insts = at.map((a) => a.inst);

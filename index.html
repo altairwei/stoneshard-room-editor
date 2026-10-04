@@ -48,28 +48,36 @@
       <label class="itoggle" title="标记点"><input type="checkbox" id="t-markers" /><i data-icon="markers"></i><span class="txt">标记</span></label>
       <label class="itoggle" title="网格 (G)"><input type="checkbox" id="t-grid" /><i data-icon="grid"></i><span class="txt">网格</span></label>
       <label class="itoggle" title="便签"><input type="checkbox" id="t-notes" checked /><i data-icon="note"></i><span class="txt">便签</span></label>
-      <button id="b-zmode" class="menu-only" title="画布排序方式：&#10;游戏 = 模拟运行时 depth（游戏内真实遮挡；选中实例始终置顶，松开回到真实顺序）&#10;静态 = UTMT 视角（图层 depth + 数组顺序，用于对账）">顺序：游戏</button>
       <span class="spacer"></span>
-      <button id="b-zoom-out" class="icon-btn menu-only" title="缩小 (-)"><i data-icon="zoomOut"></i><span class="txt">缩小</span></button>
-      <select id="zoom-preset" class="menu-only" title="缩放">
-        <option value="" id="zoom-cur" hidden>100%</option>
-        <option value="25">25%</option>
-        <option value="50">50%</option>
-        <option value="100">100%</option>
-        <option value="200">200%</option>
-        <option value="300">300%</option>
-        <option value="400">400%</option>
-        <option value="800">800%</option>
-        <option value="fit">适配窗口</option>
-      </select>
-      <button id="b-zoom-in" class="icon-btn menu-only" title="放大 (+)"><i data-icon="zoomIn"></i><span class="txt">放大</span></button>
-      <div class="sep menu-only"></div>
-      <button id="b-fit" class="menu-only" title="适配窗口 (F / Ctrl+0)">适配</button>
-      <button id="b-1x" class="menu-only" title="实际像素 (1 / Ctrl+1)">1:1</button>
-      <div class="sep menu-only"></div>
       <span id="load-state"></span>
-      <button id="b-compile" title="编译工程：重放日志生成编译快照，并同步 Rooms.g.cs（Ctrl+S）" disabled>编译</button>
-      <button id="b-theme" class="icon-btn menu-only" title="界面主题：白天 / 黑夜（点击切换）"></button>
+      <!-- 低频视图控件在浏览器里收进「视图」下拉；Electron 壳由原生菜单接管（menu-only） -->
+      <button id="b-view" class="menu-only" title="视图选项：排序 / 缩放 / 界面主题"><span>视图</span><i data-icon="chevron"></i></button>
+      <button id="b-compile" class="primary" title="编译工程：重放日志生成编译快照，并同步 Rooms.g.cs（Ctrl+S）" disabled>编译</button>
+      <div id="view-menu" class="menu-only" hidden>
+        <button id="b-zmode" title="画布排序方式：&#10;游戏 = 模拟运行时 depth（游戏内真实遮挡；选中实例始终置顶，松开回到真实顺序）&#10;静态 = UTMT 视角（图层 depth + 数组顺序，用于对账）">顺序：游戏</button>
+        <div class="vm-sep"></div>
+        <div class="vm-row">
+          <button id="b-zoom-out" class="icon-btn" title="缩小 (-)"><i data-icon="zoomOut"></i></button>
+          <select id="zoom-preset" title="缩放">
+            <option value="" id="zoom-cur" hidden>100%</option>
+            <option value="25">25%</option>
+            <option value="50">50%</option>
+            <option value="100">100%</option>
+            <option value="200">200%</option>
+            <option value="300">300%</option>
+            <option value="400">400%</option>
+            <option value="800">800%</option>
+            <option value="fit">适配窗口</option>
+          </select>
+          <button id="b-zoom-in" class="icon-btn" title="放大 (+)"><i data-icon="zoomIn"></i></button>
+        </div>
+        <div class="vm-row">
+          <button id="b-fit" title="适配窗口 (F / Ctrl+0)">适配</button>
+          <button id="b-1x" title="实际像素 (1 / Ctrl+1)">1:1</button>
+        </div>
+        <div class="vm-sep"></div>
+        <button id="b-theme" title="界面主题：白天 / 黑夜（点击切换）"><i></i><span>界面主题</span></button>
+      </div>
     </div>
     <div id="banner" hidden></div>
     <!-- No project open. A sibling of <main>, not a <dialog>: showModal() would make the
@@ -117,7 +125,7 @@
       <aside id="dock">
         <section class="dock-panel" id="p-props">
           <div class="dock-head" data-collapse="props"><span class="chev" data-icon="chevron"></span>属性</div>
-          <div class="dock-body"><div id="inspect-body" class="muted">点选一个实例</div></div>
+          <div class="dock-body"><div id="inspect-body" class="muted">单击画布中的实例，查看并编辑属性。</div></div>
         </section>
         <section class="dock-panel dock-tabs">
           <nav class="tabs">
@@ -159,55 +167,56 @@
       <span id="s-zoom">—</span>
       <span id="s-hover" class="grow">—</span>
       <span id="s-problems" hidden title=""></span>
-      <span id="s-hint">V 选择 · H 抓手 · P 放置 · C 碰撞 · B 屏障 · T 区域 · M 标记 · N 便签 · 空格/右键拖动平移 · Shift+H 隐形 · G 网格 · S 吸附 · F 适配</span>
+      <span id="s-hint">空格 / 右键拖动平移 · 滚轮缩放 · F 适配窗口</span>
     </footer>
     <div id="toasts"></div>
     <dialog id="palette-dialog">
       <div class="pd-head">
-        <input id="palette-q" type="search" placeholder="筛选对象名…  (Enter 放第一个 · Esc 关闭)" autocomplete="off" />
+        <div class="pd-search">
+          <input id="palette-q" type="search" placeholder="筛选对象名…（Enter 放第一个 · Esc 关闭）" autocomplete="off" />
+          <button id="b-import-sprite" title="把新画的 PNG 注册成 mod 对象（写 Sprites/ + assets.json），立即可摆">＋ 导入 sprite…</button>
+        </div>
         <div id="palette-families"></div>
-        <button id="b-import-sprite" title="把新画的 PNG 注册成 mod 对象（写 Sprites/ + assets.json），立即可摆">＋ 导入 sprite…</button>
       </div>
       <div class="pd-body">
-        <div id="palette-room-wrap" hidden>
-          <div class="plib-head">本房间已有 · 点击再放一个</div>
-          <div id="palette-room"></div>
-        </div>
-        <div class="plib-head">对象库 · 不在本房间 · 点击后在画布上单击放入</div>
+        <div class="plib-head">对象库 · 点击后在画布上单击放入</div>
         <ul id="palette-list"></ul>
       </div>
-      <div id="palette-info" class="plib-info">对象库 = 游戏与 mod 的全部对象定义，不是本房间内容</div>
+      <div id="palette-info" class="plib-info">对象库是游戏与 mod 的全部对象定义，不是本房间的内容清单</div>
     </dialog>
     <dialog id="new-dialog">
       <form method="dialog" class="form">
-        <div class="insp-title" style="grid-column: 1 / -1">新建房间</div>
+        <div class="dlg-title">新建房间</div>
+        <div class="dlg-sub">以原版房间为基底复制一份，写进 mod 源码目录。</div>
         <label>房间名</label><input id="nd-name" placeholder="r_sv_something" spellcheck="false" />
         <label>原版基底</label><input id="nd-q" placeholder="搜索原版房间名…" spellcheck="false" />
-        <label></label><select id="nd-base" size="8"></select>
+        <select id="nd-base" size="8" class="span2"></select>
         <label>内容</label>
-        <select id="nd-keep"><option value="all">复制全部实例（在原版基础上修改）</option><option value="controllers">只留控制器（保留原版美术，自行布置）</option></select>
-        <label></label>
-        <div style="display:flex; gap:8px; justify-content:flex-end">
+        <select id="nd-keep">
+          <option value="all">复制全部实例 —— 在原版布局上直接改</option>
+          <option value="controllers">仅保留控制器 —— 沿用原版美术，摆设自己摆</option>
+        </select>
+        <div class="dlg-actions">
           <button value="cancel">取消</button><button id="nd-ok" value="ok" class="primary">创建</button>
         </div>
       </form>
     </dialog>
     <dialog id="vanilla-dialog">
       <form method="dialog" class="form">
-        <div class="insp-title" style="grid-column: 1 / -1">打开原版房间（只读）</div>
-        <label>搜索</label><input id="vd-q" placeholder="搜索原版房间名…  (Enter 打开第一个)" spellcheck="false" autocomplete="off" />
-        <label></label><select id="vd-list" size="10"></select>
-        <label></label>
-        <div style="display:flex; gap:8px; justify-content:flex-end">
+        <div class="dlg-title">打开原版房间</div>
+        <div class="dlg-sub">只读查看原版房间的构造，不能修改；要改请用「新建…」派生。</div>
+        <label>搜索</label><input id="vd-q" placeholder="搜索原版房间名…（Enter 打开第一个）" spellcheck="false" autocomplete="off" />
+        <select id="vd-list" size="10" class="span2"></select>
+        <div class="dlg-actions">
           <button value="cancel">取消</button><button id="vd-ok" value="ok" class="primary">打开（只读）</button>
         </div>
       </form>
     </dialog>
     <dialog id="msg-dialog">
       <form method="dialog" class="form">
-        <div id="md-text" style="grid-column: 1 / -1; white-space: pre-line"></div>
-        <input id="md-input" style="grid-column: 1 / -1" spellcheck="false" autocomplete="off" hidden />
-        <div style="grid-column: 1 / -1; display:flex; gap:8px; justify-content:flex-end">
+        <div id="md-text" class="dlg-text"></div>
+        <input id="md-input" class="span2" spellcheck="false" autocomplete="off" hidden />
+        <div class="dlg-actions">
           <button id="md-ok" value="ok" class="primary">确定</button><button id="md-cancel" value="cancel">取消</button>
         </div>
       </form>
@@ -215,18 +224,18 @@
     <dialog id="sprite-dialog">
       <!-- no method=dialog: submit stays async so a 409 keeps what the artist typed -->
       <form class="form">
-        <div class="insp-title" style="grid-column: 1 / -1">导入 sprite（注册进 mod 资产）</div>
+        <div class="dlg-title">导入 sprite</div>
+        <div class="dlg-sub">把 PNG 注册为 mod 对象：写入 Sprites/ 与注册清单，立即可在房间摆放。</div>
         <label>PNG 文件</label><input id="sd-files" type="file" accept="image/png" multiple />
-        <label></label><div id="sd-preview" class="muted">可多选 = 多帧（按文件名 _N 排序）</div>
+        <div id="sd-preview" class="dlg-note">可多选：多个文件按文件名 _N 顺序作为多帧</div>
         <label>sprite 名</label><input id="sd-sprite" spellcheck="false" placeholder="s_xxx_chair" autocomplete="off" />
         <label>对象名</label><input id="sd-object" spellcheck="false" placeholder="o_xxx_chair" autocomplete="off" />
         <label>parent</label><input id="sd-parent" spellcheck="false" value="o_shelf" autocomplete="off" />
-        <label></label><div class="muted">o_shelf = 家具深度（depth=-y，玩家可走到后面），但它游戏内随机选帧——多帧要固定帧请清空 parent（纯摆设，图层深度）</div>
-        <label>原点</label><span><input id="sd-ox" type="number" value="0" style="width:6em" /> , <input id="sd-oy" type="number" value="0" style="width:6em" /></span>
+        <div class="dlg-note">o_shelf 是家具遮挡（depth=-y，玩家能走到后面），但游戏内会随机选帧——多帧 sprite 想固定帧就清空 parent，成为纯摆设（按图层深度）。</div>
+        <label>原点</label><span class="dlg-inline"><input id="sd-ox" type="number" value="0" /> , <input id="sd-oy" type="number" value="0" /></span>
         <label>可见</label><input id="sd-visible" type="checkbox" checked />
         <label>备注</label><input id="sd-note" autocomplete="off" placeholder="可选" />
-        <label></label>
-        <div style="display:flex; gap:8px; justify-content:flex-end">
+        <div class="dlg-actions">
           <button type="button" id="sd-ok" class="primary">导入</button><button type="button" id="sd-cancel">取消</button>
         </div>
       </form>
@@ -234,14 +243,14 @@
     <dialog id="setup-dialog">
       <!-- first-run only; no cancel affordance at all (Esc is preventDefault'ed in JS) -->
       <div class="form setup-form">
-        <div class="insp-title" style="grid-column: 1 / -1">本机设置</div>
-        <div class="muted" style="grid-column: 1 / -1">
-          这些是<b>这台机器</b>的东西，与项目无关：换项目不会重来一遍。资产缓存不随应用分发
-          （版权）：用你自己正版游戏的 data 文件在本地提取一份。提取只读游戏文件，不会修改它。
+        <div class="dlg-title">本机设置</div>
+        <div class="dlg-sub">
+          这些设置跟随这台电脑，与项目无关，只需配置一次。资产缓存要从你正版游戏的 data 文件在本地提取
+          （版权原因不随应用分发）；提取只读，不会修改游戏文件。
         </div>
-        <section id="setup-step-win" style="grid-column: 1 / -1" hidden>
+        <section id="setup-step-win" class="setup-card" hidden>
           <h3>1 · 游戏数据文件</h3>
-          <p class="muted">开发侧的参考版本：<b id="setup-expected">…</b>。版本不同多半只是游戏更新了——照常提取，统计差异只作提示。</p>
+          <p class="muted">开发侧的参考版本是 <b id="setup-expected">…</b>；版本不同多半只是游戏更新过，照常提取即可，差异只作提示。</p>
           <div id="setup-detected"></div>
           <div id="setup-utmt"></div>
           <div class="setup-row">
@@ -250,12 +259,12 @@
           </div>
           <div class="setup-actions"><button id="setup-extract" type="button" class="primary">开始提取（约几分钟）</button></div>
         </section>
-        <section id="setup-step-create" style="grid-column: 1 / -1" hidden>
-          <h3>3 · 反编译源码（深度事实）</h3>
+        <section id="setup-step-create" class="setup-card" hidden>
+          <h3>3 · 反编译源码（遮挡顺序）</h3>
           <p class="muted">
-            对象在 <code>Create</code> 里写的 <code>depth = -y + 18</code> 这类代码决定游戏内的
-            遮挡顺序，这些事实不在 data 文件里。用 UTMT 的「Decompile all code」把 GML 导出一份，
-            指向那个目录（含 <code>gml_Object_*.gml</code>），一次即可；游戏更新后重来一遍。
+            对象 <code>Create</code> 代码里的 <code>depth = -y + 18</code> 这类写法决定游戏内的遮挡顺序，
+            这些信息不在 data 文件里。用 UTMT 的「Decompile all code」导出 GML，再选择那个目录
+            （里面应有 <code>gml_Object_*.gml</code>）。只需做一次；游戏更新后再扫一遍。
           </p>
           <div class="setup-row">
             <input id="setup-source" spellcheck="false" autocomplete="off" placeholder="反编译源码目录的完整路径" />
@@ -264,10 +273,10 @@
           <div id="setup-source-hint" class="muted"></div>
           <div class="setup-actions">
             <button id="setup-create-run" type="button" class="primary">扫描源码（十几秒～一分钟）</button>
-            <button id="setup-create-skip" type="button">跳过：遮挡顺序回退</button>
+            <button id="setup-create-skip" type="button">跳过（遮挡顺序改用近似规则）</button>
           </div>
         </section>
-        <section id="setup-step-run" style="grid-column: 1 / -1" hidden>
+        <section id="setup-step-run" class="setup-card" hidden>
           <h3 id="setup-run-title">2 · 提取资产缓存</h3>
           <div id="setup-phase" class="muted">正在启动…</div>
           <pre id="setup-log"></pre>
