@@ -1,0 +1,72 @@
+# Tag-triggered packaging: push v* -> download windows-x64 from the run page.
+# Windows only for now -- the app's extractor is the Windows UTMT CLI (see
+# UTMT_RELEASE in server/setup.ts), so a mac/linux bundle would have no asset cache
+# path. Unsigned (no certs in CI): first launch warns via SmartScreen.
+name: release
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch: {} # manual run, for verifying the workflow without burning a tag
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      # no signing identity here; to sign, set CSC_LINK/CSC_KEY_PASSWORD secrets and drop this
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22 # the version dist/ is built and tested with
+          cache: npm
+      - run: npm ci
+
+      # tag v1.2.3 -> package.json 1.2.3, so installer/zip names carry the release version
+      - name: stamp the tag version into package.json
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version --allow-same-version
+
+      - run: npm run build:app # tsc --noEmit + vite build + rolldown server
+
+      # `npm run vendor:utmt` copies from a local MSL install, which CI does not have --
+      # download the official release zip the wizard itself uses (same UTMT_RELEASE),
+      # unpack it, and point the repo's own vendor script at the result via the
+      # gitignored svre.config.local.json overlay. URL/exe/size are read out of
+      # server/setup.ts so the constants stay in one place.
+      - name: vendor the UTMT CLI (the first-run wizard's extractor)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          $src = Get-Content server/setup.ts -Raw
+          $url   = [regex]::Match($src, 'https://[^"]+UTMT_CLI[^"]+\.zip').Value
+          $exe   = [regex]::Match($src, 'exe:\s*"([^"]+)"').Groups[1].Value
+          $bytes = [int][regex]::Match($src, 'bytes:\s*(\d+)').Groups[1].Value
+          if (-not $url -or -not $exe -or -not $bytes) { throw "UTMT_RELEASE not found in server/setup.ts" }
+          $tmp = Join-Path $env:RUNNER_TEMP "utmt"
+          Invoke-WebRequest $url -OutFile "${tmp}.zip"
+          if ((Get-Item "${tmp}.zip").Length -ne $bytes) { throw "UTMT zip is $((Get-Item "${tmp}.zip").Length) bytes, expected $bytes" }
+          New-Item -ItemType Directory -Force $tmp | Out-Null
+          tar -xf "${tmp}.zip" -C $tmp # find the exe wherever the release puts it (today: flat at the root)
+          $found = Get-ChildItem $tmp -Recurse -Filter $exe | Select-Object -First 1
+          if (-not $found) { throw "$exe not found in the unpacked UTMT zip" }
+          @{ utmtCli = (Join-Path $found.Directory.FullName $exe) } | ConvertTo-Json | Set-Content svre.config.local.json
+          npm run vendor:utmt
+
+      - run: npx electron-builder --win --publish never
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows-x64
+          path: |
+            release/*.exe
+            release/*.zip
+            release/*.blockmap
+            release/*.yml
+          if-no-files-found: ignore
