@@ -17,8 +17,9 @@ import { CELL, LayerType, findInstance, type Room, type RoomInstance } from "./c
 import { applyAll, type Op } from "./core/ops.ts";
 import type { Note, ReplayProblem } from "./core/project.ts";
 import { applyZOrder, buildScene, drawBounds, drawGrid, markerView, spriteView, type InstanceNode, type RoomScene, type ZMode } from "./render";
-import { FAMILIES, searchObjects, thumbHtml, type Family } from "./palette";
+import { FAMILIES, familyLabel, searchObjects, thumbHtml, type Family } from "./palette";
 import { ICONS, hydrateIcons } from "./icons.ts";
+import { getLang, hydrate, initLang, objName, setLang, t, type Lang } from "./i18n/index.ts";
 // the real Finding, not a narrow copy: the bottom panel needs `rule`/`ids`/`cells` to
 // say where a problem is and to jump to it. analysis.ts only imports core/room.ts, so it
 // is renderer-safe (server/store.ts uses the same types).
@@ -57,7 +58,9 @@ class ApiError extends Error {
 }
 
 async function api(path: string, method = "GET", body?: unknown): Promise<any> {
-  const res = await fetch(path, {
+  // the server's diagnostics/log labels and error messages are localized per request
+  const sep = path.includes("?") ? "&" : "?";
+  const res = await fetch(`${path}${sep}lang=${getLang()}`, {
     method,
     headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
     body: body !== undefined ? JSON.stringify(body) : undefined,
@@ -114,7 +117,7 @@ const COLLISION_PAINT = "o_hut_wall";
 // keeps them on a "Projectiles" layer, half of them 1×1 cells.
 const BARRIER_PAINT = "o_projectileBarrier";
 // paint tools write one of these two objects; everything user-facing picks the label
-const paintLabel = (object: string) => (object === BARRIER_PAINT ? "屏障" : "碰撞");
+const paintLabel = (object: string) => (object === BARRIER_PAINT ? t("屏障") : t("碰撞"));
 const hiddenInsts = new Set<number>(); // per-instance editor-local hide (the eyes in the 图层 tab)
 let dragRowId: number | null = null; // instance row mid-drag in the 图层 tab
 
@@ -261,7 +264,7 @@ function toastReadOnly() {
   const now = Date.now();
   if (now - roToastAt < 4000) return; // one reminder per editing attempt burst
   roToastAt = now;
-  toast("原版房间只读查看：要改动请「新建…」以它为基底派生工程");
+  toast(t("原版房间只读查看：要改动请「新建…」以它为基底派生工程"));
 }
 
 // ---------------- canvas draw order (游戏 / 静态) ----------------
@@ -298,7 +301,7 @@ function setZMode(m: ZMode) {
     /* best effort */
   }
   const b = $("b-zmode");
-  b.textContent = m === "game" ? "顺序：游戏" : "顺序：静态";
+  b.textContent = m === "game" ? t("顺序：游戏") : t("顺序：静态");
   b.classList.toggle("static", m === "static");
   applyZ();
   pushMenuState();
@@ -346,10 +349,10 @@ function setUiTheme(t: UiTheme) {
 function depthCodedWhy(obj: string): string | null {
   const c = db.createOf(obj);
   if (!c) return null;
-  if (c.draw?.mode === "baked") return "烙进背景 surface";
+  if (c.draw?.mode === "baked") return t("烙进背景 surface");
   const d = c.depth;
-  if (d && !d.conditional && d.mode === "y") return "游戏内按 depth=-y 排序";
-  if (d && !d.conditional && d.mode === "const") return `游戏内 depth 恒为 ${d.value}`;
+  if (d && !d.conditional && d.mode === "y") return t("游戏内按 depth=-y 排序");
+  if (d && !d.conditional && d.mode === "const") return t("游戏内 depth 恒为 {value}", { value: d.value ?? "" });
   return null;
 }
 const depthToastAt = new Map<string, number>();
@@ -359,7 +362,7 @@ function toastDepthCoded(obj: string) {
   const now = Date.now();
   if (now - (depthToastAt.get(obj) ?? -1e9) < 8000) return; // one reminder per object per drag session
   depthToastAt.set(obj, now);
-  toast(`${obj} ${why}：调序不影响游戏内遮挡，只改静态视图与创建顺序`);
+  toast(t("{obj} {why}：调序不影响游戏内遮挡，只改静态视图与创建顺序", { obj, why }));
 }
 
 // ================= boot =================
@@ -369,6 +372,8 @@ async function init() {
   renderMode = params.get("render") === "1";
   if (renderMode) document.body.classList.add("render");
   hydrateIcons();
+  initLang(); // read the persisted language before the static HTML paints its text
+  hydrate(); // swap every data-t leaf to the active lang (zh = the literal already there)
   wireWs(); // connect early: the setup wizard's progress rides this same channel
   // Three states, decided once by the server (see setupState): no project (welcome),
   // project but an incomplete machine (wizard), or both (the editor).
@@ -415,13 +420,13 @@ async function init() {
   // resizeTo only tracks the window; the stage also changes when the banner or dock reflows
   new ResizeObserver(() => { app.resize(); drawOverlay(); }).observe(host);
 
-  $("load-state").textContent = "加载资产…";
+  $("load-state").textContent = t("加载资产…");
   await db.load();
   // the cache can be complete and still carry no depth facts (the wizard's scan step was
   // skipped, or create.json was emptied by hand): the game-order canvas is then really the
   // static one. Say it once, loudly, rather than drawing a wrong occlusion order silently.
   if (!Object.keys(db.create).length)
-    toast("缺深度事实（create.json 为空）：对象写在 Create 里的 depth 代码读不到，「游戏顺序」已回退图层深度，遮挡可能与游戏内不一致", 15000);
+    toast(t("缺深度事实（create.json 为空）：对象写在 Create 里的 depth 代码读不到，「游戏顺序」已回退图层深度，遮挡可能与游戏内不一致"), 15000);
   await refreshRooms();
 
   for (const t of Object.values(toggles)) t.onchange = () => { applyVisibility(); };
@@ -486,7 +491,7 @@ async function refreshRooms(selectAfter?: string) {
   // entry opens a search dialog instead. While one is open it shows up as a marked
   // option so the dropdown keeps naming what the canvas shows.
   const vg = doc?.vanilla
-    ? `<option value="${esc(doc.name)}" data-vanilla="1">${esc(doc.name)} · 查看中</option>`
+    ? `<option value="${esc(doc.name)}" data-vanilla="1">${esc(doc.name)} · ${t("查看中")}</option>`
     : "";
   // Two groups, because the two things in here are not the same kind of thing: rooms of
   // the open project (writable, compiled, drift-checked) and vanilla cache rooms (read
@@ -495,14 +500,14 @@ async function refreshRooms(selectAfter?: string) {
   const own = rooms.length
     ? rooms
         .map((r) => {
-          const marks = `${r.hasProject ? "" : " · 未导入"}${r.dirty ? " ●" : ""}${r.drift ? " ⚠ 漂移" : ""}`;
+          const marks = `${r.hasProject ? "" : " · " + t("未导入")}${r.dirty ? " ●" : ""}${r.drift ? " ⚠ " + t("漂移") : ""}`;
           return `<option value="${esc(r.name)}">${esc(r.name)}${marks}</option>`;
         })
         .join("")
-    : `<option disabled>（工程还没有房间：用「新建…」从原版房间派生一个）</option>`;
+    : `<option disabled>${t("（工程还没有房间：用「新建…」从原版房间派生一个）")}</option>`;
   sel.innerHTML =
-    `<optgroup label="${esc(projectInfo?.name ?? "工程")}">${own}</optgroup>` +
-    `<optgroup label="原版（只读）">${vg}<option value="__vanilla_pick__">打开原版房间…</option></optgroup>`;
+    `<optgroup label="${esc(projectInfo?.name ?? t("工程"))}">${own}</optgroup>` +
+    `<optgroup label="${t("原版（只读）")}">${vg}<option value="__vanilla_pick__">${t("打开原版房间…")}</option></optgroup>`;
   sel.onchange = () => {
     const v = sel.value;
     if (v === "__vanilla_pick__") {
@@ -525,7 +530,7 @@ async function refreshRooms(selectAfter?: string) {
   // A brand-new project (新建项目…) has no rooms yet, so nothing below will open one and the
   // status line would sit on "加载资产…" forever. Say what this state is instead.
   if (!rooms.length && !doc)
-    $("load-state").textContent = `${projectInfo?.name ?? "工程"} · 还没有房间 · 用「新建…」从原版房间派生一个`;
+    $("load-state").textContent = `${projectInfo?.name ?? t("工程")} · ${t("还没有房间 · 用「新建…」从原版房间派生一个")}`;
 }
 
 // ================= welcome page (no project open) =================
@@ -566,7 +571,7 @@ function paintMachineBar(st: SetupState) {
     else {
       const ok = document.createElement("div");
       ok.className = "wc-machine-ok";
-      ok.textContent = `✓ 本机已就绪（资产缓存 · 深度事实）${st.expected ? ` · 参考版本 ${st.expected.game}` : ""}`;
+      ok.textContent = `✓ ${t("本机已就绪（资产缓存 · 深度事实）")}${st.expected ? ` · ${t("参考版本")} ${st.expected.game}` : ""}`;
       box.append(ok);
       return;
     }
@@ -577,10 +582,10 @@ function paintMachineBar(st: SetupState) {
   // a missing cache blocks every project; a missing source tree only costs the
   // game-order canvas, which the editor already warns about on its own
   const soft = missing.length === 1 && missing[0].startsWith("深度事实");
-  txt.textContent = `⚠ 本机还缺：${missing.join(" · ")}${soft ? "（不影响打开项目，遮挡顺序会回退图层深度）" : ""}`;
+  txt.textContent = `⚠ ${t("本机还缺：")}${missing.map((m) => t(m)).join(" · ")}${soft ? t("（不影响打开项目，遮挡顺序会回退图层深度）") : ""}`;
   const btn = document.createElement("button");
   btn.type = "button";
-  btn.textContent = "运行本机设置…";
+  btn.textContent = t("运行本机设置…");
   btn.onclick = () => void openMachineSetup();
   bar.append(txt, btn);
   box.append(bar);
@@ -600,7 +605,7 @@ function renderRecent() {
   if (!recentList.length) {
     const li = document.createElement("li");
     li.className = "wc-recent-empty";
-    li.textContent = "还没有打开过项目。";
+    li.textContent = t("还没有打开过项目。");
     list.append(li);
     return;
   }
@@ -612,7 +617,7 @@ function renderRecent() {
     const open = document.createElement("button");
     open.type = "button";
     open.className = "wc-row-open";
-    open.title = r.exists ? `打开 ${r.path}` : `${r.path} 已经不在了`;
+    open.title = r.exists ? t("打开 {path}", { path: r.path }) : t("{path} 已经不在了", { path: r.path });
     open.innerHTML = `<span class="wc-row-name">${esc(r.name)}</span><span class="wc-row-path">${esc(r.path)}</span>`;
     open.onclick = () => void openProject(r.path);
     li.append(open);
@@ -620,7 +625,7 @@ function renderRecent() {
     if (!r.exists) {
       const gone = document.createElement("span");
       gone.className = "wc-row-missing";
-      gone.textContent = "文件夹不在了";
+      gone.textContent = t("文件夹不在了");
       li.append(gone);
     } else {
       const at = document.createElement("span");
@@ -634,14 +639,14 @@ function renderRecent() {
     if (hostBridge?.revealPath && r.exists) {
       const show = document.createElement("button");
       show.type = "button";
-      show.title = "在文件管理器中显示";
+      show.title = t("在文件管理器中显示");
       show.textContent = "📁";
       show.onclick = () => void hostBridge!.revealPath!(r.path);
       tools.append(show);
     }
     const forget = document.createElement("button");
     forget.type = "button";
-    forget.title = "从列表移除（磁盘上的文件夹不动）";
+    forget.title = t("从列表移除（磁盘上的文件夹不动）");
     forget.textContent = "✕";
     forget.onclick = () => void forgetRecent(r.path);
     tools.append(forget);
@@ -653,14 +658,14 @@ function renderRecent() {
 // "3 天前" reads better than a timestamp in a shortlist, but a time of day never does:
 // anything older than a week gets the date.
 function relTime(iso: string): string {
-  const t = Date.parse(iso);
-  if (!Number.isFinite(t)) return "";
-  const s = Math.max(0, (Date.now() - t) / 1000);
-  if (s < 90) return "刚刚";
-  if (s < 3600) return `${Math.round(s / 60)} 分钟前`;
-  if (s < 86400) return `${Math.round(s / 3600)} 小时前`;
-  if (s < 86400 * 7) return `${Math.round(s / 86400)} 天前`;
-  const d = new Date(t);
+  const ts = Date.parse(iso);
+  if (!Number.isFinite(ts)) return "";
+  const s = Math.max(0, (Date.now() - ts) / 1000);
+  if (s < 90) return t("刚刚");
+  if (s < 3600) return t("{n} 分钟前", { n: Math.round(s / 60) });
+  if (s < 86400) return t("{n} 小时前", { n: Math.round(s / 3600) });
+  if (s < 86400 * 7) return t("{n} 天前", { n: Math.round(s / 86400) });
+  const d = new Date(ts);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
@@ -671,7 +676,7 @@ async function forgetRecent(dir: string) {
     renderRecent();
     pushMenuState();
   } catch (e) {
-    toast(`移除失败：${(e as Error).message}`);
+    toast(t("移除失败：{err}", { err: (e as Error).message }));
   }
 }
 
@@ -680,10 +685,12 @@ async function forgetRecent(dir: string) {
 // no second form to keep in sync -- and one route keeps the force/confirm semantics.
 async function openProjectDialog(_kind: "打开项目" | "新建项目") {
   if (switching) return;
-  const title = _kind === "新建项目" ? "新建项目文件夹" : "打开项目文件夹";
+  const title = t(_kind === "新建项目" ? "新建项目文件夹" : "打开项目文件夹");
   const picked = hostBridge?.pickDir
     ? await hostBridge.pickDir(title)
-    : await promptDialog(`${_kind}：mod 源码目录的完整路径\n\n（目录不存在则新建；文件夹名会成为生成的 C# 命名空间，只能用字母、数字、下划线，且不以数字开头）`);
+    : await promptDialog(t(_kind === "新建项目"
+        ? "新建项目：mod 源码目录的完整路径\n\n（目录不存在则新建；文件夹名会成为生成的 C# 命名空间，只能用字母、数字、下划线，且不以数字开头）"
+        : "打开项目：mod 源码目录的完整路径\n\n（目录不存在则新建；文件夹名会成为生成的 C# 命名空间，只能用字母、数字、下划线，且不以数字开头）"));
   if (picked) await openProject(picked);
 }
 
@@ -701,7 +708,7 @@ async function openProject(dir: string, force = false) {
       if (await confirmDialog(e.message)) return openProject(dir, true);
       return;
     }
-    await alertDialog(`${force ? "打开" : ""}项目失败：${e instanceof Error ? e.message : e}`);
+    await alertDialog(t(force ? "打开项目失败：{err}" : "项目失败：{err}", { err: e instanceof Error ? e.message : String(e) }));
     return;
   }
   hardReset(); // a switch rebuilds every cache in this tab; only a reload is honest
@@ -711,13 +718,13 @@ async function closeProject() {
   if (switching) return;
   // Nothing is lost -- every edit is already in rooms/<name>.room.json; only the compiled
   // snapshot is stale -- but "关闭" is exactly the word a user reads as "save and close".
-  if (doc?.dirty && !(await confirmDialog(`房间 ${doc.name} 有未编译的改动。\n\n关闭项目只是回到欢迎页：工程文件都在磁盘上，改动不会丢，只是还没编译进快照。`))) return;
+  if (doc?.dirty && !(await confirmDialog(t("房间 {name} 有未编译的改动。\n\n关闭项目只是回到欢迎页：工程文件都在磁盘上，改动不会丢，只是还没编译进快照。", { name: doc.name })))) return;
   switching = true;
   try {
     await api("/api/projects/close", "POST", {});
   } catch (e) {
     switching = false;
-    return alertDialog(`关闭项目失败：${e instanceof Error ? e.message : e}`);
+    return alertDialog(t("关闭项目失败：{err}", { err: e instanceof Error ? e.message : String(e) }));
   }
   hardReset();
 }
@@ -751,7 +758,7 @@ function msgDialog(text: string, opts: { input?: string; okText?: string; cancel
   inp.hidden = opts.input === undefined;
   inp.value = opts.input ?? "";
   cancelBtn.hidden = opts.cancel === false;
-  $("md-ok").textContent = opts.okText ?? "确定";
+  $("md-ok").textContent = opts.okText ?? t("确定");
   const done = new Promise<string | boolean | null>((resolve) => {
     dlg.addEventListener("close", () => {
       if (dlg.returnValue === "ok") resolve(opts.input !== undefined ? inp.value : true);
@@ -771,26 +778,26 @@ async function openRoom(name: string, opts: { silent?: boolean; vanilla?: boolea
   const entry = rooms.find((r) => r.name === name);
   if (!opts.vanilla && entry && !entry.hasProject) {
     // a compiled room with no project yet: offer to adopt it into a project
-    if (opts.silent || !(await confirmDialog(`房间 ${name} 尚未导入。是否从 Codes/${name}.gml 创建工程？基底将自动推断。`))) {
+    if (opts.silent || !(await confirmDialog(t("房间 {name} 尚未导入。是否从 Codes/{name}.gml 创建工程？基底将自动推断。", { name })))) {
       $<HTMLSelectElement>("room-select").value = doc?.name ?? "";
       return;
     }
     try {
       const r = await api("/api/import", "POST", { name, by: BY });
-      toast(`已导入 ${name}：基底 ${r.base}，${r.ops} 条操作`);
+      toast(t("已导入 {name}：基底 {base}，{ops} 条操作", { name, base: r.base, ops: r.ops }));
     } catch (e) {
-      await alertDialog(`导入失败：${(e as Error).message}`);
+      await alertDialog(t("导入失败：{err}", { err: (e as Error).message }));
       $<HTMLSelectElement>("room-select").value = doc?.name ?? "";
       return;
     }
     await refreshRooms(name);
   }
-  $("load-state").textContent = `打开 ${name}…`;
+  $("load-state").textContent = t("打开 {name}…", { name });
   let snap: DocSnapshot;
   try {
     snap = await api(opts.vanilla ? `/api/vanilla-doc/${name}` : `/api/doc/${name}`);
   } catch (e) {
-    $("load-state").textContent = `打开失败：${(e as Error).message}`;
+    $("load-state").textContent = t("打开失败：{err}", { err: (e as Error).message });
     $<HTMLSelectElement>("room-select").value = doc?.name ?? "";
     return;
   }
@@ -863,11 +870,11 @@ async function commitNow(label: string, ops: Op[]): Promise<boolean> {
     return true;
   } catch (e) {
     if (e instanceof ApiError && e.status === 409) {
-      toast(`冲突：${e.message}，已刷新到最新状态`);
+      toast(t("冲突：{msg}，已刷新到最新状态", { msg: e.message }));
       await syncDoc();
       return false;
     }
-    toast(`编辑失败：${(e as Error).message}`);
+    toast(t("编辑失败：{err}", { err: (e as Error).message }));
     return false;
   }
 }
@@ -878,7 +885,7 @@ async function undoRedo(which: "undo" | "redo") {
     await api(`/api/doc/${doc.name}/${which}`, "POST", { by: BY });
     await syncDoc();
   } catch (e) {
-    if (e instanceof ApiError && e.status === 409) toast(which === "undo" ? "没有可撤销的修改" : "没有可重做的修改");
+    if (e instanceof ApiError && e.status === 409) toast(t(which === "undo" ? "没有可撤销的修改" : "没有可重做的修改"));
     else toast((e as Error).message);
     updateChrome();
   }
@@ -889,18 +896,18 @@ async function compileDoc() {
   try {
     const r = await api(`/api/doc/${doc.name}/compile`, "POST", {});
     lintFindings = r.findings ?? [];
-    toast(`已编译 ${r.file}（r${r.rev}），已同步 ${r.roomsCs}${lintFindings.length ? ` · ⚠ ${lintFindings.length} 条检查警告` : ""}`);
+    toast(`${t("已编译 {file}（r{rev}），已同步 {rooms}", { file: r.file, rev: r.rev, rooms: r.roomsCs })}${lintFindings.length ? t(" · ⚠ {n} 条检查警告", { n: lintFindings.length }) : ""}`);
     await syncDoc();
     refreshDiagnostics(true);
   } catch (e) {
     if (e instanceof ApiError && e.status === 409) {
       if (Array.isArray(e.detail)) {
-        await alertDialog(`日志无法在基底上完整重放，请先处理以下问题：\n\n${(e.detail as ReplayProblem[]).map((p) => `r${p.rev}：${p.message}`).join("\n")}`);
-      } else if (await confirmDialog(`${e.message}\n\n「确定」采纳磁盘上的外部改动（记入一条 external 日志）；「取消」不做改动。`)) {
+        await alertDialog(`${t("日志无法在基底上完整重放，请先处理以下问题：\n\n")}${(e.detail as ReplayProblem[]).map((p) => t("r{rev}：{msg}", { rev: p.rev, msg: p.message })).join("\n")}`);
+      } else if (await confirmDialog(`${e.message}\n\n${t("「确定」采纳磁盘上的外部改动（记入一条 external 日志）；「取消」不做改动。")}`)) {
         await adoptDoc();
         await compileDoc();
       }
-    } else await alertDialog(`编译失败：${(e as Error).message}`);
+    } else await alertDialog(t("编译失败：{err}", { err: (e as Error).message }));
   }
 }
 
@@ -908,11 +915,11 @@ async function adoptDoc() {
   if (!doc) return;
   try {
     const r = await api(`/api/doc/${doc.name}/adopt`, "POST", { by: "external" });
-    toast(r.ops ? `已采纳外部改动：${r.ops} 条操作已记入日志` : "磁盘文件与当前状态一致");
+    toast(r.ops ? t("已采纳外部改动：{n} 条操作已记入日志", { n: r.ops }) : t("磁盘文件与当前状态一致"));
     await syncDoc();
     await refreshRooms(doc.name);
   } catch (e) {
-    await alertDialog(`采纳失败：${(e as Error).message}`);
+    await alertDialog(t("采纳失败：{err}", { err: (e as Error).message }));
   }
 }
 
@@ -977,24 +984,24 @@ function updateChrome() {
     // stay inert, and the banner carries the one decision available (derive a project).
     bc.disabled = true;
     bc.classList.remove("primary");
-    bc.innerHTML = `${ICONS.compile}<span>编译</span>`;
+    bc.innerHTML = `${ICONS.compile}<span>${t("编译")}</span>`;
     $<HTMLButtonElement>("b-undo").disabled = true;
     $<HTMLButtonElement>("b-redo").disabled = true;
-    setTitle(`${room().name}（原版 · 只读）`);
+    setTitle(t("{name}（原版 · 只读）", { name: room().name }));
     // no room name here: the dropdown names it ("xxx · 查看中"), and so does the title bar
     $("load-state").textContent =
-      `原版缓存 · 只读 · ${room().width}×${room().height}` +
-      ` · 可见 ${counts.drawn ?? 0} · 隐形 ${counts.hidden ?? 0} · 碰撞 ${counts.collision ?? 0} · 标记 ${counts.marker ?? 0}`;
+      t("原版缓存 · 只读 · {w}×{h}", { w: room().width, h: room().height }) +
+      t(" · 可见 {drawn} · 隐形 {hidden} · 碰撞 {collision} · 标记 {marker}", { drawn: counts.drawn ?? 0, hidden: counts.hidden ?? 0, collision: counts.collision ?? 0, marker: counts.marker ?? 0 });
     $("history-badge").textContent = "";
     const banner = $("banner");
     banner.hidden = false;
-    banner.innerHTML = "原版缓存房间 · 只读查看，任何编辑都不会落盘。要基于它修改：「新建…」以它为基底派生工程（写入 mod 的 rooms/）。";
+    banner.innerHTML = t("原版缓存房间 · 只读查看，任何编辑都不会落盘。要基于它修改：「新建…」以它为基底派生工程（写入 mod 的 rooms/）。");
     return;
   }
   bc.disabled = false;
   const dirty = doc.dirty;
   bc.classList.toggle("primary", dirty);
-  bc.innerHTML = `${ICONS.compile}<span>编译</span>${dirty ? '<span class="dirty-dot" title="有未编译的改动">●</span>' : ""}`;
+  bc.innerHTML = `${ICONS.compile}<span>${t("编译")}</span>${dirty ? `<span class="dirty-dot" title="${t("有未编译的改动")}">●</span>` : ""}`;
   const canUndo = doc.undoable.includes(BY);
   const canRedo = doc.redoable.includes(BY);
   $<HTMLButtonElement>("b-undo").disabled = !canUndo;
@@ -1003,8 +1010,8 @@ function updateChrome() {
   // the room name is the dropdown's job and the title bar's; the problem count is the
   // status bar's. What is left: how this room's log and contents stand right now.
   $("load-state").textContent =
-    `r${doc.rev}${doc.compiledRev !== null ? ` · 编译于 r${doc.compiledRev}` : " · 从未编译"}` +
-    ` · ${room().width}×${room().height} · 可见 ${counts.drawn ?? 0} · 隐形 ${counts.hidden ?? 0} · 碰撞 ${counts.collision ?? 0} · 标记 ${counts.marker ?? 0}`;
+    `r${doc.rev}` + (doc.compiledRev !== null ? t(" · 编译于 r{rev}", { rev: doc.compiledRev }) : t(" · 从未编译")) +
+    t(" · {w}×{h} · 可见 {drawn} · 隐形 {hidden} · 碰撞 {collision} · 标记 {marker}", { w: room().width, h: room().height, drawn: counts.drawn ?? 0, hidden: counts.hidden ?? 0, collision: counts.collision ?? 0, marker: counts.marker ?? 0 });
 
   // badge = entries arrived since the history tab was last open
   const unseen = doc.log.filter((e) => e.rev > lastSeenRev).length;
@@ -1015,13 +1022,13 @@ function updateChrome() {
   const banner = $("banner");
   let html = "";
   if (doc.drift)
-    html = `⚠ 磁盘上的 rooms/${esc(doc.name)}.compiled.json 在上次编译后被外部修改（生成器或手工编辑）。编译前请先采纳，或强制覆盖。<button data-act="adopt">采纳外部改动</button>`;
+    html = `⚠ ${t("磁盘上的 rooms/{name}.compiled.json 在上次编译后被外部修改（生成器或手工编辑）。编译前请先采纳，或强制覆盖。", { name: esc(doc.name) })}<button data-act="adopt">${t("采纳外部改动")}</button>`;
   else if (doc.baseChanged)
-    html = `⚠ 基底房间已变更（可能是游戏更新）。日志仍会照常重放${doc.problems.length ? `，但有 ${doc.problems.length} 条操作无法对应` : ""}。`;
+    html = `⚠ ${t("基底房间已变更（可能是游戏更新）。日志仍会照常重放{again}。", { again: doc.problems.length ? t("，但有 {n} 条操作无法对应", { n: doc.problems.length }) : "" })}`;
   else if (doc.problems.length)
-    html = `⚠ ${doc.problems.length} 条日志无法在基底上重放，编译将被拒绝。`;
+    html = `⚠ ${t("{n} 条日志无法在基底上重放，编译将被拒绝。", { n: doc.problems.length })}`;
   else if (entry?.generatedBy.length)
-    html = `此房间曾由 ${esc(entry.generatedBy.join("、"))} 生成。工程已接管其内容，请勿再运行生成器，否则会覆盖编译产物。`;
+    html = t("此房间曾由 {who} 生成。工程已接管其内容，请勿再运行生成器，否则会覆盖编译产物。", { who: esc(entry.generatedBy.join("、")) });
   banner.hidden = !html;
   banner.innerHTML = html;
   banner.querySelector('button[data-act="adopt"]')?.addEventListener("click", adoptDoc);
@@ -1104,7 +1111,7 @@ function syncProblemsChrome() {
   s.hidden = !n;
   s.textContent = n ? `⚠ ${n}` : "";
   s.classList.toggle("bad", !!diag && diag.totals.error > 0);
-  s.title = !n ? "" : diag ? `${diag.totals.error} 个错误 · ${diag.totals.warn} 个警告 · 点击查看（Ctrl+Shift+M）` : "点击查看（Ctrl+Shift+M）";
+  s.title = !n ? "" : diag ? t("{err} 个错误 · {warn} 个警告 · 点击查看（Ctrl+Shift+M）", { err: diag.totals.error, warn: diag.totals.warn }) : t("点击查看（Ctrl+Shift+M）");
 }
 
 // lint is advisory and every edit invalidates it, so a burst of commits coalesces into
@@ -1137,28 +1144,28 @@ function renderProblems() {
   if (!diag)
     rows.push(
       diag === null
-        ? `<li class="p-row muted">检查失败。<button id="bp-retry" class="bp-act">重试</button></li>`
-        : `<li class="p-row muted">正在检查整个项目…</li>`,
+        ? `<li class="p-row muted">${t("检查失败。")}<button id="bp-retry" class="bp-act">${t("重试")}</button></li>`
+        : `<li class="p-row muted">${t("正在检查整个项目…")}</li>`,
     );
   else {
     for (const r of diag.rooms) {
       if (!r.findings.length && !r.problems.length) continue;
       const n = r.findings.filter((f) => f.level !== "info").length + r.problems.length;
-      rows.push(`<li class="grp"><span class="gname">${esc(r.name)}</span><span class="gcount">${n || r.findings.length} 条</span></li>`);
+      rows.push(`<li class="grp"><span class="gname">${esc(r.name)}</span><span class="gcount">${t("{n} 条", { n: n || r.findings.length })}</span></li>`);
       // a replay problem blocks compilation and has no id list to select -- it is about the
       // log against the base, not about an instance, so it is the one row that is not a link
       for (const p of r.problems)
-        rows.push(`<li class="p-row error"><span class="p-lvl">${LVL.error}</span><span class="p-msg">日志无法在基底上重放：${esc(p.message ?? String(p))}</span></li>`);
+        rows.push(`<li class="p-row error"><span class="p-lvl">${LVL.error}</span><span class="p-msg">${t("日志无法在基底上重放：{msg}", { msg: esc(p.message ?? String(p)) })}</span></li>`);
       for (const f of r.findings) rows.push(problemRow(r.name, f));
     }
     if (diag.project.length) {
-      rows.push(`<li class="grp"><span class="gname">项目</span></li>`);
+      rows.push(`<li class="grp"><span class="gname">${t("项目")}</span></li>`);
       for (const p of diag.project) {
         rows.push(`<li class="p-row ${p.level}"><span class="p-lvl">${LVL[p.level] ?? "•"}</span><span class="p-msg">${esc(p.message)}</span></li>`);
         if (p.paths?.length) rows.push(`<li class="p-paths">${p.paths.map(esc).join("<br>")}</li>`);
       }
     }
-    if (!rows.length) rows.push(`<li class="p-row muted">没有问题</li>`);
+    if (!rows.length) rows.push(`<li class="p-row muted">${t("没有问题")}</li>`);
   }
   list.innerHTML = rows.join("");
   list.querySelector<HTMLButtonElement>("#bp-retry")?.addEventListener("click", () => refreshDiagnostics(true));
@@ -1172,7 +1179,7 @@ function problemRow(roomName: string, f: Finding): string {
   const cells = f.cells ?? [];
   const jump = ids.length > 0 || cells.length > 0;
   const where = cells.length ? `${cells[0][0]},${cells[0][1]}` : ids.length ? `#${ids[0]}${ids.length > 1 ? ` +${ids.length - 1}` : ""}` : "";
-  const title = `点击定位（${esc(roomName)}${doc && doc.name === roomName ? "" : " · 会先打开这个房间"}）`;
+  const title = t("点击定位（{room}{extra}）", { room: esc(roomName), extra: doc && doc.name === roomName ? "" : t(" · 会先打开这个房间") });
   return `<li class="p-row ${f.level}${jump ? " jump" : ""}"${jump ? ` data-room="${esc(roomName)}" data-ids="${ids.join(",")}" data-cells="${cells.map((c) => c.join(",")).join(";")}" title="${title}"` : ""}>` +
     `<span class="p-lvl">${LVL[f.level] ?? "•"}</span><span class="p-msg">${esc(f.message)}</span>` +
     `<span class="p-loc">${esc(where)}</span>` +
@@ -1214,12 +1221,12 @@ function renderLog() {
         .slice()
         .reverse()
         .map((l) =>
-          `<li><span class="l-at">${esc(l.at.slice(11, 19))}</span><span class="l-kind">${esc(KIND[l.kind] ?? l.kind)}</span>` +
+          `<li><span class="l-at">${esc(l.at.slice(11, 19))}</span><span class="l-kind">${esc(t(KIND[l.kind] ?? l.kind))}</span>` +
           `<span class="l-text">${esc(l.text)}${l.n > 1 ? ` <span class="l-at">×${l.n}</span>` : ""}` +
           `${l.room ? ` <span class="l-at">${esc(l.room)}</span>` : ""}</span></li>`,
         )
         .join("")
-    : `<li class="muted" style="padding:10px">还没有收到服务端事件</li>`;
+    : `<li class="muted" style="padding:10px">${t("还没有收到服务端事件")}</li>`;
 }
 
 // Called at the very top of onStoreEvent, before its early-returns throw events away.
@@ -1231,7 +1238,7 @@ function recordLog(e: any) {
     // first-run progress reports every file of an extract; collapse a run of the same
     // job+phase into one line with a counter instead of flooding the buffer
     const key = `${e.job ?? ""}/${e.phase ?? ""}`;
-    const text = [e.job, e.phase, e.line, e.detail].filter(Boolean).join(" · ") || (e.mismatches ? `${e.mismatches} 处统计差异` : "本机设置");
+    const text = [e.job, e.phase, e.line, e.detail].filter(Boolean).join(" · ") || (e.mismatches ? t("{n} 处统计差异", { n: e.mismatches }) : t("本机设置"));
     const last = logLines[logLines.length - 1];
     if (last?.key === key) {
       last.text = text;
@@ -1246,15 +1253,15 @@ function recordLog(e: any) {
   if (kind === "selection" && e.by === BY) return;
   let text: string;
   switch (kind) {
-    case "project": text = e.mode === "welcome" ? "关闭了项目" : `打开项目 ${e.project?.name ?? ""}`; break;
-    case "created": text = `新建房间 ${e.name ?? ""}`; break;
-    case "assets": text = `${whoText(e.by)}导入了 ${e.object ?? "mod sprite"}`; break;
-    case "change": text = `${whoText(e.entry?.by)}：${e.entry?.label ?? "修改了房间"}（r${e.entry?.rev}）`; break;
-    case "undo": text = `${whoText(e.by)}撤销了 r${e.undone}`; break;
-    case "compiled": text = `编译完成（r${e.rev}）`; break;
-    case "notes": text = `${whoText(e.by)}修改了便签`; break;
-    case "selection": text = `${whoText(e.by)}选中了 ${e.ids?.length ?? 0} 个实例`; break;
-    case "reloaded": text = "工程文件在磁盘上变化，已重新加载"; break;
+    case "project": text = e.mode === "welcome" ? t("关闭了项目") : t("打开项目 {name}", { name: e.project?.name ?? "" }); break;
+    case "created": text = t("新建房间 {name}", { name: e.name ?? "" }); break;
+    case "assets": text = `${whoText(e.by)}${t("导入了 {obj}", { obj: e.object ?? "mod sprite" })}`; break;
+    case "change": text = t("{who}：{label}（r{rev}）", { who: whoText(e.entry?.by), label: e.entry?.label ?? t("修改了房间"), rev: e.entry?.rev }); break;
+    case "undo": text = `${whoText(e.by)}${t("撤销了 r{rev}", { rev: e.undone })}`; break;
+    case "compiled": text = t("编译完成（r{rev}）", { rev: e.rev }); break;
+    case "notes": text = `${whoText(e.by)}${t("修改了便签")}`; break;
+    case "selection": text = `${whoText(e.by)}${t("选中了 {n} 个实例", { n: e.ids?.length ?? 0 })}`; break;
+    case "reloaded": text = t("工程文件在磁盘上变化，已重新加载"); break;
     default: text = kind;
   }
   pushLog({ at: e.at ?? new Date().toISOString(), kind, text, room: e.room, n: 1 });
@@ -1318,10 +1325,10 @@ function renderLayerList() {
       const inst = L.layer_type === LayerType.Instances;
       const n = inst ? L.layer_data.instances.length : "";
       const cls = [layerOff.has(i) ? "off" : "", i === activeLayer ? "active" : "", inst ? "" : "nonedit"].join(" ");
-      return `<li data-i="${i}" class="${cls}" title="${inst ? "单击设为当前图层（新对象将放入此层）" : "非实例图层，只读"}">
-        <span class="eye" data-eye="${i}" title="显示/隐藏">${layerOff.has(i) ? ICONS.eyeOff : ICONS.eye}</span>
-        <span class="name">${esc(L.layer_name)}${L.is_visible ? "" : ' <span class="tag">游戏内隐藏</span>'}</span>
-        <span class="meta">${typeName[L.layer_type] ?? L.layer_type} ${n} · d${L.layer_depth}</span></li>`;
+      return `<li data-i="${i}" class="${cls}" title="${inst ? t("单击设为当前图层（新对象将放入此层）") : t("非实例图层，只读")}">
+        <span class="eye" data-eye="${i}" title="${t("显示/隐藏")}">${layerOff.has(i) ? ICONS.eyeOff : ICONS.eye}</span>
+        <span class="name">${esc(L.layer_name)}${L.is_visible ? "" : ' <span class="tag">' + t("游戏内隐藏") + '</span>'}</span>
+        <span class="meta">${t(typeName[L.layer_type] ?? L.layer_type)} ${n} · d${L.layer_depth}</span></li>`;
     })
     .join("");
   list.querySelectorAll("li").forEach((li) => {
@@ -1363,22 +1370,22 @@ function renderInstList() {
     const insts = (L.layer_data.instances as RoomInstance[]).slice().reverse(); // front-most first
     const shown = insts.filter((inst) => !q || (inst.object_definition ?? "").toLowerCase().includes(q) || String(inst.instance_id).includes(q));
     if (q && !shown.length) continue;
-    rows.push(`<li class="grp${i === activeLayer ? " active" : ""}" data-gi="${i}" title="单击设为放置目标层；将实例拖到此行即移至该层最前">
+    rows.push(`<li class="grp${i === activeLayer ? " active" : ""}" data-gi="${i}" title="${t("单击设为放置目标层；将实例拖到此行即移至该层最前")}">
       <span class="gname">${esc(L.layer_name)}</span><span class="gmeta">d${L.layer_depth} · ${insts.length}</span></li>`);
     for (const inst of shown) {
       const n = nodeById.get(inst.instance_id);
       const obj = inst.object_definition ?? "";
       const badge = n && n.depth !== L.layer_depth ? `<span class="depth-badge" title="${esc(n.depthWhy)}">d${n.depth}</span>` : "";
       rows.push(`<li class="inst${selection.has(inst.instance_id) ? " sel" : ""}${hiddenInsts.has(inst.instance_id) ? " off" : ""}"
-        data-id="${inst.instance_id}" draggable="${readOnly() ? "false" : "true"}" title="${esc(obj)} #${inst.instance_id}&#10;${esc(n?.depthWhy ?? "")}&#10;${readOnly() ? "原版房间只读，不能调序" : "拖动调整数组顺序（组内调序 / 跨组换层）"}">
+        data-id="${inst.instance_id}" draggable="${readOnly() ? "false" : "true"}" title="${esc(obj)} #${inst.instance_id}&#10;${esc(n?.depthWhy ?? "")}&#10;${readOnly() ? t("原版房间只读，不能调序") : t("拖动调整数组顺序（组内调序 / 跨组换层）")}">
         <span class="grip">${ICONS.grip}</span>${thumbHtml(db, obj, inst.image_index, 28)}
         <div class="itext"><div class="iname">${esc(obj)} <span class="iid">#${inst.instance_id}</span>${badge}</div>
         <div class="imeta">@${inst.x},${inst.y}${inst.scale_x !== 1 || inst.scale_y !== 1 ? ` · ${inst.scale_x}×${inst.scale_y}` : ""}</div></div>
-        <span class="eye" data-eye="${inst.instance_id}" title="编辑器内隐藏（不影响游戏）">${hiddenInsts.has(inst.instance_id) ? ICONS.eyeOff : ICONS.eye}</span></li>`);
+        <span class="eye" data-eye="${inst.instance_id}" title="${t("编辑器内隐藏（不影响游戏）")}">${hiddenInsts.has(inst.instance_id) ? ICONS.eyeOff : ICONS.eye}</span></li>`);
     }
   }
   const list = $("inst-list");
-  list.innerHTML = rows.join("") || `<li class="muted" style="padding:10px">没有匹配的实例</li>`;
+  list.innerHTML = rows.join("") || `<li class="muted" style="padding:10px">${t("没有匹配的实例")}</li>`;
   wireInstRows(list);
 }
 
@@ -1495,7 +1502,7 @@ function dropInstAt(id: number, target: { kind: "row"; id: number; after: boolea
   const dstName = room().layers[toLayer].layer_name!;
   const obj = src.inst.object_definition ?? String(id);
   toastDepthCoded(obj);
-  commit(toLayer === src.layer ? `调整顺序 ${obj}` : `移到 ${dstName}：${obj}`, [
+  commit(toLayer === src.layer ? t("调整顺序 {obj}", { obj }) : t("移到 {layer}：{obj}", { layer: dstName, obj }), [
     { op: "relayer", id, layer: dstName, before: anchor, expect: { layer: srcName } },
   ]);
 }
@@ -1532,6 +1539,27 @@ function wireViewMenu() {
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") close(); });
   // a command closes the menu; the zoom <select> stays open until the user picks
   menu.addEventListener("click", (e) => { if ((e.target as HTMLElement).closest("button")) close(); });
+  // language row: switch in place, then re-paint static HTML and pull server text in the
+  // new lang (?lang= is read by api() at call time, so a refresh re-localizes everything)
+  const langRow = [...document.querySelectorAll<HTMLButtonElement>("#lang-row button")];
+  const seatLangRow = () => {
+    for (const b of langRow) b.classList.toggle("lang-on", b.dataset.lang === getLang());
+  };
+  for (const b of langRow) b.onclick = () => {
+    setLang((b.dataset.lang as "zh" | "en" | "ru") ?? "zh");
+    hydrate();
+    // re-render the JS-owned lists too: hydrate only repaints static [data-t] HTML, and
+    // these lists embed their own translated strings. The scene's already-built nodes
+    // keep their build-time depthWhy/visibleWhy until the room is rebuilt -- accepted.
+    renderLayerList();
+    renderInstList();
+    renderHistory();
+    if ($<HTMLDialogElement>("palette-dialog").open) renderPalette();
+    refreshLint();
+    refreshDiagnostics(true);
+    seatLangRow();
+  };
+  seatLangRow();
 }
 
 function wireToolbox() {
@@ -1583,7 +1611,7 @@ function showTab(tab: string) {
 const WHO: Record<string, string> = { human: "人类", import: "导入", external: "外部" };
 const whoBadge = (by: string) => {
   const cls = by === "import" || by === "external" ? by : by === "human" ? "" : "agent";
-  return `<span class="who ${cls}">${esc(WHO[by] ?? by)}</span>`;
+  return `<span class="who ${cls}">${esc(t(WHO[by] ?? by))}</span>`;
 };
 
 function renderHistory() {
@@ -1594,9 +1622,9 @@ function renderHistory() {
     .reverse()
     .map((e) => {
       const time = e.at.slice(11, 19);
-      return `<li data-rev="${e.rev}" class="${e.undoOf !== undefined ? "undo" : ""}" title="点击高亮本次改动涉及的实例">
-        <div class="h-top">${whoBadge(e.by)}<span class="h-label">${esc(e.label || "(未命名)")}</span><span class="h-meta">r${e.rev} · ${time}</span></div>
-        <div class="h-meta">${e.ops} 条操作${e.ids.length ? ` · id ${e.ids.slice(0, 8).join(",")}${e.ids.length > 8 ? "…" : ""}` : ""}</div>
+      return `<li data-rev="${e.rev}" class="${e.undoOf !== undefined ? "undo" : ""}" title="${t("点击高亮本次改动涉及的实例")}">
+        <div class="h-top">${whoBadge(e.by)}<span class="h-label">${esc(e.label || t("(未命名)"))}</span><span class="h-meta">r${e.rev} · ${time}</span></div>
+        <div class="h-meta">${t("{n} 条操作", { n: e.ops })}${e.ids.length ? ` · id ${e.ids.slice(0, 8).join(",")}${e.ids.length > 8 ? "…" : ""}` : ""}</div>
         ${e.note ? `<div class="h-note">${esc(e.note)}</div>` : ""}</li>`;
     })
     .join("");
@@ -1612,7 +1640,7 @@ function renderHistory() {
   nl.innerHTML = doc.notes
     .map(
       (n) => `<div class="note-item">${whoBadge(n.by)}<span class="txt">${esc(n.text)} <span class="h-meta">@${n.x},${n.y}</span></span>
-        <button data-note="${n.id}" title="删除便签">×</button></div>`,
+        <button data-note="${n.id}" title="${t("删除便签")}">×</button></div>`,
     )
     .join("");
   nl.querySelectorAll<HTMLButtonElement>("button[data-note]").forEach((b) => {
@@ -1658,7 +1686,7 @@ function rescaleNotes() {
 
 async function addNoteAt(wx: number, wy: number) {
   if (!doc || readOnly()) { if (readOnly()) toastReadOnly(); return; }
-  const text = await promptDialog(`便签（${Math.round(wx)}, ${Math.round(wy)}）：人类和 agent 均可见`);
+  const text = await promptDialog(t("便签（{x}, {y}）：人类和 agent 均可见", { x: Math.round(wx), y: Math.round(wy) }));
   if (!text?.trim()) return;
   await api(`/api/doc/${doc.name}/notes`, "POST", { by: BY, x: Math.round(wx), y: Math.round(wy), text: text.trim() });
   doc = await api(`/api/doc/${doc.name}`);
@@ -1685,7 +1713,7 @@ function closePalette() { $<HTMLDialogElement>("palette-dialog").close(); }
 function wirePalette() {
   const q = $<HTMLInputElement>("palette-q");
   const fam = $("palette-families");
-  fam.innerHTML = FAMILIES.map((f, i) => `<button data-f="${i}" class="${f === family ? "on" : ""}">${f.label}</button>`).join("");
+  fam.innerHTML = FAMILIES.map((f, i) => `<button data-f="${i}" class="${f === family ? "on" : ""}">${familyLabel(f)}</button>`).join("");
   fam.querySelectorAll<HTMLButtonElement>("button").forEach((b) => {
     b.onclick = () => {
       family = FAMILIES[Number(b.dataset.f)];
@@ -1693,8 +1721,8 @@ function wirePalette() {
       renderPalette();
     };
   });
-  let t = 0;
-  q.oninput = () => { clearTimeout(t); t = window.setTimeout(renderPalette, 80); };
+  let timer = 0;
+  q.oninput = () => { clearTimeout(timer); timer = window.setTimeout(renderPalette, 80); };
   q.onkeydown = (e) => {
     if (e.key === "Enter") { const first = $("palette-list").querySelector<HTMLElement>("li"); first?.click(); }
     if (e.key === "Escape") { e.preventDefault(); closePalette(); }
@@ -1708,7 +1736,7 @@ function wirePalette() {
     const n = li.dataset.o!;
     const chain = db.parentChain(n).slice(0, 3).join(" → ");
     $("palette-info").textContent =
-      `${n} · ${db.objects[n]?.sprite ?? "无 sprite"}${chain ? " · " + chain : ""}${db.modObjects.has(n) ? " · mod 自建" : ""}`;
+      `${n} · ${db.objects[n]?.sprite ?? t("无 sprite")}${chain ? " · " + chain : ""}${db.modObjects.has(n) ? " · " + t("mod 自建") : ""}`;
   });
 }
 
@@ -1721,10 +1749,10 @@ function renderPalette() {
   list.innerHTML = ranked
     .map((n) => {
       const on = tool.kind === "place" && tool.object === n ? "on" : "";
-      const mod = db.modObjects.has(n) ? `<i class="mod-badge" title="mod 自建对象（assets.json 注册）">mod</i>` : "";
-      return `<li data-o="${esc(n)}" class="${on}" title="${esc(n)}">${thumbHtml(db, n, 0, 56)}${mod}<span class="pname">${esc(n.replace(/^o_/, ""))}</span></li>`;
+      const mod = db.modObjects.has(n) ? `<i class="mod-badge" title="${t("mod 自建对象（assets.json 注册）")}">mod</i>` : "";
+      return `<li data-o="${esc(n)}" class="${on}" title="${esc(n)}">${thumbHtml(db, n, 0, 56)}${mod}<span class="pname">${esc(objName(n) || n.replace(/^o_/, ""))}</span></li>`;
     })
-    .join("") || `<li class="muted" style="padding:10px;grid-column:1/-1">没有匹配的对象</li>`;
+    .join("") || `<li class="muted" style="padding:10px;grid-column:1/-1">${t("没有匹配的对象")}</li>`;
   list.querySelectorAll<HTMLElement>("li[data-o]").forEach((li) => {
     li.onclick = () => { setTool({ kind: "place", object: li.dataset.o! }); closePalette(); };
   });
@@ -1742,7 +1770,7 @@ function openSpriteImport() {
     // a fresh import starts from defaults, never from the previous one's leftovers
     spriteFiles = [];
     $<HTMLInputElement>("sd-files").value = "";
-    $("sd-preview").textContent = "可多选：多个文件按文件名 _N 顺序作为多帧";
+    $("sd-preview").textContent = t("可多选：多个文件按文件名 _N 顺序作为多帧");
     for (const id of ["sd-sprite", "sd-object", "sd-note"]) $<HTMLInputElement>(id).value = "";
     $<HTMLInputElement>("sd-ox").value = "0";
     $<HTMLInputElement>("sd-oy").value = "0";
@@ -1769,12 +1797,12 @@ function onSpriteFiles() {
   });
   const prev = $("sd-preview");
   prev.innerHTML = "";
-  if (!spriteFiles.length) { prev.textContent = "可多选：多个文件按文件名 _N 顺序作为多帧"; return; }
+  if (!spriteFiles.length) { prev.textContent = t("可多选：多个文件按文件名 _N 顺序作为多帧"); return; }
   const img = document.createElement("img");
   img.src = URL.createObjectURL(spriteFiles[0]);
   img.style.cssText = "image-rendering:pixelated;max-height:64px;max-width:96px;vertical-align:middle;margin-right:8px";
   img.onload = () => URL.revokeObjectURL(img.src);
-  prev.append(img, document.createTextNode(`${spriteFiles.length} 帧`));
+  prev.append(img, document.createTextNode(t("{n} 帧", { n: spriteFiles.length })));
   const base = spriteFiles[0].name.replace(/\.png$/i, "").replace(/_\d+$/, "");
   $<HTMLInputElement>("sd-sprite").value = base;
   $<HTMLInputElement>("sd-object").value = base.replace(/^s_/, "o_");
@@ -1783,8 +1811,8 @@ function onSpriteFiles() {
 async function submitSpriteImport() {
   const sprite = $<HTMLInputElement>("sd-sprite").value.trim();
   const object = $<HTMLInputElement>("sd-object").value.trim();
-  if (!spriteFiles.length) { await alertDialog("先选 PNG 文件"); return; }
-  if (!sprite || !object) { await alertDialog("sprite 名和对象名都要填"); return; }
+  if (!spriteFiles.length) { await alertDialog(t("先选 PNG 文件")); return; }
+  if (!sprite || !object) { await alertDialog(t("sprite 名和对象名都要填")); return; }
   const frames = await Promise.all(spriteFiles.map(async (f) => {
     const u8 = new Uint8Array(await f.arrayBuffer());
     let s = "";
@@ -1804,15 +1832,15 @@ async function submitSpriteImport() {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
     });
     const j = await r.json();
-    if (!r.ok) { await alertDialog(`导入失败：${j.error ?? r.status}`); return; } // dialog stays open, nothing lost
+    if (!r.ok) { await alertDialog(t("导入失败：{err}", { err: j.error ?? r.status })); return; } // dialog stays open, nothing lost
     $<HTMLDialogElement>("sprite-dialog").close();
-    toast(`已导入 ${object}（${frames.length} 帧）`);
+    toast(t("已导入 {obj}（{n} 帧）", { obj: object, n: frames.length }));
     await db.reloadModAssets();
     // land the artist on their new card in the library
     $<HTMLInputElement>("palette-q").value = object;
     renderPalette();
   } catch (e) {
-    await alertDialog(`导入失败：${(e as Error).message}`);
+    await alertDialog(t("导入失败：{err}", { err: (e as Error).message }));
   }
 }
 
@@ -1822,34 +1850,34 @@ function toolCursor() {
   return "";
 }
 
-function setTool(t: Tool) {
-  if (readOnly() && t.kind !== "select" && t.kind !== "hand") { toastReadOnly(); return; } // view-only: no edit tools
-  tool = t;
-  if (t.kind === "place") lastPlaced = t.object;
-  if (t.kind === "zone") zoneObject = t.object;
-  if (t.kind === "marker") markerObject = t.object;
+function setTool(nt: Tool) {
+  if (readOnly() && nt.kind !== "select" && nt.kind !== "hand") { toastReadOnly(); return; } // view-only: no edit tools
+  tool = nt;
+  if (nt.kind === "place") lastPlaced = nt.object;
+  if (nt.kind === "zone") zoneObject = nt.object;
+  if (nt.kind === "marker") markerObject = nt.object;
   ghostLayer.removeChildren().forEach((c) => c.destroy({ children: true }));
   const names = { select: "选择", hand: "抓手", note: "便签", place: "放置", collision: "碰撞矩形", barrier: "屏障涂刷", zone: "区域", marker: "标记" } as const;
   $("s-tool").textContent =
-    t.kind === "place" ? `放置 ${t.object}（单击放置，Esc 结束）`
-    : t.kind === "hand" ? "抓手（拖动平移）"
-    : t.kind === "note" ? "便签（单击留便签）"
-    : t.kind === "collision" ? "碰撞矩形（拖出矩形 · Esc 结束）"
-    : t.kind === "barrier" ? "屏障涂刷（拖动刷格 · Alt+拖动擦除 · Esc 结束）"
-    : t.kind === "zone" ? `区域 ${t.object}（拖出矩形，Esc 结束）`
-    : t.kind === "marker" ? `标记 ${t.object}（单击放置，Esc 结束）`
-    : "选择";
-  $("opt-tool").textContent = names[t.kind] + (t.kind === "place" ? `：${t.object}` : "");
+    nt.kind === "place" ? t("放置 {obj}（单击放置，Esc 结束）", { obj: nt.object })
+    : nt.kind === "hand" ? t("抓手（拖动平移）")
+    : nt.kind === "note" ? t("便签（单击留便签）")
+    : nt.kind === "collision" ? t("碰撞矩形（拖出矩形 · Esc 结束）")
+    : nt.kind === "barrier" ? t("屏障涂刷（拖动刷格 · Alt+拖动擦除 · Esc 结束）")
+    : nt.kind === "zone" ? t("区域 {obj}（拖出矩形，Esc 结束）", { obj: nt.object })
+    : nt.kind === "marker" ? t("标记 {obj}（单击放置，Esc 结束）", { obj: nt.object })
+    : t("选择");
+  $("opt-tool").textContent = t(names[nt.kind]) + (nt.kind === "place" ? t("：{obj}", { obj: nt.object }) : "");
   $("stage").style.cursor = toolCursor();
   document.querySelectorAll<HTMLButtonElement>("#toolbox button[data-tool]").forEach((b) => {
-    const on = b.dataset.tool === t.kind;
+    const on = b.dataset.tool === nt.kind;
     b.classList.toggle("on", on);
     b.setAttribute("aria-pressed", String(on));
   });
   document.querySelectorAll<HTMLElement>("#palette-list li[data-o]").forEach((el) => {
-    el.classList.toggle("on", t.kind === "place" && el.dataset.o === t.object);
+    el.classList.toggle("on", nt.kind === "place" && el.dataset.o === nt.object);
   });
-  if (t.kind === "place" || t.kind === "marker") buildGhost(t.object);
+  if (nt.kind === "place" || nt.kind === "marker") buildGhost(nt.object);
   renderToolExtras();
   drawOverlay();
   pushMenuState();
@@ -1867,7 +1895,7 @@ function pickTool(kind: Tool["kind"]) {
 
 async function buildGhost(object: string) {
   const spr = db.objects[object]?.sprite;
-  const v = (spr && (await spriteView(db, spr, 0))) || markerView(object.replace(/^o_/, ""));
+  const v = (spr && (await spriteView(db, spr, 0))) || markerView(objName(object) || object.replace(/^o_/, ""));
   if ((tool.kind !== "place" && tool.kind !== "marker") || tool.object !== object) return; // tool changed meanwhile
   ghostLayer.removeChildren();
   ghostLayer.addChild(v);
@@ -1887,10 +1915,10 @@ function placeAt(wx: number, wy: number) {
   const li = tool.kind === "marker" ? layerFor(object) : activeLayer;
   const L = room().layers[li];
   if (L?.layer_type !== LayerType.Instances) {
-    void alertDialog("请先在「层组」页签中选择一个实例图层");
+    void alertDialog(t("请先在「层组」页签中选择一个实例图层"));
     return;
   }
-  const verb = tool.kind === "marker" ? "标记" : "放置";
+  const verb = tool.kind === "marker" ? t("标记") : t("放置");
   commit(`${verb} ${object}`, [{ op: "add", layer: L.layer_name!, inst: { object_definition: object, x: snapPoint(wx), y: snapPoint(wy) } as RoomInstance }]).then(selectPlaced);
 }
 
@@ -1978,21 +2006,21 @@ function renderToolExtras() {
     box.appendChild(s);
   };
   if (tool.kind === "collision") {
-    hint(`${COLLISION_PAINT} · 拖出矩形 · 放入 ${layerNameOf(layerFor(COLLISION_PAINT))} 层`);
+    hint(`${COLLISION_PAINT} · ${t("拖出矩形")} · ${t("放入 {layer} 层", { layer: layerNameOf(layerFor(COLLISION_PAINT)) })}`);
     return;
   }
   if (tool.kind === "barrier") {
-    hint(`${BARRIER_PAINT} · 拖动涂刷，Alt+拖动擦除 · 放入 ${layerNameOf(layerFor(BARRIER_PAINT))} 层`);
+    hint(`${BARRIER_PAINT} · ${t("拖动涂刷，Alt+拖动擦除")} · ${t("放入 {layer} 层", { layer: layerNameOf(layerFor(BARRIER_PAINT)) })}`);
     return;
   }
   if (tool.kind === "zone") {
     const cur0 = tool.object; // const: `tool` is a mutable module var, closures un-narrow it
     const sel = document.createElement("select");
-    sel.title = "选择要绘制的对象：具有纯色盒 sprite 的功能对象（与尺寸手柄同一套像素判据）";
+    sel.title = t("选择要绘制的对象：具有纯色盒 sprite 的功能对象（与尺寸手柄同一套像素判据）");
     sel.innerHTML = `<option>${esc(cur0)}</option>`;
     sel.disabled = true;
     box.appendChild(sel);
-    hint(`拖出矩形 · 放入 ${layerNameOf(layerFor(cur0))} 层`);
+    hint(`${t("拖出矩形")} · ${t("放入 {layer} 层", { layer: layerNameOf(layerFor(cur0)) })}`);
     void zoneObjects().then((names) => {
       if (!names.includes(cur0)) names.unshift(cur0);
       sel.innerHTML = names.map((n) => `<option ${n === cur0 ? "selected" : ""}>${esc(n)}</option>`).join("");
@@ -2006,11 +2034,11 @@ function renderToolExtras() {
     const names = markerObjects();
     if (!names.includes(cur0)) names.unshift(cur0);
     const sel = document.createElement("select");
-    sel.title = "选择要放置的标记：出生点、灯光、区域标记等功能对象";
+    sel.title = t("选择要放置的标记：出生点、灯光、区域标记等功能对象");
     sel.innerHTML = names.map((n) => `<option ${n === cur0 ? "selected" : ""}>${esc(n)}</option>`).join("");
     sel.onchange = () => setTool({ kind: "marker", object: sel.value });
     box.appendChild(sel);
-    hint(`单击放置 · 放入 ${layerNameOf(layerFor(cur0))} 层`);
+    hint(`${t("单击放置")} · ${t("放入 {layer} 层", { layer: layerNameOf(layerFor(cur0)) })}`);
   }
 }
 
@@ -2056,7 +2084,7 @@ function zoneCommit(d: { ax: number; ay: number; bx: number; by: number; moved: 
     x = Math.round(L - lb.x * scale_x);
     y = Math.round(T - lb.y * scale_y);
   }
-  const label = object === COLLISION_PAINT ? `碰撞矩形 ${R - L}×${B - T}` : `区域 ${object} ${R - L}×${B - T}`;
+  const label = object === COLLISION_PAINT ? t("碰撞矩形 {w}×{h}", { w: R - L, h: B - T }) : t("区域 {obj} {w}×{h}", { obj: object, w: R - L, h: B - T });
   commit(label, [
     { op: "add", layer: layerNameOf(layerFor(object)), inst: { object_definition: object, x, y, scale_x, scale_y } as RoomInstance },
   ]).then(selectPlaced);
@@ -2078,8 +2106,8 @@ function paintCommit(d: { ax: number; ay: number; bx: number; by: number; object
   };
   if (erase) {
     const hits = stamps.filter(inRect);
-    if (!hits.length) { $("s-hover").textContent = `此处没有可擦除的${what}格`; drawOverlay(); return; }
-    commit(`擦除${what} ${hits.length} 格`, hits.map((i) => ({ op: "delete", id: i.instance_id, expect: { object_definition: i.object_definition, x: i.x, y: i.y } })));
+    if (!hits.length) { $("s-hover").textContent = t("此处没有可擦除的{what}格", { what }); drawOverlay(); return; }
+    commit(t("擦除{what} {n} 格", { what, n: hits.length }), hits.map((i) => ({ op: "delete", id: i.instance_id, expect: { object_definition: i.object_definition, x: i.x, y: i.y } })));
     return;
   }
   const taken = new Set(stamps.map((i) => `${Math.floor(i.x / CELL)},${Math.floor(i.y / CELL)}`));
@@ -2088,8 +2116,8 @@ function paintCommit(d: { ax: number; ay: number; bx: number; by: number; object
   for (let cx = cx0; cx <= cx1; cx++)
     for (let cy = cy0; cy <= cy1; cy++)
       if (!taken.has(`${cx},${cy}`)) ops.push({ op: "add", layer, inst: { object_definition: object, x: cx * CELL, y: cy * CELL } as RoomInstance });
-  if (!ops.length) { $("s-hover").textContent = `所选格子已存在${what}`; drawOverlay(); return; }
-  commit(`涂刷${what} ${ops.length} 格`, ops);
+  if (!ops.length) { $("s-hover").textContent = t("所选格子已存在{what}", { what }); drawOverlay(); return; }
+  commit(t("涂刷{what} {n} 格", { what, n: ops.length }), ops);
 }
 
 // ================= viewport & pointer =================
@@ -2377,7 +2405,7 @@ function wireViewport(host: HTMLElement) {
     cursorWorld = toWorld(sx, sy);
     rulerCursor = { x: sx, y: sy };
     $("s-pos").textContent = `x ${Math.floor(cursorWorld.x)}  y ${Math.floor(cursorWorld.y)}`;
-    $("s-cell").textContent = `格 ${Math.floor(cursorWorld.x / CELL)}, ${Math.floor(cursorWorld.y / CELL)}`;
+    $("s-cell").textContent = t("格 {cx}, {cy}", { cx: Math.floor(cursorWorld.x / CELL), cy: Math.floor(cursorWorld.y / CELL) });
     drawRulers();
     if (tool.kind === "place" || tool.kind === "marker") moveGhost();
     else if ((tool.kind === "zone" || tool.kind === "collision" || tool.kind === "barrier") && !drag) drawOverlay(); // idle cursor cell
@@ -2398,7 +2426,7 @@ function wireViewport(host: HTMLElement) {
       const v = resizeCompute(d, w.x, w.y);
       n.view.scale.set(v.scale_x, v.scale_y);
       n.view.position.set(v.x, v.y);
-      $("s-hover").textContent = `调整尺寸 ${Math.round(v.w)}×${Math.round(v.h)}${snapOn() ? "（已吸附整格，按住 Alt 自由调整）" : ""}`;
+      $("s-hover").textContent = `${t("调整尺寸 {w}×{h}", { w: Math.round(v.w), h: Math.round(v.h) })}${snapOn() ? t("（已吸附整格，按住 Alt 自由调整）") : ""}`;
       drawOverlay();
       return;
     }
@@ -2418,8 +2446,8 @@ function wireViewport(host: HTMLElement) {
       }
       const f = d.orig[0];
       $("s-hover").textContent = d.orig.length === 1
-        ? `移动 → ${f.tx}, ${f.ty}${on ? "（吸附格点，Alt 自由）" : ""}`
-        : `移动 ${d.orig.length} 个实例${on ? "（各自吸附格点）" : ""}`;
+        ? `${t("移动 → {x}, {y}", { x: f.tx, y: f.ty })}${on ? t("（吸附格点，Alt 自由）") : ""}`
+        : `${t("移动 {n} 个实例", { n: d.orig.length })}${on ? t("（各自吸附格点）") : ""}`;
       drawOverlay();
       return;
     }
@@ -2431,12 +2459,12 @@ function wireViewport(host: HTMLElement) {
       if (!d.moved && (Math.abs(w.x - d.ax) + Math.abs(w.y - d.ay)) * zoom > 4) d.moved = true;
       if (d.mode === "zone") {
         const r = zoneRect(d);
-        const what = d.object === COLLISION_PAINT ? "碰撞矩形" : `区域 ${d.object}`;
+        const what = d.object === COLLISION_PAINT ? t("碰撞矩形") : t("区域 {obj}", { obj: d.object });
         $("s-hover").textContent = `${what} ${r.R - r.L}×${r.B - r.T} → ${layerNameOf(layerFor(d.object))}`;
       } else if (d.mode === "paint") {
         const c = paintCells(d);
         const what = paintLabel(d.object);
-        $("s-hover").textContent = `${altHeld ? "擦除" : "涂刷"}${what} ${c.cx1 - c.cx0 + 1}×${c.cy1 - c.cy0 + 1} 格${altHeld ? "" : "（按住 Alt 擦除）"}`;
+        $("s-hover").textContent = `${altHeld ? t("擦除") : t("涂刷")}${what} ${c.cx1 - c.cx0 + 1}×${c.cy1 - c.cy0 + 1} ${t("格")}${altHeld ? "" : t("（按住 Alt 擦除）")}`;
       }
       drawOverlay();
       return;
@@ -2503,7 +2531,7 @@ function wireViewport(host: HTMLElement) {
         return;
       }
       const n = nodeById.get(d.id);
-      commit(`调整 ${n?.inst.object_definition ?? d.id} 尺寸`, [{
+      commit(t("调整 {name} 尺寸", { name: n?.inst.object_definition ?? d.id }), [{
         op: "set", id: d.id,
         set: { x: v.x, y: v.y, scale_x: v.scale_x, scale_y: v.scale_y },
         expect: { ...d.orig },
@@ -2514,8 +2542,8 @@ function wireViewport(host: HTMLElement) {
         .map((o) => ({ op: "set", id: o.id, set: { x: o.tx, y: o.ty }, expect: { x: o.x, y: o.y } }));
       if (!ops.length) refreshScene(); // snapped back to the start: restore the previewed views
       else {
-        const what = d.orig.length === 1 ? String(findInstance(room(), d.orig[0].id)?.inst.object_definition ?? "") : `${d.orig.length} 个实例`;
-        commit(`移动 ${what}`, ops).then((ok) => { if (!ok) refreshScene(); });
+        const what = d.orig.length === 1 ? String(findInstance(room(), d.orig[0].id)?.inst.object_definition ?? "") : t("{n} 个实例", { n: d.orig.length });
+        commit(t("移动 {what}", { what }), ops).then((ok) => { if (!ok) refreshScene(); });
       }
     } else if (d.mode === "marquee") {
       if (!d.additive) selection.clear();
@@ -2710,7 +2738,7 @@ function wireKeys(host: HTMLElement) {
           id: a.inst.instance_id,
           expect: { object_definition: a.inst.object_definition, x: a.inst.x, y: a.inst.y },
         }));
-        commit(`删除 ${ops.length} 个实例`, ops).then((ok) => { if (ok) selection.clear(); });
+        commit(t("删除 {n} 个实例", { n: ops.length }), ops).then((ok) => { if (ok) selection.clear(); });
       }
       return;
     }
@@ -2725,7 +2753,7 @@ function wireKeys(host: HTMLElement) {
         set: { x: a.inst.x + dx, y: a.inst.y + dy },
         expect: { x: a.inst.x, y: a.inst.y },
       }));
-      commit("微调", ops);
+      commit(t("微调"), ops);
       return;
     }
     if (e.key === "Escape") {
@@ -2761,7 +2789,7 @@ function copySelection() {
     layerName: room().layers[a.layer].layer_name,
     inst: JSON.parse(JSON.stringify(a.inst)),
   }));
-  $("s-hover").textContent = `已复制 ${clipboard.length} 个实例`;
+  $("s-hover").textContent = t("已复制 {n} 个实例", { n: clipboard.length });
 }
 
 // paste so the clipboard's top-left instance lands on the cursor cell; ids are stripped,
@@ -2776,7 +2804,7 @@ function paste() {
     delete inst.instance_id;
     return { op: "add", layer: room().layers[li >= 0 ? li : activeLayer].layer_name!, inst };
   });
-  commit("粘贴", ops).then((ok) => {
+  commit(t("粘贴"), ops).then((ok) => {
     if (!ok || !doc) return;
     selection.clear();
     for (const id of doc.log[doc.log.length - 1]?.ids ?? []) selection.add(id);
@@ -2791,7 +2819,7 @@ function duplicate() {
     delete inst.instance_id;
     return { op: "add", layer: room().layers[a.layer].layer_name!, inst };
   });
-  commit("复制", ops).then((ok) => {
+  commit(t("复制"), ops).then((ok) => {
     if (!ok || !doc) return;
     selection.clear();
     for (const id of doc.log[doc.log.length - 1]?.ids ?? []) selection.add(id);
@@ -2836,7 +2864,7 @@ function inspect() {
   const at = doc ? instsOf(selection) : [];
   syncInstSelection(false);
   if (!doc || at.length === 0) {
-    body.innerHTML = `<span class="muted">单击画布中的实例，查看并编辑它的属性。<br>拖动空白处可以框选多个；「图层」页签里拖动行可调整遮挡顺序。</span>`;
+    body.innerHTML = `<span class="muted">${t("单击画布中的实例，查看并编辑它的属性。<br>拖动空白处可以框选多个；「图层」页签里拖动行可调整遮挡顺序。")}</span>`;
     return;
   }
   const insts = at.map((a) => a.inst);
@@ -2848,41 +2876,42 @@ function inspect() {
 
   const inputs = FIELDS.map((f) => {
     const mixed = !same(f.key);
-    return `<label>${f.label}</label><input data-k="${f.key}" data-kind="${f.kind}" class="${mixed ? "mixed" : ""}" value="${mixed ? "" : esc(fmt(f.kind, first[f.key]))}" placeholder="${mixed ? "（多个值）" : ""}" spellcheck="false" />`;
+    return `<label>${t(f.label)}</label><input data-k="${f.key}" data-kind="${f.kind}" class="${mixed ? "mixed" : ""}" value="${mixed ? "" : esc(fmt(f.kind, first[f.key]))}" placeholder="${mixed ? t("（多个值）") : ""}" spellcheck="false" />`;
   }).join("");
   const layerOpts = room().layers
     .map((L, i) => (L.layer_type === LayerType.Instances ? `<option value="${i}" ${sameLayer && layerIdx[0] === i ? "selected" : ""}>${esc(L.layer_name)}</option>` : ""))
     .join("");
 
-  const head = insts.length === 1
-    ? `<div class="insp-title">${esc(first.object_definition)} <span class="h-meta">#${first.instance_id}</span></div>`
-    : `<div class="insp-title">${insts.length} 个实例${same("object_definition") ? " · " + esc(first.object_definition) : ""}</div>`;
+  const objDef = first.object_definition ?? "";
+const head = insts.length === 1
+    ? `<div class="insp-title" title="${esc(objDef)}">${esc(objName(objDef) || objDef)} <span class="h-meta">#${first.instance_id}</span></div>`
+    : `<div class="insp-title">${t("{n} 个实例", { n: insts.length })}${same("object_definition") ? " · " + esc(objName(objDef) || objDef) : ""}</div>`;
 
   let facts = "";
   if (insts.length === 1 && n) {
     const obj = first.object_definition ?? "";
     const chain = db.parentChain(obj);
     const flags: string[] = [];
-    if (n.customDraw) flags.push(`<span class="flag">自定义 Draw：编辑器按默认绘制</span>`);
-    if (n.kind === "hidden") flags.push(`<span class="flag info">游戏内不可见</span>`);
-    if (n.kind === "collision") flags.push(`<span class="flag info">${paintLabel(obj)} ${first.scale_x}×${first.scale_y} 格</span>`);
-    if (!db.objects[obj]) flags.push(`<span class="flag">原版和 assets.json 里都没有这个对象：AddRoomJson 会静默丢弃这个实例</span>`);
-    else if (db.modObjects.has(obj)) flags.push(`<span class="flag info">mod 对象（assets.json 注册，生成 C# 先于 AddRoomJson）</span>`);
+    if (n.customDraw) flags.push(`<span class="flag">${t("自定义 Draw：编辑器按默认绘制")}</span>`);
+    if (n.kind === "hidden") flags.push(`<span class="flag info">${t("游戏内不可见")}</span>`);
+    if (n.kind === "collision") flags.push(`<span class="flag info">${paintLabel(obj)} ${first.scale_x}×${first.scale_y} ${t("格")}</span>`);
+    if (!db.objects[obj]) flags.push(`<span class="flag">${t("原版和 assets.json 里都没有这个对象：AddRoomJson 会静默丢弃这个实例")}</span>`);
+    else if (db.modObjects.has(obj)) flags.push(`<span class="flag info">${t("mod 对象（assets.json 注册，生成 C# 先于 AddRoomJson）")}</span>`);
     facts = `<div class="insp-section kv">
         <div class="k">sprite</div><div class="v">${esc(db.objects[obj]?.sprite ?? "—")}</div>
-        <div class="k">格</div><div class="v">${Math.floor(first.x / CELL)}, ${Math.floor(first.y / CELL)}</div>
+        <div class="k">${t("格")}</div><div class="v">${Math.floor(first.x / CELL)}, ${Math.floor(first.y / CELL)}</div>
         <div class="k">depth</div><div class="v">${n.depth}</div>
-        <div class="k">  来源</div><div class="v">${esc(n.depthWhy)}</div>
-        <div class="k">可见</div><div class="v">${esc(n.visibleWhy)}</div>
-        <div class="k">instance_id</div><div class="v">${first.instance_id}（MSL 导入时重编号）</div>
+        <div class="k">  ${t("来源")}</div><div class="v">${esc(n.depthWhy)}</div>
+        <div class="k">${t("可见")}</div><div class="v">${esc(n.visibleWhy)}</div>
+        <div class="k">instance_id</div><div class="v">${first.instance_id}${t("（MSL 导入时重编号）")}</div>
       </div>
-      <div class="chain">父链：${chain.length ? esc(chain.join(" → ")) : "（无）"}</div>
+      <div class="chain">${t("父链：")}${chain.length ? esc(chain.join(" → ")) : t("（无）")}</div>
       <div>${flags.join("")}</div>`;
   }
 
   body.innerHTML = `${head}
     <div class="form">
-      <label>图层</label><select data-layer>${sameLayer ? "" : '<option selected disabled>（多个图层）</option>'}${layerOpts}</select>
+      <label>${t("图层")}</label><select data-layer>${sameLayer ? "" : '<option selected disabled>' + t("（多个图层）") + '</option>'}${layerOpts}</select>
       ${inputs}
     </div>
     ${facts}`;
@@ -2898,7 +2927,7 @@ function inspect() {
       if (!p.ok) { inp.style.borderColor = "var(--bad)"; return; }
       if (insts.every((i) => i[key] === p.v)) return;
       const ops: Op[] = insts.map((i) => ({ op: "set", id: i.instance_id, set: { [key]: p.v } as any, expect: { [key]: i[key] } as any }));
-      commit(`修改 ${key}`, ops);
+      commit(t("修改 {key}", { key }), ops);
     };
     inp.addEventListener("keydown", (e) => {
       if (e.key === "Enter") { commitField(); inp.blur(); }
@@ -2916,7 +2945,7 @@ function inspect() {
       layer: layerName,
       expect: { layer: room().layers[a.layer].layer_name! },
     }));
-    commit(`换图层 → ${layerName}`, ops);
+    commit(t("换图层 → {layer}", { layer: layerName }), ops);
     activeLayer = to;
   };
 }
@@ -2931,7 +2960,7 @@ async function openNewDialog() {
   const fill = async () => {
     const list = await api(`/api/vanilla?q=${encodeURIComponent(q.value)}`);
     baseSel.innerHTML = list
-      .map((r: any) => `<option value="${esc(r.name)}">${esc(r.name)} · ${r.w}×${r.h} · ${r.instances} 实例</option>`)
+      .map((r: any) => `<option value="${esc(r.name)}">${esc(r.name)} · ${r.w}×${r.h} · ${r.instances} ${t("实例")}</option>`)
       .join("");
   };
   q.oninput = fill;
@@ -2940,12 +2969,12 @@ async function openNewDialog() {
   $("nd-ok").onclick = async (e) => {
     e.preventDefault();
     const name = nameInp.value.trim();
-    if (!/^r_[A-Za-z0-9_]+$/.test(name)) { await alertDialog("房间名格式不正确，应形如 r_sv_something"); return; }
-    if (!baseSel.value) { await alertDialog("请选择一个原版房间作为基底"); return; }
+    if (!/^r_[A-Za-z0-9_]+$/.test(name)) { await alertDialog(t("房间名格式不正确，应形如 r_sv_something")); return; }
+    if (!baseSel.value) { await alertDialog(t("请选择一个原版房间作为基底")); return; }
     try {
       await api("/api/create", "POST", { name, base: baseSel.value, keep: $<HTMLSelectElement>("nd-keep").value, by: BY });
     } catch (err) {
-      await alertDialog(`创建失败：${(err as Error).message}`);
+      await alertDialog(t("创建失败：{err}", { err: (err as Error).message }));
       return;
     }
     dlg.close();
@@ -2978,7 +3007,7 @@ async function fillVanillaList() {
   const list = $<HTMLSelectElement>("vd-list");
   const found = await api(`/api/vanilla?q=${encodeURIComponent(q.value)}`);
   list.innerHTML = found
-    .map((r: any) => `<option value="${esc(r.name)}">${esc(r.name)} · ${r.w}×${r.h} · ${r.instances} 实例</option>`)
+    .map((r: any) => `<option value="${esc(r.name)}">${esc(r.name)} · ${r.w}×${r.h} · ${r.instances} ${t("实例")}</option>`)
     .join("");
   // a list box (size>1) does NOT auto-select the first option on fill -- value stays ""
   // and 打开 silently does nothing. Pin the selection so Enter/双击/按钮 all have a target.
@@ -3009,6 +3038,7 @@ interface SvreHost {
   pushState(s: {
     theme: UiTheme; zmode: ZMode; tool: Tool["kind"]; toggles: Record<string, boolean>;
     mode: UiMode; project: ProjectInfo | null; recent: Pick<RecentEntry, "path" | "name" | "exists">[];
+    lang: Lang;
   }): void;
   // show a folder in Explorer/Finder (the welcome page's recent rows)
   revealPath?(path: string): Promise<void>;
@@ -3048,7 +3078,7 @@ function bootChrome() {
   $("tb-close").addEventListener("click", () => hostBridge.winControl?.("close"));
   hostBridge.onWinState?.((s) => {
     tbMax.classList.toggle("maxed", !!s.maximized);
-    tbMax.title = s.maximized ? "还原" : "最大化";
+    tbMax.title = s.maximized ? t("还原") : t("最大化");
   });
   // the page keeps document.title at "<room> — Stoneshard Room Editor"; mirror it
   const tbTitle = document.querySelector<HTMLElement>("#titlebar .tb-title");
@@ -3075,6 +3105,17 @@ function menuAction(id: string): boolean {
   // document at all, which is exactly the state the welcome page is in. So they are
   // handled before the booted/ready gate, not after it.
   if (id.startsWith(RECENT_MENU_PREFIX)) { void openProject(id.slice(RECENT_MENU_PREFIX.length)); return true; }
+  // Language is chrome-level too: it must work on the welcome page, where the editor-only
+  // re-renders below do not exist. A reload re-localizes everything -- the browser dropdown
+  // re-paints in place, but the native menu has no page context to reuse, so reload is the
+  // uniform, always-safe path (?lang= is read by api() at call time).
+  if (id.startsWith("lang.set.")) {
+    const code = id.slice("lang.set.".length) as Lang;
+    if (code !== "zh" && code !== "en" && code !== "ru") return false;
+    setLang(code);
+    location.reload();
+    return true;
+  }
   switch (id) {
     case "project.new": void openProjectDialog("新建项目"); return true;
     case "project.open": void openProjectDialog("打开项目"); return true;
@@ -3084,7 +3125,7 @@ function menuAction(id: string): boolean {
   if (!booted || uiMode !== "ready") {
     // booted flips at different points per mode: welcome sets it as soon as the page is
     // up (there is no data to wait for), the editor only after the room is on screen.
-    toast(booted ? "先打开一个项目" : "正在启动，请稍候…");
+    toast(t(booted ? "先打开一个项目" : "正在启动，请稍候…"));
     return false;
   }
   const stage = $("stage");
@@ -3142,6 +3183,7 @@ function pushMenuState() {
     mode: uiMode,
     project: projectInfo,
     recent: recentList.map((r) => ({ path: r.path, name: r.name, exists: r.exists })),
+    lang: getLang(),
   });
 }
 
@@ -3216,15 +3258,15 @@ function paintSetupUtmt(status?: string) {
   info.textContent =
     status ??
     (st.running
-      ? "正在下载…"
+      ? t("正在下载…")
       : st.cli
-        ? `✓ 提取工具：${st.cli}`
-        : "还没找到 UndertaleModCli.exe：提取需要它（下载后会自动装到下面的目录）");
+        ? t("✓ 提取工具：{cli}", { cli: st.cli })
+        : t("还没找到 UndertaleModCli.exe：提取需要它（下载后会自动装到下面的目录）"));
   const btn = document.createElement("button");
   btn.type = "button";
   btn.id = "setup-utmt-get";
   btn.disabled = st.running;
-  btn.textContent = st.cli ? "重新下载安装…" : `下载并安装（约 ${Math.round(st.release.bytes / 1048576)} MB）`;
+  btn.textContent = st.cli ? t("重新下载安装…") : t("下载并安装（约 {mb} MB）", { mb: Math.round(st.release.bytes / 1048576) });
   btn.onclick = () => void downloadUtmt();
   row.append(info, btn);
   box.append(row);
@@ -3234,18 +3276,18 @@ function paintSetupUtmt(status?: string) {
   hint.className = "muted";
   hint.textContent = st.cli
     ? st.version
-      ? `已安装 v${st.version} · ${st.dir}`
+      ? t("已安装 v{ver} · {dir}", { ver: st.version, dir: st.dir })
       : ""
-    : `来源：UTMT v${st.release.version} ${st.release.url}`;
+    : t("来源：UTMT v{ver} {url}", { ver: st.release.version, url: st.release.url });
   if (hint.textContent) box.append(hint);
 }
 
 async function downloadUtmt() {
-  patchSetupUtmt({ running: true }, "正在连接…");
+  patchSetupUtmt({ running: true }, t("正在连接…"));
   try {
     await api("/api/setup/utmt", "POST", {});
   } catch (e) {
-    patchSetupUtmt({ running: false }, `✗ 无法开始下载：${(e as ApiError).message}`);
+    patchSetupUtmt({ running: false }, t("✗ 无法开始下载：{err}", { err: (e as ApiError).message }));
   }
 }
 
@@ -3254,14 +3296,14 @@ function onUtmtEvent(e: SetupEvent) {
   if (!setupUtmt) return; // the wizard is not on the step that shows it
   if (e.phase === "done") {
     void (api("/api/setup") as Promise<SetupState>)
-      .then((s) => renderSetupUtmt(s.utmt, `✓ UTMT CLI v${s.utmt.version ?? ""} 已就绪`))
+      .then((s) => renderSetupUtmt(s.utmt, t("✓ UTMT CLI v{ver} 已就绪", { ver: s.utmt.version ?? "" })))
       .catch(() => {});
     return;
   }
   const failed = e.phase === "error";
   patchSetupUtmt(
     { running: !failed },
-    failed ? `✗ 下载失败：${e.detail ?? "未知原因"}` : e.phase === "unpack" ? "解压并安装…" : `下载中…${e.status ? ` ${e.status}` : ""}`,
+    failed ? t("✗ 下载失败：{detail}", { detail: e.detail ?? t("未知原因") }) : e.phase === "unpack" ? t("解压并安装…") : t("下载中…{status}", { status: e.status ? ` ${e.status}` : "" }),
   );
 }
 
@@ -3283,8 +3325,8 @@ function startSetupRun(job: SetupJob) {
   setupLog.length = 0;
   $("setup-log").textContent = "";
   $("setup-result").innerHTML = "";
-  $("setup-run-title").textContent = job === "extract" ? "2 · 提取资产缓存" : "3 · 扫描反编译源码";
-  $("setup-phase").textContent = job === "extract" ? "正在启动 UTMT CLI…" : "正在扫描反编译源码…";
+  $("setup-run-title").textContent = job === "extract" ? t("2 · 提取资产缓存") : t("3 · 扫描反编译源码");
+  $("setup-phase").textContent = job === "extract" ? t("正在启动 UTMT CLI…") : t("正在扫描反编译源码…");
   $("setup-retry").hidden = true;
   $("setup-done").hidden = true;
   showSetupStep("run");
@@ -3308,28 +3350,28 @@ async function showSetupDialog(st: SetupState) {
   if (!st.project) uiMode = "welcome";
   // only while the dialog really blocks: a dismissible one may have a live editor behind it,
   // and stomping that editor's status line would be a lie
-  if (setupBlocking) $("load-state").textContent = "等待本机设置…";
+  if (setupBlocking) $("load-state").textContent = t("等待本机设置…");
   // The success exit reloads (the backend just became healthy and every cache in this tab
   // predates it). The by-hand visit on a healthy machine can also simply be dismissed.
   const done = $<HTMLButtonElement>("setup-done");
-  done.textContent = projectInfo ? "进入编辑器" : "完成";
+  done.textContent = projectInfo ? t("进入编辑器") : t("完成");
   done.onclick = () => hardReset();
   $<HTMLButtonElement>("setup-close").hidden = setupBlocking;
 
   // ---- step 1: the game data file ----
   $("setup-expected").textContent = st.expected
-    ? `${st.expected.game}（${st.expected.rooms} 房间 / ${st.expected.objects} 对象 / ${st.expected.sprites} sprite）`
-    : "未知（缺 extract/fingerprint.json）";
+    ? t("{game}（{rooms} 房间 / {objects} 对象 / {sprites} sprite）", { game: st.expected.game, rooms: st.expected.rooms, objects: st.expected.objects, sprites: st.expected.sprites })
+    : t("未知（缺 extract/fingerprint.json）");
   const winInput = $<HTMLInputElement>("setup-win");
   winInput.value = st.current.vanillaWin;
   const det = $("setup-detected");
   det.innerHTML = "";
-  if (!st.detected.length) det.innerHTML = `<div class="muted">没有自动检测到 Stoneshard 安装，请手动选择或填写路径。</div>`;
+  if (!st.detected.length) det.innerHTML = `<div class="muted">${t("没有自动检测到 Stoneshard 安装，请手动选择或填写路径。")}</div>`;
   for (const c of st.detected) {
     const b = document.createElement("button");
     b.type = "button";
     b.className = "setup-detect";
-    b.innerHTML = `<b>${c.kind === "vallina" ? "原版备份" : "游戏数据"}</b><span>${esc(c.path)}</span>`;
+    b.innerHTML = `<b>${c.kind === "vallina" ? t("原版备份") : t("游戏数据")}</b><span>${esc(c.path)}</span>`;
     if (winInput.value === c.path) b.classList.add("sel");
     b.onclick = () => {
       winInput.value = c.path;
@@ -3347,7 +3389,7 @@ async function showSetupDialog(st: SetupState) {
   renderSetupUtmt(st.utmt); // step 2 shows which CLI the extract would use, and offers one
   $<HTMLButtonElement>("setup-extract").onclick = async () => {
     const win = winInput.value.trim();
-    if (!win) return alertDialog("先选择或填写数据文件路径");
+    if (!win) return alertDialog(t("先选择或填写数据文件路径"));
     startSetupRun("extract");
     try {
       await api("/api/setup/extract", "POST", { vanillaWin: win });
@@ -3362,10 +3404,10 @@ async function showSetupDialog(st: SetupState) {
   const srcHint = $("setup-source-hint");
   const srcHintText = (n: number, dir: string) =>
     n
-      ? `✓ 找到 ${n} 个 gml_Object_*.gml`
+      ? t("✓ 找到 {n} 个 gml_Object_*.gml", { n })
       : dir
-        ? "这个目录里没有 gml_Object_*.gml——UTMT 的「Decompile all code」导出的是整个源码目录"
-        : "还没有配置过源码目录：UTMT「Decompile all code」导出一份，填这里（可先跳过；之后从菜单「帮助 → 本机设置…」重来）";
+        ? t("这个目录里没有 gml_Object_*.gml——UTMT 的「Decompile all code」导出的是整个源码目录")
+        : t("还没有配置过源码目录：UTMT「Decompile all code」导出一份，填这里（可先跳过；之后从菜单「帮助 → 本机设置…」重来）");
   srcHint.textContent = srcHintText(st.sourceGml, st.current.sourceDir);
   const srcPick = $<HTMLButtonElement>("setup-source-pick");
   srcPick.hidden = !hostBridge?.pickDir;
@@ -3373,12 +3415,12 @@ async function showSetupDialog(st: SetupState) {
     const p = await hostBridge!.pickDir!();
     if (p) {
       srcInput.value = p;
-      srcHint.textContent = "选择后由后端校验…";
+      srcHint.textContent = t("选择后由后端校验…");
     }
   };
   $<HTMLButtonElement>("setup-create-run").onclick = async () => {
     const src = srcInput.value.trim();
-    if (!src) return alertDialog("先选择或填写反编译源码目录");
+    if (!src) return alertDialog(t("先选择或填写反编译源码目录"));
     startSetupRun("create");
     try {
       await api("/api/setup/create", "POST", { sourceDir: src });
@@ -3389,7 +3431,7 @@ async function showSetupDialog(st: SetupState) {
   // the escape hatch: no source tree on this machine. The editor still works -- the canvas
   // falls back to layer depth -- so this must not be a dead end for the user
   $<HTMLButtonElement>("setup-create-skip").onclick = async () => {
-    if (!(await confirmDialog("跳过深度事实扫描？\n\n对象自己写在 Create 里的 depth 代码（如 depth = -y + 18）读不到，画布会按图层深度排，遮挡顺序可能与游戏内不一致（编辑器会持续提示）。\n\n之后随时可以用 UTMT 导出源码重来：菜单「帮助 → 本机设置…」。"))) return;
+    if (!(await confirmDialog(t("跳过深度事实扫描？\n\n对象自己写在 Create 里的 depth 代码（如 depth = -y + 18）读不到，画布会按图层深度排，遮挡顺序可能与游戏内不一致（编辑器会持续提示）。\n\n之后随时可以用 UTMT 导出源码重来：菜单「帮助 → 本机设置…」。")))) return;
     try {
       await api("/api/setup/create", "POST", { skip: true });
     } catch (e) {
@@ -3401,7 +3443,7 @@ async function showSetupDialog(st: SetupState) {
   // ---- progress panel (shared by the two long steps; events arrive on the store channel) ----
   $<HTMLButtonElement>("setup-retry").onclick = () => showSetupStep(setupRunJob === "extract" ? "win" : "create");
   const close = $<HTMLButtonElement>("setup-close");
-  close.textContent = "关闭";
+  close.textContent = t("关闭");
   close.onclick = () => dlg.close();
 
   if (st.running) {
@@ -3449,21 +3491,21 @@ function onSetupEvent(e: SetupEvent) {
     create: "扫描反编译源码，重建深度事实…",
     check: "校验版本指纹…",
   };
-  if (e.phase && phases[e.phase]) $("setup-phase").textContent = phases[e.phase];
+  if (e.phase && phases[e.phase]) $("setup-phase").textContent = t(phases[e.phase]);
   if (e.phase === "done") {
-    $("setup-phase").textContent = "完成";
+    $("setup-phase").textContent = t("完成");
     const scan = setupRunJob === "create";
     // the pinned fingerprint belongs to whoever builds the editor: a different game version
     // is expected (Stoneshard gets updated), so the comparison is stated as a fact about the
     // reference, never as a warning about the user's copy
-    const done = `${scan ? `深度事实扫描完成（${e.count ?? 0} 条）` : "提取完成"}`;
+    const done = `${scan ? t("深度事实扫描完成（{n} 条）", { n: e.count ?? 0 }) : t("提取完成")}`;
     $("setup-result").innerHTML = e.mismatches?.length
-      ? `<div class="ok">✓ ${done}。</div><div class="info">与开发侧参考版本的统计不同（仅提示，不影响使用）：<br>${e.mismatches.map(esc).join("<br>")}<br>${
+      ? `<div class="ok">✓ ${done}。</div><div class="info">${t("与开发侧参考版本的统计不同（仅提示，不影响使用）：")}<br>${e.mismatches.map(esc).join("<br>")}<br>${
           scan
-            ? "源码树与参考版本不同时，深度事实按这份源码算——游戏更新后重新导出源码即可。"
-            : "游戏更新后房间基底按这份 data 文件算——下面继续按同一份数据走。"
+            ? t("源码树与参考版本不同时，深度事实按这份源码算——游戏更新后重新导出源码即可。")
+            : t("游戏更新后房间基底按这份 data 文件算——下面继续按同一份数据走。")
         }</div>`
-      : `<div class="ok">✓ ${done}，与开发侧参考版本的统计一致。</div>`;
+      : `<div class="ok">✓ ${done}，${t("与开发侧参考版本的统计一致。")}</div>`;
     if (!scan) {
       // the cache is built in two passes: with the export done, the source scan is what is
       // still owed -- go straight there rather than offering "enter the editor" on a
@@ -3472,8 +3514,8 @@ function onSetupEvent(e: SetupEvent) {
         if (s.reasons.includes("create")) {
           $<HTMLInputElement>("setup-source").value = s.current.sourceDir;
           $("setup-source-hint").textContent = s.sourceGml
-            ? `✓ 找到 ${s.sourceGml} 个 gml_Object_*.gml`
-            : "这个目录里没有 gml_Object_*.gml——UTMT「Decompile all code」导出的是整个源码目录";
+            ? t("✓ 找到 {n} 个 gml_Object_*.gml", { n: s.sourceGml })
+            : t("这个目录里没有 gml_Object_*.gml——UTMT「Decompile all code」导出的是整个源码目录");
           setupRunJob = "create";
           showSetupStep("create");
         } else $("setup-done").hidden = false;
@@ -3483,8 +3525,8 @@ function onSetupEvent(e: SetupEvent) {
     $("setup-done").hidden = false;
   }
   if (e.phase === "error") {
-    $("setup-phase").textContent = "失败";
-    $("setup-result").innerHTML = `<div class="warn">✗ ${setupRunJob === "create" ? "扫描失败" : "提取失败"}：${esc(e.detail ?? "未知错误")}</div>`;
+    $("setup-phase").textContent = t("失败");
+    $("setup-result").innerHTML = `<div class="warn">${t(setupRunJob === "create" ? "✗ 扫描失败：{detail}" : "✗ 提取失败：{detail}", { detail: esc(e.detail ?? t("未知错误")) })}</div>`;
     $("setup-retry").hidden = false;
   }
 }
@@ -3495,7 +3537,7 @@ function wireWs() {
   const hot = (import.meta as any).hot;
   if (hot) {
     hot.on("svre:event", (e: any) => void onStoreEvent(e));
-    pushLog({ at: new Date().toISOString(), kind: "local", text: "已连接，开始记录服务端事件", n: 1 });
+    pushLog({ at: new Date().toISOString(), kind: "local", text: t("已连接，开始记录服务端事件"), n: 1 });
   } else {
     // no vite channel outside the dev server (electron prod): the standalone
     // backend emits the same events over SSE
@@ -3505,8 +3547,8 @@ function wireWs() {
     };
     // A dropped stream used to be completely silent -- the page just stopped hearing
     // about other editors. The log is the one place that can say so.
-    es.onopen = () => pushLog({ at: new Date().toISOString(), kind: "local", text: "已连接，开始记录服务端事件", n: 1 });
-    es.onerror = () => pushLog({ at: new Date().toISOString(), kind: "local", text: "与服务端的连接中断，正在重连…", n: 1 });
+    es.onopen = () => pushLog({ at: new Date().toISOString(), kind: "local", text: t("已连接，开始记录服务端事件"), n: 1 });
+    es.onerror = () => pushLog({ at: new Date().toISOString(), kind: "local", text: t("与服务端的连接中断，正在重连…"), n: 1 });
   }
 }
 
@@ -3520,7 +3562,7 @@ async function onStoreEvent(e: any) {
   // belongs to the project on the server, which is exactly what this event invalidates.
   if (e?.type === "project") {
     if (switching) return; // we asked for this switch; our own hardReset is already on its way
-    if (e.mode !== "welcome") toast("项目已在另一处切换，正在重新加载…");
+    if (e.mode !== "welcome") toast(t("项目已在另一处切换，正在重新加载…"));
     hardReset();
     return;
   }
@@ -3530,19 +3572,19 @@ async function onStoreEvent(e: any) {
     if (e.by === BY) return; // our own import already refreshed in submitSpriteImport
     await db.reloadModAssets();
     if ($<HTMLDialogElement>("palette-dialog").open) renderPalette();
-    toast(`${whoText(e.by)}导入了 ${e.object ?? "mod sprite"}，对象库已刷新`);
+    toast(`${whoText(e.by)}${t("导入了 {obj}，对象库已刷新", { obj: e.object ?? "mod sprite" })}`);
     return;
   }
   if (!doc || e?.room !== doc.name || doc.vanilla) return; // vanilla views track no project events
   switch (e.type) {
     case "change":
       if (e.entry?.by === BY) break; // our own commit already replayed it
-      toast(`${whoText(e.entry?.by)}：${e.entry?.label ?? "修改了房间"}（r${e.entry?.rev}）`);
+      toast(t("{who}：{label}（r{rev}）", { who: whoText(e.entry?.by), label: e.entry?.label ?? t("修改了房间"), rev: e.entry?.rev }));
       await syncDoc();
       break;
     case "undo":
       if (e.by === BY) break;
-      toast(`${whoText(e.by)} 撤销了 r${e.undone}`);
+      toast(t("{who} 撤销了 r{rev}", { who: whoText(e.by), rev: e.undone }));
       await syncDoc();
       break;
     case "compiled":
@@ -3552,7 +3594,7 @@ async function onStoreEvent(e: any) {
       break;
     case "notes":
       if (e.by === BY) break;
-      toast(`${whoText(e.by)} 修改了便签`);
+      toast(t("{who} 修改了便签", { who: whoText(e.by) }));
       doc = await api(`/api/doc/${doc.name}`);
       renderHistory();
       drawNotes();
@@ -3563,13 +3605,13 @@ async function onStoreEvent(e: any) {
       drawOverlay();
       break;
     case "reloaded":
-      toast("工程文件在磁盘上发生变化（git 操作或其他服务），已重新加载");
+      toast(t("工程文件在磁盘上发生变化（git 操作或其他服务），已重新加载"));
       await syncDoc();
       break;
   }
 }
 
-const whoText = (by?: string) => (by === BY ? "你" : by ? `${by}` : "有人");
+const whoText = (by?: string) => (by === BY ? t("你") : by ? `${by}` : t("有人"));
 
 // scripting hook for headless checks (Playwright / svre render)
 (window as any).svre = {
@@ -3682,5 +3724,5 @@ const whoText = (by?: string) => (by === BY ? "你" : by ? `${by}` : "有人");
 
 init().catch((e) => {
   console.error(e);
-  $("load-state").textContent = `出错：${e.message}`;
+  $("load-state").textContent = t("出错：{err}", { err: e.message });
 });

@@ -12,6 +12,8 @@ import crypto from "node:crypto";
 import { once } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
+import { tr } from "../src/i18n/index.ts";
+import { reqLang } from "./langctx.ts";
 
 export interface WinCandidate {
   path: string;
@@ -124,14 +126,14 @@ export function loadExpectedFingerprint(root: string): Fingerprint | null {
 export function fingerprintMismatches(expected: Fingerprint, got: Fingerprint, only?: (keyof Fingerprint)[]): string[] {
   const out: string[] = [];
   const cmp = (label: string, a: number | string, b: number | string) => {
-    if (a !== b) out.push(`${label}：应为 ${a}，实为 ${b}`);
+    if (a !== b) out.push(tr(reqLang(), "{label}：应为 {a}，实为 {b}", { label, a, b }));
   };
   const want = (k: keyof Fingerprint) => !only || only.includes(k);
-  if (want("objects")) cmp("对象数", expected.objects, got.objects);
-  if (want("sprites")) cmp("sprite 数", expected.sprites, got.sprites);
-  if (want("rooms")) cmp("房间数", expected.rooms, got.rooms);
-  if (want("indexSha256")) cmp("房间索引哈希", expected.indexSha256.slice(0, 12), got.indexSha256.slice(0, 12));
-  if (want("create")) cmp("深度事实条目", expected.create, got.create);
+  if (want("objects")) cmp(tr(reqLang(), "对象数"), expected.objects, got.objects);
+  if (want("sprites")) cmp(tr(reqLang(), "sprite 数"), expected.sprites, got.sprites);
+  if (want("rooms")) cmp(tr(reqLang(), "房间数"), expected.rooms, got.rooms);
+  if (want("indexSha256")) cmp(tr(reqLang(), "房间索引哈希"), expected.indexSha256.slice(0, 12), got.indexSha256.slice(0, 12));
+  if (want("create")) cmp(tr(reqLang(), "深度事实条目"), expected.create, got.create);
   return out;
 }
 
@@ -225,13 +227,13 @@ export async function installUtmt(opts: {
     fs.mkdirSync(stage, { recursive: true });
     await unzipTo(zip, stage);
     const exe = findFile(stage, UTMT_RELEASE.exe, 3);
-    if (!exe) throw new Error(`压缩包里没有 ${UTMT_RELEASE.exe}：这个来源不是 UTMT CLI 的发布包？`);
+    if (!exe) throw new Error(tr(reqLang(), "压缩包里没有 {exe}：这个来源不是 UTMT CLI 的发布包？", { exe: UTMT_RELEASE.exe }));
     // the release zip wraps everything in UTMT_CLI_v<version>-Windows/, so install the
     // folder's CONTENTS: the flat dest/UndertaleModCli.exe layout both resolveUtmtCli and
     // `npm run vendor:utmt` produce
     const src = path.dirname(exe);
     for (const f of ["UndertaleModLib.dll", "UndertaleModCli.runtimeconfig.json"])
-      if (!fs.existsSync(path.join(src, f))) throw new Error(`解压结果不像 UTMT CLI：缺 ${f}`);
+      if (!fs.existsSync(path.join(src, f))) throw new Error(tr(reqLang(), "解压结果不像 UTMT CLI：缺 {f}", { f }));
     if (fs.existsSync(opts.dest)) fs.renameSync(opts.dest, old);
     try {
       fs.renameSync(src, opts.dest);
@@ -257,7 +259,7 @@ const mb = (n: number) => `${(n / 1048576).toFixed(1)} MB`;
 
 async function fetchTo(url: string, file: string, expectBytes: number, onProgress: (p: UtmtProgress) => void): Promise<void> {
   const res = await fetch(url, { redirect: "follow" });
-  if (!res.ok || !res.body) throw new Error(`下载失败：HTTP ${res.status} ${res.statusText}（${url}）`);
+  if (!res.ok || !res.body) throw new Error(tr(reqLang(), "下载失败：HTTP {status} {statusText}（{url}）", { status: res.status, statusText: res.statusText, url }));
   const total = Number(res.headers.get("content-length")) || expectBytes || 0;
   const sink = fs.createWriteStream(file);
   // a write-stream error is emitted, not thrown: without this it would take the process
@@ -286,7 +288,7 @@ async function fetchTo(url: string, file: string, expectBytes: number, onProgres
     await reader.cancel().catch(() => {});
     throw e;
   }
-  if (expectBytes && got !== expectBytes) throw new Error(`下载不完整：${got} 字节，应为 ${expectBytes}（${url}）`);
+  if (expectBytes && got !== expectBytes) throw new Error(tr(reqLang(), "下载不完整：{got} 字节，应为 {expectBytes}（{url}）", { got, expectBytes, url }));
 }
 
 // Windows ships bsdtar (System32\tar.exe, 10 1803+) which reads zip natively, and every
@@ -307,12 +309,12 @@ async function unzipTo(zip: string, dir: string): Promise<void> {
     try {
       const code = await spawnOnce(cmd, args);
       if (code === 0) return;
-      why.push(`${path.basename(cmd)} 退出码 ${code}`);
+      why.push(tr(reqLang(), "{cmd} 退出码 {code}", { cmd: path.basename(cmd), code }));
     } catch (e) {
-      why.push(`${path.basename(cmd)} 无法启动：${(e as Error).message}`);
+      why.push(tr(reqLang(), "{cmd} 无法启动：{msg}", { cmd: path.basename(cmd), msg: (e as Error).message }));
     }
   }
-  throw new Error(`解压失败（${why.join("；")}）`);
+  throw new Error(tr(reqLang(), "解压失败（{why}）", { why: why.join("；") }));
 }
 
 // resolves with the exit code; rejects only when the program itself could not be started
@@ -367,16 +369,16 @@ export function runExtract(opts: {
   child.stdout.on("data", pump);
   child.stderr.on("data", pump);
   const promise = new Promise<ExtractResult>((resolve) => {
-    child.on("error", (e) => resolve({ ok: false, mismatches: [], error: `启动 UTMT CLI 失败：${e.message}` }));
+    child.on("error", (e) => resolve({ ok: false, mismatches: [], error: tr(reqLang(), "启动 UTMT CLI 失败：{msg}", { msg: e.message }) }));
     child.on("close", (code) => {
-      if (code !== 0) return resolve({ ok: false, mismatches: [], error: `UTMT CLI 退出码 ${code}` });
+      if (code !== 0) return resolve({ ok: false, mismatches: [], error: tr(reqLang(), "UTMT CLI 退出码 {code}", { code }) });
       try {
         opts.onProgress({ phase: "check" });
         const got = fingerprintCache(opts.assetsDir);
         // create.json is the other pass's job (runCreateScan) -- not compared here
         resolve({ ok: true, mismatches: opts.expected ? fingerprintMismatches(opts.expected, got, ["objects", "sprites", "rooms", "indexSha256"]) : [] });
       } catch (e) {
-        resolve({ ok: false, mismatches: [], error: `提取后校验失败：${(e as Error).message}` });
+        resolve({ ok: false, mismatches: [], error: tr(reqLang(), "提取后校验失败：{msg}", { msg: (e as Error).message }) });
       }
     });
   });
@@ -431,25 +433,25 @@ export function runCreateScan(opts: {
   child.stdout.on("data", pump);
   child.stderr.on("data", pump);
   const promise = new Promise<ExtractResult>((resolve) => {
-    child.on("error", (e) => resolve({ ok: false, mismatches: [], error: `启动源码扫描失败：${e.message}` }));
+    child.on("error", (e) => resolve({ ok: false, mismatches: [], error: tr(reqLang(), "启动源码扫描失败：{msg}", { msg: e.message }) }));
     child.on("close", (code) => {
-      if (code !== 0) return resolve({ ok: false, mismatches: [], error: `源码扫描退出码 ${code}` });
+      if (code !== 0) return resolve({ ok: false, mismatches: [], error: tr(reqLang(), "源码扫描退出码 {code}", { code }) });
       try {
         opts.onProgress({ phase: "check" });
         const got = fingerprintCache(opts.assetsDir);
         // an empty table means the scan recognised nothing: a source tree of the wrong
         // game/version, and a silent fallback is worse than refusing it here
-        if (!got.create) return resolve({ ok: false, mismatches: [], error: "扫描没有产出任何深度事实：这个源码目录里没有可识别的对象事件？" });
+        if (!got.create) return resolve({ ok: false, mismatches: [], error: tr(reqLang(), "扫描没有产出任何深度事实：这个源码目录里没有可识别的对象事件？") });
         // ...and a wrong-but-real folder does NOT come back empty: every object that
         // inherits a Draw event still gets `draw:none` when its file cannot be read (6611
         // of them here). A genuine tree always assigns depth somewhere, so zero depth
         // facts means the files were never found.
         const facts = JSON.parse(fs.readFileSync(path.join(opts.assetsDir, "create.json"), "utf8")) as Record<string, { depth?: unknown }>;
         if (!Object.values(facts).some((f) => f.depth))
-          return resolve({ ok: false, mismatches: [], error: "扫描读不到任何 depth 赋值：这个目录下的 gml_Object_*.gml 不是这个版本的源码？" });
+          return resolve({ ok: false, mismatches: [], error: tr(reqLang(), "扫描读不到任何 depth 赋值：这个目录下的 gml_Object_*.gml 不是这个版本的源码？") });
         resolve({ ok: true, count: got.create, mismatches: opts.expected ? fingerprintMismatches(opts.expected, got, ["create"]) : [] });
       } catch (e) {
-        resolve({ ok: false, mismatches: [], error: `扫描后校验失败：${(e as Error).message}` });
+        resolve({ ok: false, mismatches: [], error: tr(reqLang(), "扫描后校验失败：{msg}", { msg: (e as Error).message }) });
       }
     });
   });

@@ -65,6 +65,8 @@ import {
   UTMT_RELEASE,
 } from "./setup.ts";
 import { HttpError, Store } from "./store.ts";
+import { tr } from "../src/i18n/index.ts";
+import { parseLang, reqLang, withLang } from "./langctx.ts";
 
 export interface SvreConfig {
   // the open project: a mod's source directory. "" = no project open, which is a normal
@@ -282,7 +284,7 @@ export function createApi(root: string, opts: { home?: string } = {}): SvreApi {
       // nothing on disk at all (a dev clone with no config): the local file, which
       // loadConfig reads when the repo config is absent
       path.join(root, "svre.config.local.json");
-    if (!target) throw new HttpError(500, "没有可写的配置位置");
+    if (!target) throw new HttpError(500, tr(reqLang(), "没有可写的配置位置"));
     fs.mkdirSync(path.dirname(target), { recursive: true });
     const cur = fs.existsSync(target) ? JSON.parse(fs.readFileSync(target, "utf8")) : {};
     fs.writeFileSync(target, JSON.stringify({ ...cur, ...patch }, null, 2) + "\n");
@@ -328,11 +330,17 @@ export function createApi(root: string, opts: { home?: string } = {}): SvreApi {
     expected: loadExpectedFingerprint(root),
   });
 
-  const handler: Connect.NextHandleFunction = async (req, res, next) => {
+  const handler: Connect.NextHandleFunction = (req, res, next) => {
     const [rawPath, qs] = (req.url ?? "").split("?");
     const url = decodeURIComponent(rawPath);
     const q = Object.fromEntries(new URLSearchParams(qs ?? ""));
     const method = req.method ?? "GET";
+    // the page asks for a language with ?lang=; carry it for this request's whole async
+    // flow so the messages below (HttpError texts, diagnostics, SSE lines) translate it
+    return withLang(parseLang(q.lang), () => dispatch(req, res, next, url, method, q));
+  };
+
+  async function dispatch(req: any, res: any, next: Connect.NextFunction, url: string, method: string, q: Record<string, string>): Promise<void> {
     try {
       if (url === "/api/config") return send(res, 200, cfg);
       // -------- what answers in degraded mode: /api/setup*, /api/projects*, /api/config --------
@@ -343,8 +351,8 @@ export function createApi(root: string, opts: { home?: string } = {}): SvreApi {
       if (url === "/api/projects/open" && method === "POST") {
         // the two long jobs own the cache for their whole run; switching under them would
         // leave them writing into a project the user has left
-        if (extractState.running) throw new HttpError(409, "资产提取正在进行中，稍候再切换项目");
-        if (utmtState.running) throw new HttpError(409, "UTMT CLI 正在下载安装中，稍候再切换项目");
+        if (extractState.running) throw new HttpError(409, tr(reqLang(), "资产提取正在进行中，稍候再切换项目"));
+        if (utmtState.running) throw new HttpError(409, tr(reqLang(), "UTMT CLI 正在下载安装中，稍候再切换项目"));
         const b = await readJson(req);
         const { dir } = validateProjectPath(String(b.path ?? ""));
         const bad = validModName(dir);
@@ -355,7 +363,7 @@ export function createApi(root: string, opts: { home?: string } = {}): SvreApi {
         if (unfamiliar && !b.force)
           throw new HttpError(
             409,
-            `${dir} 看起来不是 mod 源码目录（没有 Codes/、Sprites/、assets.json 或 *.csproj）。\n\n照常打开：会补上编辑器需要的骨架（rooms/、Sprites/、Codes/、assets.json），mod 本身仍由 MSL 创建。`,
+            tr(reqLang(), "{dir} 看起来不是 mod 源码目录（没有 Codes/、Sprites/、assets.json 或 *.csproj）。\n\n照常打开：会补上编辑器需要的骨架（rooms/、Sprites/、Codes/、assets.json），mod 本身仍由 MSL 创建。", { dir }),
             { code: "unfamiliar", path: dir },
           );
         const made = ensureSkeleton(dir);
@@ -369,8 +377,8 @@ export function createApi(root: string, opts: { home?: string } = {}): SvreApi {
       if (url === "/api/projects/close" && method === "POST") {
         // same two guards as 打开项目: leaving a project mid-job is the same hazard as
         // arriving at one (the job writes into the project it was started on)
-        if (extractState.running) throw new HttpError(409, "资产提取正在进行中，稍候再关闭项目");
-        if (utmtState.running) throw new HttpError(409, "UTMT CLI 正在下载安装中，稍候再关闭项目");
+        if (extractState.running) throw new HttpError(409, tr(reqLang(), "资产提取正在进行中，稍候再关闭项目"));
+        if (utmtState.running) throw new HttpError(409, tr(reqLang(), "UTMT CLI 正在下载安装中，稍候再关闭项目"));
         // the closing project stays in the recent list (boot() seeded it): 关闭项目 means
         // "back to the welcome page", not "forget this project"
         persistConfig({ modDir: "", recent: cfg.recent });
@@ -385,21 +393,21 @@ export function createApi(root: string, opts: { home?: string } = {}): SvreApi {
         return send(res, 200, { ok: true, recent: cfg.recent });
       }
       if (url === "/api/setup/extract" && method === "POST") {
-        if (extractState.running) throw new HttpError(409, "提取正在进行中");
+        if (extractState.running) throw new HttpError(409, tr(reqLang(), "提取正在进行中"));
         const b = await readJson(req);
         const win = path.resolve(String(b.vanillaWin ?? ""));
-        if (!fs.existsSync(win) || !/\.win$/i.test(win)) throw new HttpError(400, `找不到数据文件：${win}`);
+        if (!fs.existsSync(win) || !/\.win$/i.test(win)) throw new HttpError(400, tr(reqLang(), "找不到数据文件：{win}", { win }));
         const mb = fs.statSync(win).size / 1048576;
-        if (mb < 64) throw new HttpError(400, `文件只有 ${mb.toFixed(1)} MB，不像 Stoneshard 的 data.win（正常约 1.5 GB）`);
-        if (utmtState.running) throw new HttpError(409, "UTMT CLI 正在下载安装中，稍候再提取");
+        if (mb < 64) throw new HttpError(400, tr(reqLang(), "文件只有 {mb} MB，不像 Stoneshard 的 data.win（正常约 1.5 GB）", { mb: mb.toFixed(1) }));
+        if (utmtState.running) throw new HttpError(409, tr(reqLang(), "UTMT CLI 正在下载安装中，稍候再提取"));
         const utmt = resolveUtmtCli(cfg.utmtCli, root, opts.home);
         if (!utmt)
           throw new HttpError(
             400,
-            `找不到 ${UTMT_RELEASE.exe}：用向导里的「下载并安装 UTMT CLI」，或在配置 utmtCli 指向自己的安装、放一份到 vendor/utmt/`,
+            tr(reqLang(), "找不到 {exe}：用向导里的「下载并安装 UTMT CLI」，或在配置 utmtCli 指向自己的安装、放一份到 vendor/utmt/", { exe: UTMT_RELEASE.exe }),
           );
         const scripts = [path.join(root, "extract", "ExportEditorAssets.csx"), path.join(root, "extract", "ExportRooms.csx")];
-        for (const s of scripts) if (!fs.existsSync(unpackedPath(s))) throw new HttpError(500, `缺导出脚本 ${s}`);
+        for (const s of scripts) if (!fs.existsSync(unpackedPath(s))) throw new HttpError(500, tr(reqLang(), "缺导出脚本 {s}", { s }));
         extractState.running = true;
         emit({ type: "setup", phase: "assets", line: `${path.basename(utmt)} load ${win}` });
         runExtract({
@@ -431,7 +439,7 @@ export function createApi(root: string, opts: { home?: string } = {}): SvreApi {
       // for it, or accept the fallback. Either way the cache is then complete and boot()
       // leaves degraded mode.
       if (url === "/api/setup/create" && method === "POST") {
-        if (extractState.running) throw new HttpError(409, "提取正在进行中");
+        if (extractState.running) throw new HttpError(409, tr(reqLang(), "提取正在进行中"));
         const b = await readJson(req);
         const createFile = path.join(cfg.assetsDir, "create.json");
         if (b.skip) {
@@ -443,10 +451,10 @@ export function createApi(root: string, opts: { home?: string } = {}): SvreApi {
         const src = path.resolve(String(b.sourceDir ?? ""));
         const gml = countGmlSource(src);
         if (!gml)
-          throw new HttpError(400, `${src} 里没有 gml_Object_*.gml：用 UTMT「Decompile all code」导出源码（或整包反编译），再指向那个目录`);
+          throw new HttpError(400, tr(reqLang(), "{src} 里没有 gml_Object_*.gml：用 UTMT「Decompile all code」导出源码（或整包反编译），再指向那个目录", { src }));
         extractState.running = true;
         persistConfig({ sourceDir: src }); // remembered for the next game update
-        emit({ type: "setup", phase: "create", line: `scan-create.mjs ${src}（${gml} 个对象事件文件）` });
+        emit({ type: "setup", phase: "create", line: tr(reqLang(), "scan-create.mjs {src}（{gml} 个对象事件文件）", { src, gml }) });
         runCreateScan({
           srcDir: src,
           assetsDir: cfg.assetsDir,
@@ -470,7 +478,7 @@ export function createApi(root: string, opts: { home?: string } = {}): SvreApi {
       // backend back to degraded -- the cache on disk stays until a fresh extract succeeds,
       // so an abandoned or failed round costs the user nothing.
       if (url === "/api/setup/restart" && method === "POST") {
-        if (extractState.running) throw new HttpError(409, "提取正在进行中");
+        if (extractState.running) throw new HttpError(409, tr(reqLang(), "提取正在进行中"));
         setupForced = true;
         return send(res, 200, { ok: true, setup: setupState() });
       }
@@ -478,8 +486,8 @@ export function createApi(root: string, opts: { home?: string } = {}): SvreApi {
       // get one short of knowing about a GitHub release. Fetch it here instead: the pinned
       // release lands in utmtInstallDir, where resolveUtmtCli then finds it.
       if (url === "/api/setup/utmt" && method === "POST") {
-        if (extractState.running) throw new HttpError(409, "提取正在进行中");
-        if (utmtState.running) throw new HttpError(409, "UTMT CLI 正在下载安装中");
+        if (extractState.running) throw new HttpError(409, tr(reqLang(), "提取正在进行中"));
+        if (utmtState.running) throw new HttpError(409, tr(reqLang(), "UTMT CLI 正在下载安装中"));
         const dest = utmtInstallDir(root, opts.home);
         // SVRE_UTMT_URL: the e2e points this at a local zip; it is also how a mirror (or a
         // locally downloaded copy) is used when github.com is unreachable. A test zip has
@@ -487,7 +495,7 @@ export function createApi(root: string, opts: { home?: string } = {}): SvreApi {
         const srcUrl = process.env.SVRE_UTMT_URL || UTMT_RELEASE.url;
         const expectBytes = process.env.SVRE_UTMT_URL ? 0 : UTMT_RELEASE.bytes;
         utmtState.running = true;
-        emit({ type: "setup", job: "utmt", phase: "download", line: `下载 UTMT CLI v${UTMT_RELEASE.version}（${srcUrl}）` });
+        emit({ type: "setup", job: "utmt", phase: "download", line: tr(reqLang(), "下载 UTMT CLI v{version}（{srcUrl}）", { version: UTMT_RELEASE.version, srcUrl }) });
         void installUtmt({ dest, url: srcUrl, expectBytes, onProgress: (p) => emit({ type: "setup", job: "utmt", ...p }) })
           .then((r) => {
             utmtState.running = false;
@@ -504,7 +512,7 @@ export function createApi(root: string, opts: { home?: string } = {}): SvreApi {
       // itself to the right screen without a second round trip.
       if (degraded() && url.startsWith("/api/")) {
         const st = setupState();
-        return send(res, 503, { error: "还没有打开项目，或本机设置未完成", setup: true, mode: st.mode, project: st.project });
+        return send(res, 503, { error: tr(reqLang(), "还没有打开项目，或本机设置未完成"), setup: true, mode: st.mode, project: st.project });
       }
       // Requests that await before touching the store must re-read it afterwards: a
       // concurrent /api/projects/open|close runs boot() synchronously and rebinds the
@@ -544,27 +552,27 @@ export function createApi(root: string, opts: { home?: string } = {}): SvreApi {
         const ident = /^[A-Za-z_]\w*$/;
         const sprite = String(b.sprite ?? "");
         const object = String(b.object ?? "");
-        if (!ident.test(sprite)) throw new HttpError(400, `sprite 名不合法（字母/数字/下划线，字母或下划线开头）：${sprite || "(空)"}`);
-        if (!ident.test(object)) throw new HttpError(400, `对象名不合法：${object || "(空)"}`);
-        if (vanillaNames.sprites.has(sprite)) throw new HttpError(409, `sprite ${sprite} 与原版重名，换个名字`);
-        if (vanillaNames.objects.has(object)) throw new HttpError(409, `对象 ${object} 与原版重名，换个名字`);
-        if (modScan.sprites[sprite]) throw new HttpError(409, `Sprites/ 里已有 ${sprite}（换图直接替换文件；加帧放 ${sprite}_N.png 后 sync）`);
-        if (modScan.objects[object]) throw new HttpError(409, `assets.json 已注册对象 ${object}`);
+        if (!ident.test(sprite)) throw new HttpError(400, tr(reqLang(), "sprite 名不合法（字母/数字/下划线，字母或下划线开头）：{name}", { name: sprite || "(空)" }));
+        if (!ident.test(object)) throw new HttpError(400, tr(reqLang(), "对象名不合法：{name}", { name: object || "(空)" }));
+        if (vanillaNames.sprites.has(sprite)) throw new HttpError(409, tr(reqLang(), "sprite {sprite} 与原版重名，换个名字", { sprite }));
+        if (vanillaNames.objects.has(object)) throw new HttpError(409, tr(reqLang(), "对象 {object} 与原版重名，换个名字", { object }));
+        if (modScan.sprites[sprite]) throw new HttpError(409, tr(reqLang(), "Sprites/ 里已有 {sprite}（换图直接替换文件；加帧放 {sprite}_N.png 后 sync）", { sprite }));
+        if (modScan.objects[object]) throw new HttpError(409, tr(reqLang(), "assets.json 已注册对象 {object}", { object }));
         const frames: { buf: Buffer; w: number; h: number }[] = [];
         for (const f of Array.isArray(b.frames) ? b.frames : []) {
           const buf = Buffer.from(String((f as { data?: unknown } | null)?.data ?? ""), "base64");
           const size = pngSizeBuffer(buf);
-          if (!size) throw new HttpError(400, "有文件不是合法的 PNG");
+          if (!size) throw new HttpError(400, tr(reqLang(), "有文件不是合法的 PNG"));
           frames.push({ buf, ...size });
         }
-        if (!frames.length) throw new HttpError(400, "至少要选一帧 PNG");
-        if (!frames.every((f) => f.w === frames[0].w && f.h === frames[0].h)) throw new HttpError(400, "多帧的尺寸必须一致");
+        if (!frames.length) throw new HttpError(400, tr(reqLang(), "至少要选一帧 PNG"));
+        if (!frames.every((f) => f.w === frames[0].w && f.h === frames[0].h)) throw new HttpError(400, tr(reqLang(), "多帧的尺寸必须一致"));
         const { manifest } = loadManifest(cfg.modDir);
         const parent = b.parent ? String(b.parent) : undefined;
         if (parent && !vanillaNames.objects.has(parent) && !manifest.objects[parent])
-          throw new HttpError(400, `parent ${parent} 不在原版对象表里`);
+          throw new HttpError(400, tr(reqLang(), "parent {parent} 不在原版对象表里", { parent }));
         const origin = b.origin !== undefined ? [Number(b.origin[0]), Number(b.origin[1])] as [number, number] : undefined;
-        if (origin && (!Number.isFinite(origin[0]) || !Number.isFinite(origin[1]))) throw new HttpError(400, "origin 必须是两个数字");
+        if (origin && (!Number.isFinite(origin[0]) || !Number.isFinite(origin[1]))) throw new HttpError(400, tr(reqLang(), "origin 必须是两个数字"));
         const note = b.note ? String(b.note) : undefined;
 
         const dir = path.join(cfg.modDir, "Sprites");

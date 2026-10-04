@@ -8,6 +8,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { HttpError } from "./store.ts";
+import { tr } from "../src/i18n/index.ts";
+import { reqLang } from "./langctx.ts";
 
 export interface RecentProject {
   path: string;
@@ -51,24 +53,24 @@ const key = (p: string) => (process.platform === "win32" ? p.toLowerCase() : p);
 export function validModName(dir: string): string | null {
   const name = projectName(dir);
   if (IDENT.test(name)) return null;
-  return `「${name}」不能直接用作项目名：编辑器生成的 C#（namespace ${name}; 与 ${name}.Rooms.g.cs）要求文件夹名以字母或下划线开头、只含字母数字下划线。把文件夹改个名（例如 StoneValley）再打开。`;
+  return tr(reqLang(), "「{name}」不能直接用作项目名：编辑器生成的 C#（namespace {name}; 与 {name}.Rooms.g.cs）要求文件夹名以字母或下划线开头、只含字母数字下划线。把文件夹改个名（例如 StoneValley）再打开。", { name });
 }
 
 // Fully resolve and vet a user-typed/picked path. Everything downstream (mkdir, write)
 // can then assume a real directory.
 export function validateProjectPath(input: string): { dir: string; name: string } {
   const raw = input.trim();
-  if (!raw) throw new HttpError(400, "需要项目目录路径");
+  if (!raw) throw new HttpError(400, tr(reqLang(), "需要项目目录路径"));
   const dir = path.resolve(raw);
   // a drive root or a UNC share root is not a project (and scaffolding one would litter
   // the volume); path.parse().root covers "D:\" and "\\server\share\"
-  if (dir === path.parse(dir).root) throw new HttpError(400, `${dir} 是盘符根目录，不能作为项目目录`);
+  if (dir === path.parse(dir).root) throw new HttpError(400, tr(reqLang(), "{dir} 是盘符根目录，不能作为项目目录", { dir }));
   if (!isDir(dir)) {
-    if (fs.existsSync(dir)) throw new HttpError(400, `${dir} 是一个文件，不是文件夹`);
+    if (fs.existsSync(dir)) throw new HttpError(400, tr(reqLang(), "{dir} 是一个文件，不是文件夹", { dir }));
     // a path that does not exist yet is fine (新建项目): mkdirSync below creates it
   }
   const name = projectName(dir);
-  if (!name) throw new HttpError(400, `${dir} 不是一个可用的项目目录`);
+  if (!name) throw new HttpError(400, tr(reqLang(), "{dir} 不是一个可用的项目目录", { dir }));
   return { dir, name };
 }
 

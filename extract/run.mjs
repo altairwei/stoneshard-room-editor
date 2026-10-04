@@ -3,7 +3,9 @@
 //   1. UTMT CLI, one load, two scripts:
 //      ExportEditorAssets.csx -> objects.json, sprites.json, rooms.json, pages/*.png
 //      ExportRooms.csx        -> rooms/*.json + rooms/_index.json (all 1067 room bases)
-//   2. scan-create.mjs over the decompiled source -> create.json (depth / visible / draw facts)
+//   2. scan-create.mjs over the decompiled source -> create.json (depth / visible / draw
+//      facts) + lang/objnames.json (game display names for the ~254 objects that use
+//      global.inv_text)
 //
 // Paths come from svre.config.json (+ svre.config.local.json). Only needed again when the
 // game updates (then also regenerate extract/fingerprint.json). Takes a few minutes; the
@@ -36,7 +38,7 @@ if (only !== "scan") {
       "-s", path.join(root, "extract", "ExportRooms.csx"),
     ],
     {
-      env: { ...process.env, SVRE_OUT: cfg.assetsDir },
+      env: { ...process.env, SVRE_OUT: cfg.assetsDir, SVRE_LANGS: process.env.SVRE_LANGS ?? "en,ru,zh" },
       stdio: ["ignore", "inherit", "inherit"],
     },
   );

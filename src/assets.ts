@@ -3,6 +3,7 @@
 // art (/api/mod-assets, parsed server-side from Sprites/*.png + the mod's C#): its frames
 // get pseudo page numbers >= MOD_PAGE_BASE and each PNG is its own "page".
 import { Assets, Rectangle, Texture, TextureSource } from "pixi.js";
+import { setObjNames } from "./i18n/index.ts";
 
 export const MOD_PAGE_BASE = 1_000_000;
 export const pageUrl = (i: number) =>
@@ -55,6 +56,13 @@ export class AssetDb {
       return r.json();
     });
     [this.objects, this.sprites, this.create] = await Promise.all([get("objects.json"), get("sprites.json"), get("create.json")]);
+
+    // object display names (extract step 2): best-effort, an old cache just lacks the file
+    try {
+      setObjNames(await get("lang/objnames.json"));
+    } catch {
+      setObjNames({});
+    }
 
     // Best-effort: an editor without the route still works.
     try {

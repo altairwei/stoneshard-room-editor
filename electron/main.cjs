@@ -32,7 +32,7 @@ let baseUrl = "";
 // The renderer's snapshot of everything the native menu reflects. The shell NEVER fetches
 // its own copy of anything (the old modDirCache did, and went stale on every project
 // switch): whatever the page pushed last is the truth.
-let menuState = { theme: "dark", zmode: "game", tool: "select", toggles: {}, mode: "welcome", project: null, recent: [] };
+let menuState = { theme: "dark", zmode: "game", tool: "select", toggles: {}, mode: "welcome", project: null, recent: [], lang: "zh" };
 let menuKey = ""; // JSON of the last template built, so identical pushes are a no-op
 
 // frameless chrome: the OS title bar is hidden (titleBarStyle:"hidden" keeps the native
@@ -179,6 +179,18 @@ function buildMenu(s) {
       submenu: [
         { label: "主题：白天", type: "radio", checked: s.theme === "light", click: () => send("view.theme.light") },
         { label: "主题：黑夜", type: "radio", checked: s.theme !== "light", click: () => send("view.theme.dark") },
+        { type: "separator" },
+        // each language names itself, so these need no translation of their own; the shell
+        // reloads the page on pick, which re-localizes everything (?lang= is read by api()
+        // at call time -- the same reason the browser dropdown re-paints in place)
+        {
+          label: "界面语言",
+          submenu: [
+            { label: "中文", type: "radio", checked: s.lang === "zh", click: () => send("lang.set.zh") },
+            { label: "English", type: "radio", checked: s.lang === "en", click: () => send("lang.set.en") },
+            { label: "Русский", type: "radio", checked: s.lang === "ru", click: () => send("lang.set.ru") },
+          ],
+        },
         { type: "separator" },
         { label: "顺序：游戏（游戏内真实遮挡）", type: "radio", checked: s.zmode !== "static", click: () => send("view.zmode.game") },
         { label: "顺序：静态（UTMT 对账视图）", type: "radio", checked: s.zmode === "static", click: () => send("view.zmode.static") },

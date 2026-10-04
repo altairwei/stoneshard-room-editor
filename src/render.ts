@@ -28,6 +28,7 @@
 import { Container, Graphics, Sprite, Text } from "pixi.js";
 import type { AssetDb, Frame } from "./assets";
 import { CELL, LayerType, allInstances, gmColor, type Room, type RoomInstance, type RoomLayer } from "./core/room.ts";
+import { t } from "./i18n/index.ts";
 
 export type NodeKind = "drawn" | "hidden" | "collision" | "marker";
 
@@ -108,34 +109,34 @@ function resolveDepth(db: AssetDb, obj: string, inst: RoomInstance, layer: RoomL
   if (d && !d.conditional) {
     if (d.mode === "y") {
       const off = d.offset ?? 0;
-      const src = d.perFrame ? `${d.from} 的 Step 每帧重写` : `${d.from} 的 Create`;
-      const via = d.offsetVar ? `，偏移来自 ${d.offsetVar} 的缺省值，房间 CC 可改` : "";
-      return [-inst.y + off, `-y ${off >= 0 ? "+" : "-"} ${Math.abs(off)}（${src}${via}）`];
+      const src = d.perFrame ? t("{from} 的 Step 每帧重写", { from: d.from }) : t("{from} 的 Create", { from: d.from });
+      const via = d.offsetVar ? t("，偏移来自 {offsetVar} 的缺省值，房间 CC 可改", { offsetVar: d.offsetVar }) : "";
+      return [-inst.y + off, t("-y {sign} {abs}（{src}{via}）", { sign: off >= 0 ? "+" : "-", abs: Math.abs(off), src, via })];
     }
-    if (d.mode === "const") return [d.value!, `${d.value}（${d.from} 的 Create）`];
-    return [layer.layer_depth, `图层深度；${d.from} 的 Create 设为 ${d.expr}（未求值）`];
+    if (d.mode === "const") return [d.value!, t("{value}（{from} 的 Create）", { value: d.value, from: d.from })];
+    return [layer.layer_depth, t("图层深度；{from} 的 Create 设为 {expr}（未求值）", { from: d.from, expr: d.expr })];
   }
-  if (d?.conditional) return [layer.layer_depth, `图层深度；${d.from} 的 Create 有条件地改 depth`];
-  return [layer.layer_depth, `图层深度（${layer.layer_name}）`];
+  if (d?.conditional) return [layer.layer_depth, t("图层深度；{from} 的 Create 有条件地改 depth", { from: d.from })];
+  return [layer.layer_depth, t("图层深度（{layer}）", { layer: layer.layer_name })];
 }
 
 function resolveVisible(db: AssetDb, obj: string, layer: RoomLayer): [boolean, string] {
   const def = db.objects[obj];
   const v = db.createOf(obj)?.visible;
   let vis = def?.visible ?? true;
-  let why = `对象标志 visible=${vis}`;
+  let why = t("对象标志 visible={vis}", { vis: String(vis) });
   if (v && !v.conditional) {
     vis = v.value;
-    why = `${v.from} 的 Create 设 visible=${v.value}`;
+    why = t("{from} 的 Create 设 visible={value}", { from: v.from, value: String(v.value) });
   }
   const draw = db.createOf(obj)?.draw;
   if (vis && draw && (draw.mode === "hl" || draw.mode === "none")) {
     // doors, ladders, the furnace: their picture is baked into the walls; at rest they
     // draw nothing, only a hover highlight
     vis = false;
-    why += draw.mode === "hl" ? `；${draw.from} 的 Draw 只画悬停高亮` : `；${draw.from} 的 Draw 什么也不画`;
+    why += draw.mode === "hl" ? t("；{from} 的 Draw 只画悬停高亮", { from: draw.from }) : t("；{from} 的 Draw 什么也不画", { from: draw.from });
   }
-  if (!layer.is_visible) return [false, `${why}；图层 ${layer.layer_name} 游戏内隐藏`];
+  if (!layer.is_visible) return [false, t("{why}；图层 {layer} 游戏内隐藏", { why, layer: layer.layer_name })];
   return [vis, why];
 }
 
@@ -260,7 +261,7 @@ export async function buildScene(db: AssetDb, room: Room, opts?: { zmode?: ZMode
       const draw = db.createOf(obj)?.draw;
       if (draw?.mode === "baked") {
         depth = draw.depth!;
-        depthWhy = `${draw.depth}（scr_bgRenderAdd 烙进背景 surface，${draw.from}）`;
+        depthWhy = t("{depth}（scr_bgRenderAdd 烙进背景 surface，{from}）", { depth: draw.depth, from: draw.from });
       }
       const spriteName = def?.sprite;
 

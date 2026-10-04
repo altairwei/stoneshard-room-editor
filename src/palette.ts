@@ -1,6 +1,7 @@
 // Object palette: search the 9.6k game objects by name or family, with a thumbnail cut
 // straight out of the texture page by CSS (no canvas, no extra requests beyond the page).
 import { pageUrl, type AssetDb } from "./assets";
+import { t, objName } from "./i18n/index.ts";
 
 export interface Family {
   label: string;
@@ -9,6 +10,8 @@ export interface Family {
 
 const descends = (root: string) => (db: AssetDb, name: string) => name === root || db.parentChain(name).includes(root);
 
+// label holds the zh source string (the i18n key); renderers translate it lazily via
+// familyLabel() so the palette survives live language switches without a reload.
 export const FAMILIES: Family[] = [
   { label: "全部", test: () => true },
   { label: "家具", test: descends("o_stuff") },
@@ -17,6 +20,8 @@ export const FAMILIES: Family[] = [
   { label: "碰撞/标记", test: (db, n) => ["o_hut_wall", "o_position_starter", "o_barrier_marker", "o_encounter_marker"].includes(n) || descends("o_position_starter")(db, n) },
   { label: "无 sprite", test: (db, n) => !db.objects[n]?.sprite },
 ];
+
+export const familyLabel = (f: Family) => t(f.label);
 
 const THUMB = 40;
 
@@ -36,7 +41,9 @@ export function searchObjects(db: AssetDb, query: string, family: Family, limit 
   const out: { name: string; score: number }[] = [];
   for (const name of Object.keys(db.objects)) {
     const lower = name.toLowerCase();
-    if (q && !lower.includes(q)) continue;
+    const disp = objName(name).toLowerCase();
+    // a query matches the object code (o_barrel / barrel) or its in-game name (木桶 / Barrel)
+    if (q && !lower.includes(q) && !disp.includes(q)) continue;
     if (!family.test(db, name)) continue;
     // exact > prefix > substring; objects with art first; shorter names first
     const score = (lower === q ? 0 : lower.startsWith(q) || lower.startsWith("o_" + q) ? 1 : 2) * 1000

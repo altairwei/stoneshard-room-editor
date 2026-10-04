@@ -17,6 +17,8 @@
 // tuple and texture pipeline work unchanged; /mod-assets/pages/<i>.png serves the file.
 import fs from "node:fs";
 import path from "node:path";
+import { tr } from "../src/i18n/index.ts";
+import { reqLang } from "./langctx.ts";
 
 export const MOD_PAGE_BASE = 1_000_000;
 
@@ -75,7 +77,7 @@ export function loadManifest(modDir: string): { manifest: AssetsManifest; exists
     const raw = JSON.parse(fs.readFileSync(p, "utf8")) as Partial<AssetsManifest>;
     return { manifest: { sprites: raw.sprites ?? {}, objects: raw.objects ?? {} }, exists: true, warnings: [] };
   } catch (e) {
-    return { manifest: empty, exists: true, warnings: [`assets.json 解析失败：${(e as Error).message}`] };
+    return { manifest: empty, exists: true, warnings: [tr(reqLang(), "assets.json 解析失败：{msg}", { msg: (e as Error).message })] };
   }
 }
 
@@ -220,7 +222,7 @@ export function scanModAssets(modDir: string, opts: { vanilla?: VanillaNames; wr
   for (const [name, s] of Object.entries(manifest.sprites)) {
     const def = sprites[name];
     if (!def) {
-      warnings.push(`assets.json: sprite ${name} 没有对应的 Sprites/*.png`);
+      warnings.push(tr(reqLang(), "assets.json: sprite {name} 没有对应的 Sprites/*.png", { name }));
       continue;
     }
     if (s.origin) [def.ox, def.oy] = s.origin;
@@ -233,11 +235,11 @@ export function scanModAssets(modDir: string, opts: { vanilla?: VanillaNames; wr
     if (o.visible !== undefined) def.visible = o.visible;
     objects[name] = def;
     if (o.sprite && !sprites[o.sprite] && !vanilla?.sprites.has(o.sprite))
-      warnings.push(`assets.json: ${name} 的 sprite ${o.sprite} 既不是 mod PNG 也不是原版 sprite`);
+      warnings.push(tr(reqLang(), "assets.json: {name} 的 sprite {sprite} 既不是 mod PNG 也不是原版 sprite", { name, sprite: o.sprite }));
     if (o.parent && !manifest.objects[o.parent] && !vanilla?.objects.has(o.parent))
-      warnings.push(`assets.json: ${name} 的 parent ${o.parent} 不在原版对象表里`);
+      warnings.push(tr(reqLang(), "assets.json: {name} 的 parent {parent} 不在原版对象表里", { name, parent: o.parent }));
     if (o.visible === undefined)
-      warnings.push(`assets.json: ${name} 没写 visible（MSL 的 AddObject 默认 false，通常应为 true）`);
+      warnings.push(tr(reqLang(), "assets.json: {name} 没写 visible（MSL 的 AddObject 默认 false，通常应为 true）", { name }));
   }
 
   // the generated C# self-heals: rewrite it whenever it disagrees with the manifest, so
@@ -252,7 +254,7 @@ export function scanModAssets(modDir: string, opts: { vanilla?: VanillaNames; wr
         fs.writeFileSync(out, text);
         synced = true;
       } catch (e) {
-        warnings.push(`生成 ${path.basename(out)} 失败：${(e as Error).message}`);
+        warnings.push(tr(reqLang(), "生成 {out} 失败：{msg}", { out: path.basename(out), msg: (e as Error).message }));
       }
     }
   }

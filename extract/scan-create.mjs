@@ -27,7 +27,15 @@
 //
 //   Step_0 is scanned the same way: a per-frame `depth = ...` there overrides Create.
 //
+//   Second output: object display names. The game names furniture/props via
+//   global.inv_text -- an ordered list the loader fills from the "Invent" section of
+//   table_text (a pure GML array literal, one row per item), and ~254 objects hardcode
+//   their row in Create (`name = ds_list_find_value(global.inv_text, 29)`). We parse the
+//   section and the Create calls and emit <assets dir>/lang/objnames.json:
+//   { "<object>": { ru, en, zh } } for exactly those objects.
+//
 //   node scan-create.mjs <source_codes dir> <assets dir>   -> <assets dir>/create.json
+//                                                          +  <assets dir>/lang/objnames.json
 import fs from "node:fs";
 import path from "node:path";
 
@@ -179,3 +187,49 @@ for (const name of Object.keys(objects)) {
 }
 fs.writeFileSync(path.join(assetsDir, "create.json"), JSON.stringify(result));
 console.log(`create.json: ${Object.keys(result).length} objects, depth known=${known} unknown=${unknown}`);
+
+// ---- object display names (global.inv_text) ----
+
+// rows of table_text as arrays; header is ";RU;EN;ZH;DE;ES;FR;IT;PT;PL;TR;JP;KR" so a
+// data row fields are [id, RU, EN, ZH, ...]. Section tags sit in the RU column (field 1):
+// scr_tableGetTagIndex(arg, "Invent") scans for arg[_i][1] == "Invent".
+function invTextRows(tableFile) {
+  if (!fs.existsSync(tableFile)) return null;
+  const src = fs.readFileSync(tableFile, "utf8");
+  const m = src.match(/return\s+\[([\s\S]*)\]\s*;/);
+  if (!m) return null;
+  const re = /"((?:[^"]|"")*)"/g;
+  const rows = [];
+  let it;
+  while ((it = re.exec(m[1]))) rows.push(it[1].replace(/""/g, '"'));
+  const start = rows.findIndex((r) => r.split(";")[1] === "Invent");
+  const end = rows.findIndex((r, i) => i > start && r.split(";")[1] === "Invent_end");
+  if (start < 0 || end < 0) return null;
+  // global.inv_text = ["N/A", firstItem, ...]; inv_text[i] = items[i - 1]
+  return rows.slice(start + 1, end).map((r) => r.split(";"));
+}
+
+const INV_TEXT_RE = /ds_list_find_value\(\s*global\.inv_text\s*,\s*(\d+)\s*\)/;
+function objNamesFrom() {
+  const items = invTextRows(path.join(srcDir, "gml_GlobalScript_table_text.gml"));
+  if (!items) return null;
+  const out = {};
+  for (const name of Object.keys(objects)) {
+    const txt = lines(path.join(srcDir, `gml_Object_${name}_Create_0.gml`))?.find((l) => INV_TEXT_RE.test(l.trim()));
+    const mm = txt && INV_TEXT_RE.exec(txt.trim());
+    if (!mm) continue;
+    const f = items[Number(mm[1]) - 1];
+    if (!f) continue;
+    out[name] = { ru: f[1], en: f[2], zh: f[3] };
+  }
+  return out;
+}
+
+const objNames = objNamesFrom();
+if (objNames) {
+  fs.mkdirSync(path.join(assetsDir, "lang"), { recursive: true });
+  fs.writeFileSync(path.join(assetsDir, "lang", "objnames.json"), JSON.stringify(objNames));
+  console.log(`objnames.json: ${Object.keys(objNames).length} objects with game display names`);
+} else {
+  console.log("objnames.json: skipped (table_text / Invent section not found)");
+}

@@ -24,6 +24,8 @@ import {
 import { cloneRoom, CELL, LayerType, serializeRoom, styleOf, type Room, type RoomInstance } from "../src/core/room.ts";
 import { manifestPath } from "./modassets.ts";
 import { roomsCsPath, syncRoomsCs } from "./roomsgen.ts";
+import { tr } from "../src/i18n/index.ts";
+import { reqLang } from "./langctx.ts";
 import type { SvreConfig } from "./api.ts";
 
 const sha1 = (s: string | Buffer) => crypto.createHash("sha1").update(s).digest("hex");
@@ -245,7 +247,7 @@ export class Store {
       ...(opts.projectWarnings ?? []),
       ...this.codeCollisions().map((c): ProjectDiagnostic => ({
         code: "codes-duplicate", level: "warn", subject: c.leaf, paths: c.all,
-        message: `Codes/ 里有 ${c.all.length} 个文件都叫 ${c.leaf}：MSL 的 GetCode 取哪一个不确定，编辑器固定用 ${c.winner}（层数最浅，其次按路径排序）`,
+        message: tr(reqLang(), "Codes/ 里有 {count} 个文件都叫 {leaf}：MSL 的 GetCode 取哪一个不确定，编辑器固定用 {winner}（层数最浅，其次按路径排序）", { count: c.all.length, leaf: c.leaf, winner: c.winner }),
       })),
     ];
     const rooms: RoomDiagnostic[] = [];
@@ -439,7 +441,7 @@ export class Store {
       } catch (e) {
         throw new HttpError(409, `cannot undo rev ${target.rev}: later changes touched the same instances (${(e as Error).message})`);
       }
-      const entry: Entry = { rev: d.project.nextRev++, by, at: now(), label: `撤销：${target.label}`, ops: inverse, undoOf: target.rev };
+      const entry: Entry = { rev: d.project.nextRev++, by, at: now(), label: tr(reqLang(), "撤销：{label}", { label: target.label }), ops: inverse, undoOf: target.rev };
       log.push(entry);
       d.room = room;
       result = { rev: entry.rev, popped: false };
@@ -513,7 +515,7 @@ export class Store {
     }
     if (!verifyDiff(d.room, target, ops)) throw new HttpError(500, "diff did not reproduce the file; refusing");
     if (ops.length) {
-      const entry: Entry = { rev: d.project.nextRev++, by, at: now(), label: `编辑器外的改动（${ops.length} 条操作）`, ops };
+      const entry: Entry = { rev: d.project.nextRev++, by, at: now(), label: tr(reqLang(), "编辑器外的改动（{count} 条操作）", { count: ops.length }), ops };
       d.project.log.push(entry);
       d.room = target;
       this.emit({ type: "change", room: name, entry: summarize(entry) });
@@ -550,7 +552,7 @@ export class Store {
     const project: Project = {
       format: PROJECT_FORMAT, output: name, base: { vanilla: baseName, sha: sha1(canonical(base)) }, style: styleOf(text),
       nextRev: 2, nextId: Math.max(maxInstanceId(base), maxInstanceId(target)) + 1, compiled: null, notes: [],
-      log: [{ rev: 1, by: opts.by ?? "import", at: now(), label: `导入：从 ${baseName} 到现有的 Codes/${name}.gml`, ops }],
+      log: [{ rev: 1, by: opts.by ?? "import", at: now(), label: tr(reqLang(), "导入：从 {baseName} 到现有的 Codes/{name}.gml", { baseName, name }), ops }],
     };
     const d: Doc = { name, project, projectHash: "", base, baseChanged: false, room: compile(base, project, true).room, problems: [], redo: new Map(), selection: new Map() };
     if (serializeRoom(d.room, project.style) !== text) throw new HttpError(500, "import does not compile back to the same bytes; refusing");
@@ -594,7 +596,7 @@ export class Store {
     const project: Project = {
       format: PROJECT_FORMAT, output: name, base: { vanilla: opts.base, sha: sha1(canonical(base)) }, style: { crlf: false, finalNewline: true },
       nextRev: 2, nextId: maxInstanceId(base) + 1, compiled: null, notes: [],
-      log: [{ rev: 1, by: opts.by ?? "human", at: now(), label: opts.keep === "controllers" ? `新建：${opts.base} 的骨架（只留控制器）` : `新建：复制 ${opts.base}`, ops }],
+      log: [{ rev: 1, by: opts.by ?? "human", at: now(), label: opts.keep === "controllers" ? tr(reqLang(), "新建：{base} 的骨架（只留控制器）", { base: opts.base }) : tr(reqLang(), "新建：复制 {base}", { base: opts.base }), ops }],
     };
     const d: Doc = { name, project, projectHash: "", base, baseChanged: false, room: compile(base, project, true).room, problems: [], redo: new Map(), selection: new Map() };
     this.docs.set(name, d);
@@ -696,7 +698,8 @@ function defaultLabel(ops: Op[]): string {
     kinds[k] = (kinds[k] ?? 0) + 1;
   }
   const zh: Record<string, string> = { add: "添加", delete: "删除", set: "修改", relayer: "更换图层", reorder: "调整顺序", room: "修改房间属性", layer: "修改图层属性" };
-  return Object.entries(kinds).map(([k, n]) => `${zh[k] ?? k} ${n}`).join("，");
+  const sep = tr(reqLang(), "，");
+  return Object.entries(kinds).map(([k, n]) => `${tr(reqLang(), zh[k] ?? k)} ${n}`).join(sep);
 }
 
 function instanceBrief(room: Room, id: number) {

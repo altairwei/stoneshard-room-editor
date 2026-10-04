@@ -6,9 +6,16 @@
     <title>Stoneshard Room Editor</title>
     <script>
       // paint the persisted UI theme before the bundle lands, so it never flashes;
-      // main.ts owns the state from there (#b-theme toggles, persisted as svre.theme)
-      try { document.documentElement.dataset.theme = localStorage.getItem("svre.theme") === "light" ? "light" : "dark"; }
-      catch { document.documentElement.dataset.theme = "dark"; }
+      // main.ts owns the state from there (#b-theme toggles, persisted as svre.theme).
+      // svre.lang follows the same pattern: dataset.lang is read by i18n.initLang() at
+      // boot, then indexed by the catalog as the bundle loads.
+      try {
+        var t = localStorage.getItem("svre.theme") === "light" ? "light" : "dark";
+        var l = localStorage.getItem("svre.lang") === "ru" ? "ru" : localStorage.getItem("svre.lang") === "en" ? "en" : "zh";
+        document.documentElement.dataset.theme = t;
+        document.documentElement.dataset.lang = l;
+        document.documentElement.lang = l === "ru" ? "ru" : l === "en" ? "en" : "zh-CN";
+      } catch { document.documentElement.dataset.theme = "dark"; document.documentElement.dataset.lang = "zh"; }
     </script>
   </head>
   <body>
@@ -18,15 +25,15 @@
          controls (titleBarOverlay paints nothing on win10, so they're ours). -->
     <div id="titlebar">
       <span class="brand-logo" data-icon="logo"></span>
-      <button id="tb-menu" title="菜单">☰</button>
+      <button id="tb-menu" data-tt="菜单" title="菜单">☰</button>
       <span class="tb-title">Stoneshard Room Editor</span>
       <span class="spacer"></span>
-      <button id="tb-min" class="tb-win" title="最小化"><svg viewBox="0 0 10 10"><path d="M1.5 5h7" stroke="currentColor" stroke-width="1"/></svg></button>
-      <button id="tb-max" class="tb-win" title="最大化">
+      <button id="tb-min" class="tb-win" data-tt="最小化" title="最小化"><svg viewBox="0 0 10 10"><path d="M1.5 5h7" stroke="currentColor" stroke-width="1"/></svg></button>
+      <button id="tb-max" class="tb-win" data-tt="最大化" title="最大化">
         <svg class="i-max" viewBox="0 0 10 10"><rect x="1.5" y="1.5" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1"/></svg>
         <svg class="i-restore" viewBox="0 0 10 10"><path d="M3.5 3.5v-2h5v5h-2" fill="none" stroke="currentColor" stroke-width="1"/><rect x="1.5" y="3.5" width="5" height="5" fill="none" stroke="currentColor" stroke-width="1"/></svg>
       </button>
-      <button id="tb-close" class="tb-win" title="关闭"><svg viewBox="0 0 10 10"><path d="M1.5 1.5l7 7M8.5 1.5l-7 7" stroke="currentColor" stroke-width="1"/></svg></button>
+      <button id="tb-close" class="tb-win" data-tt="关闭" title="关闭"><svg viewBox="0 0 10 10"><path d="M1.5 1.5l7 7M8.5 1.5l-7 7" stroke="currentColor" stroke-width="1"/></svg></button>
     </div>
     <!-- One top bar: document controls (room, undo) -> tool context -> view toggles ->
          state text -> 编译. It used to be two rows (appbar + options); the appbar's text
@@ -34,31 +41,31 @@
          row's right half sat empty in the shell, so the two are merged. -->
     <div id="options">
       <span class="brand"><span class="brand-logo" data-icon="logo"></span>Stoneshard Room Editor</span>
-      <select id="room-select" title="房间"></select>
-      <button id="b-new" class="menu-only" title="基于一个原版房间新建">新建…</button>
-      <button id="b-undo" class="icon-btn" data-icon="undo" title="撤销 (Ctrl+Z)" disabled></button>
-      <button id="b-redo" class="icon-btn" data-icon="redo" title="重做 (Ctrl+Y)" disabled></button>
+      <select id="room-select" data-tt="房间" title="房间"></select>
+      <button id="b-new" class="menu-only" data-t="新建…" data-tt="基于一个原版房间新建" title="基于一个原版房间新建">新建…</button>
+      <button id="b-undo" class="icon-btn" data-tt="撤销 (Ctrl+Z)" title="撤销 (Ctrl+Z)" disabled></button>
+      <button id="b-redo" class="icon-btn" data-tt="重做 (Ctrl+Y)" title="重做 (Ctrl+Y)" disabled></button>
       <div class="sep"></div>
       <span id="opt-tool">选择</span>
       <span id="opt-extra"></span>
       <div class="sep"></div>
-      <label class="itoggle" title="吸附：拖动与放置按 26px 格对齐；按住 Alt 临时自由 (S)"><input type="checkbox" id="t-snap" checked /><i data-icon="snap"></i><span class="txt">吸附</span></label>
-      <label class="itoggle" title="隐形对象 (Shift+H)"><input type="checkbox" id="t-hidden" checked /><i data-icon="eye"></i><span class="txt">隐形</span></label>
-      <label class="itoggle" title="碰撞格"><input type="checkbox" id="t-collision" checked /><i data-icon="collision"></i><span class="txt">碰撞</span></label>
-      <label class="itoggle" title="标记点"><input type="checkbox" id="t-markers" /><i data-icon="markers"></i><span class="txt">标记</span></label>
-      <label class="itoggle" title="网格 (G)"><input type="checkbox" id="t-grid" /><i data-icon="grid"></i><span class="txt">网格</span></label>
-      <label class="itoggle" title="便签"><input type="checkbox" id="t-notes" checked /><i data-icon="note"></i><span class="txt">便签</span></label>
+      <label class="itoggle" data-tt="吸附：拖动与放置按 26px 格对齐；按住 Alt 临时自由 (S)" title="吸附：拖动与放置按 26px 格对齐；按住 Alt 临时自由 (S)"><input type="checkbox" id="t-snap" checked /><i data-icon="snap"></i><span class="txt" data-t="吸附">吸附</span></label>
+      <label class="itoggle" data-tt="隐形对象 (Shift+H)" title="隐形对象 (Shift+H)"><input type="checkbox" id="t-hidden" checked /><i data-icon="eye"></i><span class="txt" data-t="隐形">隐形</span></label>
+      <label class="itoggle" data-tt="碰撞格" title="碰撞格"><input type="checkbox" id="t-collision" checked /><i data-icon="collision"></i><span class="txt" data-t="碰撞">碰撞</span></label>
+      <label class="itoggle" data-tt="标记点" title="标记点"><input type="checkbox" id="t-markers" /><i data-icon="markers"></i><span class="txt" data-t="标记">标记</span></label>
+      <label class="itoggle" data-tt="网格 (G)" title="网格 (G)"><input type="checkbox" id="t-grid" /><i data-icon="grid"></i><span class="txt" data-t="网格">网格</span></label>
+      <label class="itoggle" data-tt="便签" title="便签"><input type="checkbox" id="t-notes" checked /><i data-icon="note"></i><span class="txt" data-t="便签">便签</span></label>
       <span class="spacer"></span>
       <span id="load-state"></span>
       <!-- 低频视图控件在浏览器里收进「视图」下拉；Electron 壳由原生菜单接管（menu-only） -->
-      <button id="b-view" class="menu-only" title="视图选项：排序 / 缩放 / 界面主题"><span>视图</span><i data-icon="chevron"></i></button>
-      <button id="b-compile" class="primary" title="编译工程：重放日志生成编译快照，并同步 Rooms.g.cs（Ctrl+S）" disabled>编译</button>
+      <button id="b-view" class="menu-only" data-tt="视图选项：排序 / 缩放 / 界面主题" title="视图选项：排序 / 缩放 / 界面主题"><span data-t="视图">视图</span><i data-icon="chevron"></i></button>
+      <button id="b-compile" class="primary" data-tt="编译工程：重放日志生成编译快照，并同步 Rooms.g.cs（Ctrl+S）" title="编译工程：重放日志生成编译快照，并同步 Rooms.g.cs（Ctrl+S）" disabled>编译</button>
       <div id="view-menu" class="menu-only" hidden>
-        <button id="b-zmode" title="画布排序方式：&#10;游戏 = 模拟运行时 depth（游戏内真实遮挡；选中实例始终置顶，松开回到真实顺序）&#10;静态 = UTMT 视角（图层 depth + 数组顺序，用于对账）">顺序：游戏</button>
+        <button id="b-zmode" data-tt="画布排序方式：&#10;游戏 = 模拟运行时 depth（游戏内真实遮挡；选中实例始终置顶，松开回到真实顺序）&#10;静态 = UTMT 视角（图层 depth + 数组顺序，用于对账）" title="画布排序方式：&#10;游戏 = 模拟运行时 depth（游戏内真实遮挡；选中实例始终置顶，松开回到真实顺序）&#10;静态 = UTMT 视角（图层 depth + 数组顺序，用于对账）">顺序：游戏</button>
         <div class="vm-sep"></div>
         <div class="vm-row">
-          <button id="b-zoom-out" class="icon-btn" title="缩小 (-)"><i data-icon="zoomOut"></i></button>
-          <select id="zoom-preset" title="缩放">
+          <button id="b-zoom-out" class="icon-btn" data-tt="缩小 (-)" title="缩小 (-)"><i data-icon="zoomOut"></i></button>
+          <select id="zoom-preset" data-tt="缩放" title="缩放">
             <option value="" id="zoom-cur" hidden>100%</option>
             <option value="25">25%</option>
             <option value="50">50%</option>
@@ -67,16 +74,22 @@
             <option value="300">300%</option>
             <option value="400">400%</option>
             <option value="800">800%</option>
-            <option value="fit">适配窗口</option>
+            <option value="fit" data-t="适配窗口">适配窗口</option>
           </select>
-          <button id="b-zoom-in" class="icon-btn" title="放大 (+)"><i data-icon="zoomIn"></i></button>
+          <button id="b-zoom-in" class="icon-btn" data-tt="放大 (+)" title="放大 (+)"><i data-icon="zoomIn"></i></button>
         </div>
         <div class="vm-row">
-          <button id="b-fit" title="适配窗口 (F / Ctrl+0)">适配</button>
-          <button id="b-1x" title="实际像素 (1 / Ctrl+1)">1:1</button>
+          <button id="b-fit" data-t="适配" data-tt="适配窗口 (F / Ctrl+0)" title="适配窗口 (F / Ctrl+0)">适配</button>
+          <button id="b-1x" data-tt="实际像素 (1 / Ctrl+1)" title="实际像素 (1 / Ctrl+1)">1:1</button>
         </div>
         <div class="vm-sep"></div>
-        <button id="b-theme" title="界面主题：白天 / 黑夜（点击切换）"><i></i><span>界面主题</span></button>
+        <button id="b-theme" data-tt="界面主题：白天 / 黑夜（点击切换）" title="界面主题：白天 / 黑夜（点击切换）"><i></i><span data-t="界面主题">界面主题</span></button>
+        <div class="vm-sep"></div>
+        <div class="vm-row lang-row" id="lang-row">
+          <button class="lang-on" data-lang="zh" title="中文">中文</button>
+          <button data-lang="en" title="English">English</button>
+          <button data-lang="ru" title="Русский">Русский</button>
+        </div>
       </div>
     </div>
     <div id="banner" hidden></div>
@@ -89,32 +102,32 @@
           <span class="brand-logo" data-icon="logo"></span>
           <div>
             <h1>Stoneshard Room Editor</h1>
-            <p class="muted">打开一个 mod 源码目录作为项目。房间工程、sprite 与注册清单都写在里面。</p>
+            <p class="muted" data-t="打开一个 mod 源码目录作为项目。房间工程、sprite 与注册清单都写在里面。">打开一个 mod 源码目录作为项目。房间工程、sprite 与注册清单都写在里面。</p>
           </div>
         </div>
         <div class="wc-actions">
-          <button id="wc-new" class="primary">新建项目…</button>
-          <button id="wc-open">打开文件夹…</button>
+          <button id="wc-new" class="primary" data-t="新建项目…">新建项目…</button>
+          <button id="wc-open" data-t="打开文件夹…">打开文件夹…</button>
         </div>
         <div id="wc-machine"></div>
         <div class="wc-recent">
-          <div class="wc-recent-head">最近项目</div>
+          <div class="wc-recent-head" data-t="最近项目">最近项目</div>
           <ul id="wc-recent-list"></ul>
         </div>
       </div>
     </section>
     <main>
       <nav id="toolbox">
-        <button data-tool="select" class="on" title="选择 (V)" aria-pressed="true"><i data-icon="select"></i><span class="txt">选择</span></button>
-        <button data-tool="hand" title="抓手 (H)：拖动平移；空格临时切换" aria-pressed="false"><i data-icon="hand"></i><span class="txt">抓手</span></button>
-        <button data-tool="place" title="放置 (P)：在「对象」页签挑选，单击放入" aria-pressed="false"><i data-icon="place"></i><span class="txt">放置</span></button>
+        <button data-tool="select" class="on" data-tt="选择 (V)" title="选择 (V)" aria-pressed="true"><i data-icon="select"></i><span class="txt" data-t="选择">选择</span></button>
+        <button data-tool="hand" data-tt="抓手 (H)：拖动平移；空格临时切换" title="抓手 (H)：拖动平移；空格临时切换" aria-pressed="false"><i data-icon="hand"></i><span class="txt" data-t="抓手">抓手</span></button>
+        <button data-tool="place" data-tt="放置 (P)：在「对象」页签挑选，单击放入" title="放置 (P)：在「对象」页签挑选，单击放入" aria-pressed="false"><i data-icon="place"></i><span class="txt" data-t="放置">放置</span></button>
         <div class="tsep"></div>
-        <button data-tool="collision" title="碰撞矩形 (C)：拖出 o_hut_wall 碰撞矩形（边吸附格线，尺寸恒为整数格；按住 Alt 自由调整）；单击：光标所在格" aria-pressed="false"><i data-icon="rect"></i><span class="txt">碰撞</span></button>
-        <button data-tool="barrier" title="屏障涂刷 (B)：拖动涂刷 o_projectileBarrier 屏障格（阻挡箭矢与投掷物）；Alt+拖动擦除" aria-pressed="false"><i data-icon="wall"></i><span class="txt">屏障</span></button>
-        <button data-tool="zone" title="区域 (T)：拖出一个矩形（Trigger/相机/表面等纯色盒功能对象），在选项栏换对象" aria-pressed="false"><i data-icon="zone"></i><span class="txt">区域</span></button>
-        <button data-tool="marker" title="标记 (M)：单击放出生点/灯光等功能标记，在选项栏换对象" aria-pressed="false"><i data-icon="markers"></i><span class="txt">标记</span></button>
+        <button data-tool="collision" data-tt="碰撞矩形 (C)：拖出 o_hut_wall 碰撞矩形（边吸附格线，尺寸恒为整数格；按住 Alt 自由调整）；单击：光标所在格" title="碰撞矩形 (C)：拖出 o_hut_wall 碰撞矩形（边吸附格线，尺寸恒为整数格；按住 Alt 自由调整）；单击：光标所在格" aria-pressed="false"><i data-icon="rect"></i><span class="txt" data-t="碰撞">碰撞</span></button>
+        <button data-tool="barrier" data-tt="屏障涂刷 (B)：拖动涂刷 o_projectileBarrier 屏障格（阻挡箭矢与投掷物）；Alt+拖动擦除" title="屏障涂刷 (B)：拖动涂刷 o_projectileBarrier 屏障格（阻挡箭矢与投掷物）；Alt+拖动擦除" aria-pressed="false"><i data-icon="wall"></i><span class="txt" data-t="屏障">屏障</span></button>
+        <button data-tool="zone" data-tt="区域 (T)：拖出一个矩形（Trigger/相机/表面等纯色盒功能对象），在选项栏换对象" title="区域 (T)：拖出一个矩形（Trigger/相机/表面等纯色盒功能对象），在选项栏换对象" aria-pressed="false"><i data-icon="zone"></i><span class="txt" data-t="区域">区域</span></button>
+        <button data-tool="marker" data-tt="标记 (M)：单击放出生点/灯光等功能标记，在选项栏换对象" title="标记 (M)：单击放出生点/灯光等功能标记，在选项栏换对象" aria-pressed="false"><i data-icon="markers"></i><span class="txt" data-t="标记">标记</span></button>
         <div class="tsep"></div>
-        <button data-tool="note" title="便签 (N)：单击在那个位置留便签" aria-pressed="false"><i data-icon="note"></i><span class="txt">便签</span></button>
+        <button data-tool="note" data-tt="便签 (N)：单击在那个位置留便签" title="便签 (N)：单击在那个位置留便签" aria-pressed="false"><i data-icon="note"></i><span class="txt" data-t="便签">便签</span></button>
       </nav>
       <div id="canvas-area">
         <div id="ruler-corner"></div>
@@ -124,17 +137,17 @@
       </div>
       <aside id="dock">
         <section class="dock-panel" id="p-props">
-          <div class="dock-head" data-collapse="props"><span class="chev" data-icon="chevron"></span>属性</div>
-          <div class="dock-body"><div id="inspect-body" class="muted">单击画布中的实例，查看并编辑属性。</div></div>
+          <div class="dock-head" data-collapse="props"><span class="chev" data-icon="chevron"></span><span data-t="属性">属性</span></div>
+          <div class="dock-body"><div id="inspect-body" class="muted" data-t="单击画布中的实例，查看并编辑属性。">单击画布中的实例，查看并编辑属性。</div></div>
         </section>
         <section class="dock-panel dock-tabs">
           <nav class="tabs">
-            <button data-tab="insts" class="on" title="实例图层：每个实例一行，按图层数组顺序排列（靠上 = 静态视图里画在前面）；拖动调整顺序，眼睛图标控制编辑器内显隐；带 d 徽标的行游戏内由 depth 代码排序">图层</button>
-            <button data-tab="layers" title="GameMaker 图层（分组）：放置目标层与整层显隐">层组</button>
-            <button data-tab="history">历史<span id="history-badge"></span></button>
+            <button data-tab="insts" class="on" data-tt="实例图层：每个实例一行，按图层数组顺序排列（靠上 = 静态视图里画在前面）；拖动调整顺序，眼睛图标控制编辑器内显隐；带 d 徽标的行游戏内由 depth 代码排序" title="实例图层：每个实例一行，按图层数组顺序排列（靠上 = 静态视图里画在前面）；拖动调整顺序，眼睛图标控制编辑器内显隐；带 d 徽标的行游戏内由 depth 代码排序"><span data-t="图层">图层</span></button>
+            <button data-tab="layers" data-tt="GameMaker 图层（分组）：放置目标层与整层显隐" title="GameMaker 图层（分组）：放置目标层与整层显隐"><span data-t="层组">层组</span></button>
+            <button data-tab="history"><span data-t="历史">历史</span><span id="history-badge"></span></button>
           </nav>
           <section id="tab-insts">
-            <div class="palette-head"><input id="insts-q" type="search" placeholder="筛选实例名或 #id…" autocomplete="off" /></div>
+            <div class="palette-head"><input id="insts-q" type="search" data-tp="筛选实例名或 #id…" placeholder="筛选实例名或 #id…" autocomplete="off" /></div>
             <ul id="inst-list"></ul>
           </section>
           <section id="tab-layers" hidden><ul id="layer-list"></ul></section>
@@ -149,13 +162,13 @@
          A sibling of <main>, not part of its grid, so opening it shrinks the canvas instead
          of re-laying it out. body.render / body.no-project hide it with the rest of the chrome. -->
     <section id="bottom-panel" hidden>
-      <div id="bp-resize" title="拖动调整高度"></div>
+      <div id="bp-resize" data-tt="拖动调整高度" title="拖动调整高度"></div>
       <nav class="tabs bp-tabs">
-        <button data-bptab="problems" class="on" title="整个项目的检查结果；点一条跳到出问题的实例">问题<span id="problems-badge"></span></button>
-        <button data-bptab="log" title="这个页面收到的服务端事件（不含服务端 console）">日志</button>
+        <button data-bptab="problems" class="on" data-tt="整个项目的检查结果；点一条跳到出问题的实例" title="整个项目的检查结果；点一条跳到出问题的实例"><span data-t="问题">问题</span><span id="problems-badge"></span></button>
+        <button data-bptab="log" data-tt="这个页面收到的服务端事件（不含服务端 console）" title="这个页面收到的服务端事件（不含服务端 console）"><span data-t="日志">日志</span></button>
         <span class="spacer"></span>
-        <button id="bp-refresh" class="bp-act" title="重新检查整个项目">重新检查</button>
-        <button id="bp-close" class="bp-act" title="关闭面板 (Ctrl+Shift+M)">×</button>
+        <button id="bp-refresh" class="bp-act" data-t="重新检查" data-tt="重新检查整个项目" title="重新检查整个项目">重新检查</button>
+        <button id="bp-close" class="bp-act" data-tt="关闭面板 (Ctrl+Shift+M)" title="关闭面板 (Ctrl+Shift+M)">×</button>
       </nav>
       <section id="bpt-problems"><ul id="problems-list"></ul></section>
       <section id="bpt-log" hidden><ul id="log-list"></ul></section>
@@ -167,48 +180,48 @@
       <span id="s-zoom">—</span>
       <span id="s-hover" class="grow">—</span>
       <span id="s-problems" hidden title=""></span>
-      <span id="s-hint">空格 / 右键拖动平移 · 滚轮缩放 · F 适配窗口</span>
+      <span id="s-hint" data-t="空格 / 右键拖动平移 · 滚轮缩放 · F 适配窗口">空格 / 右键拖动平移 · 滚轮缩放 · F 适配窗口</span>
     </footer>
     <div id="toasts"></div>
     <dialog id="palette-dialog">
       <div class="pd-head">
         <div class="pd-search">
-          <input id="palette-q" type="search" placeholder="筛选对象名…（Enter 放第一个 · Esc 关闭）" autocomplete="off" />
-          <button id="b-import-sprite" title="把新画的 PNG 注册成 mod 对象（写 Sprites/ + assets.json），立即可摆">＋ 导入 sprite…</button>
+          <input id="palette-q" type="search" data-tp="筛选对象名…（Enter 放第一个 · Esc 关闭）" placeholder="筛选对象名…（Enter 放第一个 · Esc 关闭）" autocomplete="off" />
+          <button id="b-import-sprite" data-t="＋ 导入 sprite…" data-tt="把新画的 PNG 注册成 mod 对象（写 Sprites/ + assets.json），立即可摆" title="把新画的 PNG 注册成 mod 对象（写 Sprites/ + assets.json），立即可摆">＋ 导入 sprite…</button>
         </div>
         <div id="palette-families"></div>
       </div>
       <div class="pd-body">
-        <div class="plib-head">对象库 · 点击后在画布上单击放入</div>
+        <div class="plib-head" data-t="对象库 · 点击后在画布上单击放入">对象库 · 点击后在画布上单击放入</div>
         <ul id="palette-list"></ul>
       </div>
-      <div id="palette-info" class="plib-info">对象库是游戏与 mod 的全部对象定义，不是本房间的内容清单</div>
+      <div id="palette-info" class="plib-info" data-t="对象库是游戏与 mod 的全部对象定义，不是本房间的内容清单">对象库是游戏与 mod 的全部对象定义，不是本房间的内容清单</div>
     </dialog>
     <dialog id="new-dialog">
       <form method="dialog" class="form">
-        <div class="dlg-title">新建房间</div>
-        <div class="dlg-sub">以原版房间为基底复制一份，写进 mod 源码目录。</div>
-        <label>房间名</label><input id="nd-name" placeholder="r_sv_something" spellcheck="false" />
-        <label>原版基底</label><input id="nd-q" placeholder="搜索原版房间名…" spellcheck="false" />
+        <div class="dlg-title" data-t="新建房间">新建房间</div>
+        <div class="dlg-sub" data-t="以原版房间为基底复制一份，写进 mod 源码目录。">以原版房间为基底复制一份，写进 mod 源码目录。</div>
+        <label data-t="房间名">房间名</label><input id="nd-name" data-tp="r_sv_something" placeholder="r_sv_something" spellcheck="false" />
+        <label data-t="原版基底">原版基底</label><input id="nd-q" data-tp="搜索原版房间名…" placeholder="搜索原版房间名…" spellcheck="false" />
         <select id="nd-base" size="8" class="span2"></select>
-        <label>内容</label>
+        <label data-t="内容">内容</label>
         <select id="nd-keep">
-          <option value="all">复制全部实例 —— 在原版布局上直接改</option>
-          <option value="controllers">仅保留控制器 —— 沿用原版美术，摆设自己摆</option>
+          <option value="all" data-t="复制全部实例 —— 在原版布局上直接改">复制全部实例 —— 在原版布局上直接改</option>
+          <option value="controllers" data-t="仅保留控制器 —— 沿用原版美术，摆设自己摆">仅保留控制器 —— 沿用原版美术，摆设自己摆</option>
         </select>
         <div class="dlg-actions">
-          <button value="cancel">取消</button><button id="nd-ok" value="ok" class="primary">创建</button>
+          <button value="cancel" data-t="取消">取消</button><button id="nd-ok" value="ok" class="primary" data-t="创建">创建</button>
         </div>
       </form>
     </dialog>
     <dialog id="vanilla-dialog">
       <form method="dialog" class="form">
-        <div class="dlg-title">打开原版房间</div>
-        <div class="dlg-sub">只读查看原版房间的构造，不能修改；要改请用「新建…」派生。</div>
-        <label>搜索</label><input id="vd-q" placeholder="搜索原版房间名…（Enter 打开第一个）" spellcheck="false" autocomplete="off" />
+        <div class="dlg-title" data-t="打开原版房间">打开原版房间</div>
+        <div class="dlg-sub" data-t="只读查看原版房间的构造，不能修改；要改请用「新建…」派生。">只读查看原版房间的构造，不能修改；要改请用「新建…」派生。</div>
+        <label data-t="搜索">搜索</label><input id="vd-q" data-tp="搜索原版房间名…（Enter 打开第一个）" placeholder="搜索原版房间名…（Enter 打开第一个）" spellcheck="false" autocomplete="off" />
         <select id="vd-list" size="10" class="span2"></select>
         <div class="dlg-actions">
-          <button value="cancel">取消</button><button id="vd-ok" value="ok" class="primary">打开（只读）</button>
+          <button value="cancel" data-t="取消">取消</button><button id="vd-ok" value="ok" class="primary" data-t="打开（只读）">打开（只读）</button>
         </div>
       </form>
     </dialog>
@@ -217,76 +230,69 @@
         <div id="md-text" class="dlg-text"></div>
         <input id="md-input" class="span2" spellcheck="false" autocomplete="off" hidden />
         <div class="dlg-actions">
-          <button id="md-ok" value="ok" class="primary">确定</button><button id="md-cancel" value="cancel">取消</button>
+          <button id="md-ok" value="ok" class="primary" data-t="确定">确定</button><button id="md-cancel" value="cancel" data-t="取消">取消</button>
         </div>
       </form>
     </dialog>
     <dialog id="sprite-dialog">
       <!-- no method=dialog: submit stays async so a 409 keeps what the artist typed -->
       <form class="form">
-        <div class="dlg-title">导入 sprite</div>
-        <div class="dlg-sub">把 PNG 注册为 mod 对象：写入 Sprites/ 与注册清单，立即可在房间摆放。</div>
-        <label>PNG 文件</label><input id="sd-files" type="file" accept="image/png" multiple />
-        <div id="sd-preview" class="dlg-note">可多选：多个文件按文件名 _N 顺序作为多帧</div>
-        <label>sprite 名</label><input id="sd-sprite" spellcheck="false" placeholder="s_xxx_chair" autocomplete="off" />
-        <label>对象名</label><input id="sd-object" spellcheck="false" placeholder="o_xxx_chair" autocomplete="off" />
+        <div class="dlg-title" data-t="导入 sprite">导入 sprite</div>
+        <div class="dlg-sub" data-t="把 PNG 注册为 mod 对象：写入 Sprites/ 与注册清单，立即可在房间摆放。">把 PNG 注册为 mod 对象：写入 Sprites/ 与注册清单，立即可在房间摆放。</div>
+        <label data-t="PNG 文件">PNG 文件</label><input id="sd-files" type="file" accept="image/png" multiple />
+        <div id="sd-preview" class="dlg-note" data-t="可多选：多个文件按文件名 _N 顺序作为多帧">可多选：多个文件按文件名 _N 顺序作为多帧</div>
+        <label data-t="sprite 名">sprite 名</label><input id="sd-sprite" spellcheck="false" data-tp="s_xxx_chair" placeholder="s_xxx_chair" autocomplete="off" />
+        <label data-t="对象名">对象名</label><input id="sd-object" spellcheck="false" data-tp="o_xxx_chair" placeholder="o_xxx_chair" autocomplete="off" />
         <label>parent</label><input id="sd-parent" spellcheck="false" value="o_shelf" autocomplete="off" />
-        <div class="dlg-note">o_shelf 是家具遮挡（depth=-y，玩家能走到后面），但游戏内会随机选帧——多帧 sprite 想固定帧就清空 parent，成为纯摆设（按图层深度）。</div>
-        <label>原点</label><span class="dlg-inline"><input id="sd-ox" type="number" value="0" /> , <input id="sd-oy" type="number" value="0" /></span>
-        <label>可见</label><input id="sd-visible" type="checkbox" checked />
-        <label>备注</label><input id="sd-note" autocomplete="off" placeholder="可选" />
+        <div class="dlg-note" data-t="o_shelf 是家具遮挡（depth=-y，玩家能走到后面），但游戏内会随机选帧——多帧 sprite 想固定帧就清空 parent，成为纯摆设（按图层深度）。">o_shelf 是家具遮挡（depth=-y，玩家能走到后面），但游戏内会随机选帧——多帧 sprite 想固定帧就清空 parent，成为纯摆设（按图层深度）。</div>
+        <label data-t="原点">原点</label><span class="dlg-inline"><input id="sd-ox" type="number" value="0" /> , <input id="sd-oy" type="number" value="0" /></span>
+        <label data-t="可见">可见</label><input id="sd-visible" type="checkbox" checked />
+        <label data-t="备注">备注</label><input id="sd-note" autocomplete="off" data-tp="可选" placeholder="可选" />
         <div class="dlg-actions">
-          <button type="button" id="sd-ok" class="primary">导入</button><button type="button" id="sd-cancel">取消</button>
+          <button type="button" id="sd-ok" class="primary" data-t="导入">导入</button><button type="button" id="sd-cancel" data-t="取消">取消</button>
         </div>
       </form>
     </dialog>
     <dialog id="setup-dialog">
       <!-- first-run only; no cancel affordance at all (Esc is preventDefault'ed in JS) -->
       <div class="form setup-form">
-        <div class="dlg-title">本机设置</div>
-        <div class="dlg-sub">
-          这些设置跟随这台电脑，与项目无关，只需配置一次。资产缓存要从你正版游戏的 data 文件在本地提取
-          （版权原因不随应用分发）；提取只读，不会修改游戏文件。
-        </div>
+        <div class="dlg-title" data-t="本机设置">本机设置</div>
+        <div class="dlg-sub" data-t="这些设置跟随这台电脑，与项目无关，只需配置一次。资产缓存要从你正版游戏的 data 文件在本地提取（版权原因不随应用分发）；提取只读，不会修改游戏文件。">这些设置跟随这台电脑，与项目无关，只需配置一次。资产缓存要从你正版游戏的 data 文件在本地提取（版权原因不随应用分发）；提取只读，不会修改游戏文件。</div>
         <section id="setup-step-win" class="setup-card" hidden>
-          <h3>1 · 游戏数据文件</h3>
-          <p class="muted">开发侧的参考版本是 <b id="setup-expected">…</b>；版本不同多半只是游戏更新过，照常提取即可，差异只作提示。</p>
+          <h3 data-t="1 · 游戏数据文件">1 · 游戏数据文件</h3>
+          <p class="muted"><span data-t="开发侧的参考版本是 "></span><b id="setup-expected">…</b><span data-t="；版本不同多半只是游戏更新过，照常提取即可，差异只作提示。"></span></p>
           <div id="setup-detected"></div>
           <div id="setup-utmt"></div>
           <div class="setup-row">
-            <input id="setup-win" spellcheck="false" autocomplete="off" placeholder="vallina.win 或 data.win 的完整路径" />
-            <button id="setup-win-pick" type="button">浏览…</button>
+            <input id="setup-win" spellcheck="false" autocomplete="off" data-tp="vallina.win 或 data.win 的完整路径" placeholder="vallina.win 或 data.win 的完整路径" />
+            <button id="setup-win-pick" type="button" data-t="浏览…">浏览…</button>
           </div>
-          <div class="setup-actions"><button id="setup-extract" type="button" class="primary">开始提取（约几分钟）</button></div>
+          <div class="setup-actions"><button id="setup-extract" type="button" class="primary" data-t="开始提取（约几分钟）">开始提取（约几分钟）</button></div>
         </section>
         <section id="setup-step-create" class="setup-card" hidden>
-          <h3>3 · 反编译源码（遮挡顺序）</h3>
-          <p class="muted">
-            对象 <code>Create</code> 代码里的 <code>depth = -y + 18</code> 这类写法决定游戏内的遮挡顺序，
-            这些信息不在 data 文件里。用 UTMT 的「Decompile all code」导出 GML，再选择那个目录
-            （里面应有 <code>gml_Object_*.gml</code>）。只需做一次；游戏更新后再扫一遍。
-          </p>
+          <h3 data-t="3 · 反编译源码（遮挡顺序）">3 · 反编译源码（遮挡顺序）</h3>
+          <p class="muted"><span data-t="对象 Create 代码里的 "></span><code>depth = -y + 18</code><span data-t=" 这类写法决定游戏内的遮挡顺序，这些信息不在 data 文件里。用 UTMT 的「Decompile all code」导出 GML，再选择那个目录（里面应有 "></span><code>gml_Object_*.gml</code><span data-t="）。只需做一次；游戏更新后再扫一遍。"></span></p>
           <div class="setup-row">
-            <input id="setup-source" spellcheck="false" autocomplete="off" placeholder="反编译源码目录的完整路径" />
-            <button id="setup-source-pick" type="button">浏览…</button>
+            <input id="setup-source" spellcheck="false" autocomplete="off" data-tp="反编译源码目录的完整路径" placeholder="反编译源码目录的完整路径" />
+            <button id="setup-source-pick" type="button" data-t="浏览…">浏览…</button>
           </div>
           <div id="setup-source-hint" class="muted"></div>
           <div class="setup-actions">
-            <button id="setup-create-run" type="button" class="primary">扫描源码（十几秒～一分钟）</button>
-            <button id="setup-create-skip" type="button">跳过（遮挡顺序改用近似规则）</button>
+            <button id="setup-create-run" type="button" class="primary" data-t="扫描源码（十几秒～一分钟）">扫描源码（十几秒～一分钟）</button>
+            <button id="setup-create-skip" type="button" data-t="跳过（遮挡顺序改用近似规则）">跳过（遮挡顺序改用近似规则）</button>
           </div>
         </section>
         <section id="setup-step-run" class="setup-card" hidden>
-          <h3 id="setup-run-title">2 · 提取资产缓存</h3>
-          <div id="setup-phase" class="muted">正在启动…</div>
+          <h3 id="setup-run-title" data-t="2 · 提取资产缓存">2 · 提取资产缓存</h3>
+          <div id="setup-phase" class="muted" data-t="正在启动…">正在启动…</div>
           <pre id="setup-log"></pre>
           <div id="setup-result"></div>
           <div class="setup-actions">
-            <button id="setup-retry" type="button" hidden>返回重试</button>
+            <button id="setup-retry" type="button" data-t="返回重试" hidden>返回重试</button>
             <!-- only when the machine is already usable: an extract run blocks (it writes
                  straight into the live cache), so the button stays hidden until it is done -->
-            <button id="setup-close" type="button" hidden>关闭</button>
-            <button id="setup-done" type="button" class="primary" hidden>进入编辑器</button>
+            <button id="setup-close" type="button" data-t="关闭" hidden>关闭</button>
+            <button id="setup-done" type="button" class="primary" data-t="进入编辑器" hidden>进入编辑器</button>
           </div>
         </section>
       </div>
