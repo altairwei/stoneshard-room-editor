@@ -3363,7 +3363,7 @@ async function showSetupDialog(st: SetupState) {
     ? t("{game}（{rooms} 房间 / {objects} 对象 / {sprites} sprite）", { game: st.expected.game, rooms: st.expected.rooms, objects: st.expected.objects, sprites: st.expected.sprites })
     : t("未知（缺 extract/fingerprint.json）");
   const winInput = $<HTMLInputElement>("setup-win");
-  winInput.value = st.current.vanillaWin;
+  winInput.value = st.current.vanillaWin ?? "";
   const det = $("setup-detected");
   det.innerHTML = "";
   if (!st.detected.length) det.innerHTML = `<div class="muted">${t("没有自动检测到 Stoneshard 安装，请手动选择或填写路径。")}</div>`;
@@ -3400,7 +3400,7 @@ async function showSetupDialog(st: SetupState) {
 
   // ---- step 3: the decompiled source tree (create.json -- the facts data.win lacks) ----
   const srcInput = $<HTMLInputElement>("setup-source");
-  srcInput.value = st.current.sourceDir;
+  srcInput.value = st.current.sourceDir ?? "";
   const srcHint = $("setup-source-hint");
   const srcHintText = (n: number, dir: string) =>
     n
@@ -3512,7 +3512,7 @@ function onSetupEvent(e: SetupEvent) {
       // half-built cache (which would boot into the fallback the user never chose)
       void (api("/api/setup") as Promise<SetupState>).then((s) => {
         if (s.reasons.includes("create")) {
-          $<HTMLInputElement>("setup-source").value = s.current.sourceDir;
+          $<HTMLInputElement>("setup-source").value = s.current.sourceDir ?? "";
           $("setup-source-hint").textContent = s.sourceGml
             ? t("✓ 找到 {n} 个 gml_Object_*.gml", { n: s.sourceGml })
             : t("这个目录里没有 gml_Object_*.gml——UTMT「Decompile all code」导出的是整个源码目录");

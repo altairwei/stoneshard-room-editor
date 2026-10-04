@@ -260,7 +260,7 @@
         <div class="dlg-sub" data-t="这些设置跟随这台电脑，与项目无关，只需配置一次。资产缓存要从你正版游戏的 data 文件在本地提取（版权原因不随应用分发）；提取只读，不会修改游戏文件。">这些设置跟随这台电脑，与项目无关，只需配置一次。资产缓存要从你正版游戏的 data 文件在本地提取（版权原因不随应用分发）；提取只读，不会修改游戏文件。</div>
         <section id="setup-step-win" class="setup-card" hidden>
           <h3 data-t="1 · 游戏数据文件">1 · 游戏数据文件</h3>
-          <p class="muted"><span data-t="开发侧的参考版本是 "></span><b id="setup-expected">…</b><span data-t="；版本不同多半只是游戏更新过，照常提取即可，差异只作提示。"></span></p>
+          <p class="muted"><span data-t="开发侧的参考版本是"></span> <b id="setup-expected">…</b><span data-t="；版本不同多半只是游戏更新过，照常提取即可，差异只作提示。"></span></p>
           <div id="setup-detected"></div>
           <div id="setup-utmt"></div>
           <div class="setup-row">
@@ -271,7 +271,7 @@
         </section>
         <section id="setup-step-create" class="setup-card" hidden>
           <h3 data-t="3 · 反编译源码（遮挡顺序）">3 · 反编译源码（遮挡顺序）</h3>
-          <p class="muted"><span data-t="对象 Create 代码里的 "></span><code>depth = -y + 18</code><span data-t=" 这类写法决定游戏内的遮挡顺序，这些信息不在 data 文件里。用 UTMT 的「Decompile all code」导出 GML，再选择那个目录（里面应有 "></span><code>gml_Object_*.gml</code><span data-t="）。只需做一次；游戏更新后再扫一遍。"></span></p>
+          <p class="muted"><span data-t="对象 Create 代码里的"></span> <code>depth = -y + 18</code> <span data-t="这类写法决定游戏内的遮挡顺序，这些信息不在 data 文件里。用 UTMT 的「Decompile all code」导出 GML，再选择那个目录（里面应有"></span> <code>gml_Object_*.gml</code><span data-t="）。只需做一次；游戏更新后再扫一遍。"></span></p>
           <div class="setup-row">
             <input id="setup-source" spellcheck="false" autocomplete="off" data-tp="反编译源码目录的完整路径" placeholder="反编译源码目录的完整路径" />
             <button id="setup-source-pick" type="button" data-t="浏览…">浏览…</button>

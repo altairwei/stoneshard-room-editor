@@ -304,7 +304,19 @@ function createWindow() {
           // the native menu is invisible to the page, so nothing else can check it
           const help = (Menu.getApplicationMenu()?.items ?? []).find((i) => i.label === "帮助");
           console.log(`SMOKE MENU ${JSON.stringify((help?.submenu?.items ?? []).map((i) => i.label ?? i.type))}`);
-          const png = (await win.webContents.capturePage()).toPNG();
+          // capturePage() returns the last *presented* frame, which for a window that was never
+          // shown (show: !SMOKE) can lag arbitrarily far behind the live DOM; CDP's
+          // captureScreenshot composites the current state on demand.
+          let png;
+          try {
+            win.webContents.debugger.attach("1.3");
+            const shot = await win.webContents.debugger.sendCommand("Page.captureScreenshot", { format: "png" });
+            win.webContents.debugger.detach();
+            png = Buffer.from(shot.data, "base64");
+          } catch (e) {
+            console.log(`SMOKE cdp: ${e?.message ?? e}`);
+            png = (await win.webContents.capturePage()).toPNG();
+          }
           fs.mkdirSync(path.dirname(SMOKE_SHOT), { recursive: true });
           fs.writeFileSync(SMOKE_SHOT, png);
           console.log(`SMOKE OK shot=${SMOKE_SHOT} url=${baseUrl}`);
