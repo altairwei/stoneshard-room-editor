@@ -3039,6 +3039,8 @@ interface SvreHost {
     theme: UiTheme; zmode: ZMode; tool: Tool["kind"]; toggles: Record<string, boolean>;
     mode: UiMode; project: ProjectInfo | null; recent: Pick<RecentEntry, "path" | "name" | "exists">[];
     lang: Lang;
+    // the native menu's labels, translated here -- the shell holds no copy of its own
+    labels: Record<string, string>;
   }): void;
   // show a folder in Explorer/Finder (the welcome page's recent rows)
   revealPath?(path: string): Promise<void>;
@@ -3049,7 +3051,7 @@ interface SvreHost {
   onWinState?(cb: (s: { maximized: boolean }) => void): void;
   // native folder/file pickers; absent in plain browsers (the text inputs suffice there)
   pickDir?(title?: string): Promise<string | null>;
-  pickFile?(): Promise<string | null>;
+  pickFile?(title?: string, filterName?: string): Promise<string | null>;
 }
 const hostBridge = (window as any).svreHost as SvreHost | undefined;
 // Menu actions act on a loaded document; init() flips this when the app is actually up.
@@ -3171,6 +3173,35 @@ function menuAction(id: string): boolean {
   return false;
 }
 
+// The native menu is the shell's, but its language is the page's: the labels ride the
+// state push (translated here), and the shell renders whatever was pushed last.
+function menuLabels(): Record<string, string> {
+  return {
+    file: t("文件"), edit: t("编辑"), view: t("视图"), tools: t("工具"), help: t("帮助"),
+    newProject: t("新建项目…"), openProject: t("打开项目…"), recent: t("最近打开"),
+    closeProject: t("关闭项目"), missingFolder: t("文件夹不在了"),
+    newRoom: t("新建房间…"), vanillaRoom: t("打开原版房间（只读）…"), importSprite: t("导入 sprite…"),
+    compile: t("编译"), openModDir: t("打开 mod 目录"), quit: t("退出"),
+    undo: t("撤销"), redo: t("重做"), find: t("查找实例"),
+    themeLight: t("主题：白天"), themeDark: t("主题：黑夜"), lang: t("界面语言"),
+    orderGame: t("顺序：游戏（游戏内真实遮挡）"), orderStatic: t("顺序：静态（UTMT 对账视图）"),
+    "toggle.snap": t("吸附 (S)"), "toggle.hidden": t("隐形对象 (Shift+H)"),
+    "toggle.collision": t("碰撞"), "toggle.markers": t("标记"), "toggle.grid": t("网格 (G)"),
+    "toggle.notes": t("便签"),
+    panelToggle: t("问题与日志"), panelProblems: t("只看问题"), panelLog: t("只看日志"),
+    zoomIn: t("放大"), zoomOut: t("缩小"), fit: t("适配窗口"), oneToOne: t("实际像素"),
+    fullscreen: t("全屏"),
+    "tool.select": t("选择 (V)"), "tool.hand": t("抓手 (H)"), "tool.place": t("放置 (P)"),
+    "tool.collision": t("碰撞矩形 (C)"), "tool.barrier": t("屏障涂刷 (B)"),
+    "tool.zone": t("区域 (T)"), "tool.marker": t("标记 (M)"), "tool.note": t("便签 (N)"),
+    setup: t("本机设置…"), about: t("关于 Stoneshard Room Editor"), aboutTitle: t("关于"),
+    aboutBackend: t("后端："), aboutProject: t("项目："), aboutMode: t("模式："),
+    aboutNoProject: t("（未打开项目）"),
+    aboutModeDev: t("开发（vite HMR）"), aboutModePack: t("打包（内嵌后端 + dist）"),
+    dev: t("开发"), reload: t("重新加载"), devtools: t("开发者工具"),
+  };
+}
+
 // the native menu's checkmarks/radios are only honest when rebuilt on every change
 // (it also carries the project state: the shell builds 最近打开 from it rather than
 // keeping a copy of its own, which is what went stale before)
@@ -3184,6 +3215,7 @@ function pushMenuState() {
     project: projectInfo,
     recent: recentList.map((r) => ({ path: r.path, name: r.name, exists: r.exists })),
     lang: getLang(),
+    labels: menuLabels(),
   });
 }
 
@@ -3383,7 +3415,7 @@ async function showSetupDialog(st: SetupState) {
   const winPick = $<HTMLButtonElement>("setup-win-pick");
   winPick.hidden = !hostBridge?.pickFile;
   winPick.onclick = async () => {
-    const p = await hostBridge!.pickFile!();
+    const p = await hostBridge!.pickFile!(t("选择 Stoneshard 数据文件"), t("Stoneshard 数据文件"));
     if (p) winInput.value = p;
   };
   renderSetupUtmt(st.utmt); // step 2 shows which CLI the extract would use, and offers one
@@ -3412,7 +3444,7 @@ async function showSetupDialog(st: SetupState) {
   const srcPick = $<HTMLButtonElement>("setup-source-pick");
   srcPick.hidden = !hostBridge?.pickDir;
   srcPick.onclick = async () => {
-    const p = await hostBridge!.pickDir!();
+    const p = await hostBridge!.pickDir!(t("选择文件夹"));
     if (p) {
       srcInput.value = p;
       srcHint.textContent = t("选择后由后端校验…");

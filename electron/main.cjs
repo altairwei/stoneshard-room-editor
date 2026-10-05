@@ -32,7 +32,7 @@ let baseUrl = "";
 // The renderer's snapshot of everything the native menu reflects. The shell NEVER fetches
 // its own copy of anything (the old modDirCache did, and went stale on every project
 // switch): whatever the page pushed last is the truth.
-let menuState = { theme: "dark", zmode: "game", tool: "select", toggles: {}, mode: "welcome", project: null, recent: [], lang: "zh" };
+let menuState = { theme: "dark", zmode: "game", tool: "select", toggles: {}, mode: "welcome", project: null, recent: [], lang: "en" };
 let menuKey = ""; // JSON of the last template built, so identical pushes are a no-op
 
 // frameless chrome: the OS title bar is hidden (titleBarStyle:"hidden" keeps the native
@@ -94,24 +94,38 @@ const RECENT_MENU_PREFIX = "project.openRecent\u0000";
 // until the page says so. The project items stay live: the welcome page is exactly where
 // they are needed.
 const ready = (s) => s.mode === "ready";
-const VIEW_TOGGLES = [
-  ["snap", "吸附 (S)"],
-  ["hidden", "隐形对象 (Shift+H)"],
-  ["collision", "碰撞"],
-  ["markers", "标记"],
-  ["grid", "网格 (G)"],
-  ["notes", "便签"],
-];
-const TOOLS = [
-  ["select", "选择 (V)"],
-  ["hand", "抓手 (H)"],
-  ["place", "放置 (P)"],
-  ["collision", "碰撞矩形 (C)"],
-  ["barrier", "屏障涂刷 (B)"],
-  ["zone", "区域 (T)"],
-  ["marker", "标记 (M)"],
-  ["note", "便签 (N)"],
-];
+// Menu labels are NOT kept here: the page pushes them (s.labels, already translated)
+// along with the rest of the state, so the native menu speaks the page's language.
+// This English copy is only the fallback for the very first buildMenu, before any
+// page has pushed -- the ☰ cannot be clicked before then.
+const DEFAULT_LABELS = {
+  file: "File", edit: "Edit", view: "View", tools: "Tools", help: "Help",
+  newProject: "New project…", openProject: "Open project…", recent: "Recent projects",
+  closeProject: "Close project", missingFolder: "Folder no longer exists",
+  newRoom: "New room…", vanillaRoom: "Open vanilla room (read-only)…",
+  importSprite: "Import sprite…", compile: "Compile", openModDir: "Open mod folder",
+  quit: "Quit",
+  undo: "Undo", redo: "Redo", find: "Find instance",
+  themeLight: "Theme: day", themeDark: "Theme: night", lang: "Interface language",
+  orderGame: "Order: game (real in-game occlusion)",
+  orderStatic: "Order: static (UTMT reconciliation view)",
+  "toggle.snap": "Snap (S)", "toggle.hidden": "Invisible objects (Shift+H)",
+  "toggle.collision": "Collision", "toggle.markers": "Marker", "toggle.grid": "Grid (G)",
+  "toggle.notes": "Note",
+  panelToggle: "Problems / log", panelProblems: "Problems only", panelLog: "Log only",
+  zoomIn: "Zoom in", zoomOut: "Zoom out", fit: "Fit window", oneToOne: "Actual pixels",
+  fullscreen: "Fullscreen",
+  "tool.select": "Select (V)", "tool.hand": "Hand (H)", "tool.place": "Place (P)",
+  "tool.collision": "Collision rectangle (C)", "tool.barrier": "Barrier brush (B)",
+  "tool.zone": "Zone (T)", "tool.marker": "Marker (M)", "tool.note": "Note (N)",
+  setup: "Local setup…", about: "About Stoneshard Room Editor", aboutTitle: "About",
+  aboutBackend: "Backend: ", aboutProject: "Project: ", aboutMode: "Mode: ",
+  aboutNoProject: "(no project open)",
+  aboutModeDev: "dev (vite HMR)", aboutModePack: "packaged (bundled backend + dist)",
+  dev: "Development", reload: "Reload", devtools: "Developer tools",
+};
+const VIEW_TOGGLES = ["snap", "hidden", "collision", "markers", "grid", "notes"];
+const TOOLS = ["select", "hand", "place", "collision", "barrier", "zone", "marker", "note"];
 
 function buildMenu(s) {
   // applyVisibility() pushes on every scene refresh, so this is called constantly with
@@ -123,68 +137,69 @@ function buildMenu(s) {
   menuState = s;
   const proj = s.project;
   const recent = s.recent ?? [];
+  const L = { ...DEFAULT_LABELS, ...(s.labels ?? {}) };
   const devItems = DEV
     ? [
-        { label: "开发", submenu: [{ role: "reload", label: "重新加载" }, { role: "toggleDevTools", label: "开发者工具" }] },
+        { label: L.dev, submenu: [{ role: "reload", label: L.reload }, { role: "toggleDevTools", label: L.devtools }] },
       ]
     : [];
   const template = [
     {
-      label: "文件",
+      label: L.file,
       submenu: [
         // A project IS the working directory, so these are the first thing in the menu --
         // and they stay enabled with nothing open, because that is the welcome page.
-        { label: "新建项目…", click: () => send("project.new") },
-        { label: "打开项目…", accelerator: "CmdOrCtrl+K CmdOrCtrl+O", click: () => send("project.open") },
+        { label: L.newProject, click: () => send("project.new") },
+        { label: L.openProject, accelerator: "CmdOrCtrl+K CmdOrCtrl+O", click: () => send("project.open") },
         {
-          label: "最近打开",
+          label: L.recent,
           enabled: recent.length > 0,
           submenu: recent.map((r) => ({
-            // no digit accelerators: CmdOrCtrl+1 is 实际像素, and a path is not a
-            // keyboard target anyway
-            label: r.exists ? `${r.name}  (${r.path})` : `${r.name}  (${r.path}) — 文件夹不在了`,
+            // no digit accelerators: CmdOrCtrl+1 is the actual-pixel zoom, and a path is
+            // not a keyboard target anyway
+            label: r.exists ? `${r.name}  (${r.path})` : `${r.name}  (${r.path}) — ${L.missingFolder}`,
             click: () => send(RECENT_MENU_PREFIX + r.path),
           })),
         },
-        { label: "关闭项目", enabled: !!proj, click: () => send("project.close") },
+        { label: L.closeProject, enabled: !!proj, click: () => send("project.close") },
         { type: "separator" },
-        { label: "新建房间…", accelerator: "CmdOrCtrl+N", enabled: ready(s), click: () => send("file.new") },
-        { label: "打开原版房间（只读）…", accelerator: "CmdOrCtrl+O", enabled: ready(s), click: () => send("file.vanilla") },
+        { label: L.newRoom, accelerator: "CmdOrCtrl+N", enabled: ready(s), click: () => send("file.new") },
+        { label: L.vanillaRoom, accelerator: "CmdOrCtrl+O", enabled: ready(s), click: () => send("file.vanilla") },
         { type: "separator" },
-        { label: "导入 sprite…", enabled: ready(s), click: () => send("file.importSprite") },
+        { label: L.importSprite, enabled: ready(s), click: () => send("file.importSprite") },
         { type: "separator" },
-        { label: "编译", accelerator: "CmdOrCtrl+S", enabled: ready(s), click: () => send("file.compile") },
+        { label: L.compile, accelerator: "CmdOrCtrl+S", enabled: ready(s), click: () => send("file.compile") },
         { type: "separator" },
         {
-          label: "打开 mod 目录",
+          label: L.openModDir,
           // the path comes from the pushed state, not from a cached fetch of our own
           enabled: !!proj?.exists,
           click: () => shell.openPath(proj?.path ?? ""),
         },
         { type: "separator" },
-        { role: "quit", label: "退出" },
+        { role: "quit", label: L.quit },
       ],
     },
     {
-      label: "编辑",
+      label: L.edit,
       submenu: [
-        { label: "撤销", accelerator: "CmdOrCtrl+Z", click: () => send("edit.undo") },
-        { label: "重做", accelerator: "CmdOrCtrl+Y", click: () => send("edit.redo") },
+        { label: L.undo, accelerator: "CmdOrCtrl+Z", click: () => send("edit.undo") },
+        { label: L.redo, accelerator: "CmdOrCtrl+Y", click: () => send("edit.redo") },
         { type: "separator" },
-        { label: "查找实例", accelerator: "CmdOrCtrl+F", click: () => send("edit.find") },
+        { label: L.find, accelerator: "CmdOrCtrl+F", click: () => send("edit.find") },
       ],
     },
     {
-      label: "视图",
+      label: L.view,
       submenu: [
-        { label: "主题：白天", type: "radio", checked: s.theme === "light", click: () => send("view.theme.light") },
-        { label: "主题：黑夜", type: "radio", checked: s.theme !== "light", click: () => send("view.theme.dark") },
+        { label: L.themeLight, type: "radio", checked: s.theme === "light", click: () => send("view.theme.light") },
+        { label: L.themeDark, type: "radio", checked: s.theme !== "light", click: () => send("view.theme.dark") },
         { type: "separator" },
         // each language names itself, so these need no translation of their own; the shell
         // reloads the page on pick, which re-localizes everything (?lang= is read by api()
         // at call time -- the same reason the browser dropdown re-paints in place)
         {
-          label: "界面语言",
+          label: L.lang,
           submenu: [
             { label: "中文", type: "radio", checked: s.lang === "zh", click: () => send("lang.set.zh") },
             { label: "English", type: "radio", checked: s.lang === "en", click: () => send("lang.set.en") },
@@ -192,35 +207,35 @@ function buildMenu(s) {
           ],
         },
         { type: "separator" },
-        { label: "顺序：游戏（游戏内真实遮挡）", type: "radio", checked: s.zmode !== "static", click: () => send("view.zmode.game") },
-        { label: "顺序：静态（UTMT 对账视图）", type: "radio", checked: s.zmode === "static", click: () => send("view.zmode.static") },
+        { label: L.orderGame, type: "radio", checked: s.zmode !== "static", click: () => send("view.zmode.game") },
+        { label: L.orderStatic, type: "radio", checked: s.zmode === "static", click: () => send("view.zmode.static") },
         { type: "separator" },
-        ...VIEW_TOGGLES.map(([key, label]) => ({
-          label,
+        ...VIEW_TOGGLES.map((k) => ({
+          label: L[`toggle.${k}`],
           type: "checkbox",
-          checked: !!s.toggles?.[key],
-          click: () => send(`view.toggle.${key}`),
+          checked: !!s.toggles?.[k],
+          click: () => send(`view.toggle.${k}`),
         })),
         { type: "separator" },
         // the project's diagnostics; the same two panes the status bar's count opens
         // the accelerator toggles (matching the renderer's own binding); the two entries
         // below it land on a specific pane instead
-        { label: "问题与日志", accelerator: "CmdOrCtrl+Shift+M", click: () => send("view.panel.toggle") },
-        { label: "只看问题", click: () => send("view.panel.problems") },
-        { label: "只看日志", click: () => send("view.panel.log") },
+        { label: L.panelToggle, accelerator: "CmdOrCtrl+Shift+M", click: () => send("view.panel.toggle") },
+        { label: L.panelProblems, click: () => send("view.panel.problems") },
+        { label: L.panelLog, click: () => send("view.panel.log") },
         { type: "separator" },
-        { label: "放大", accelerator: "CmdOrCtrl+=", click: () => send("view.zoomIn") },
-        { label: "缩小", accelerator: "CmdOrCtrl+-", click: () => send("view.zoomOut") },
-        { label: "适配窗口", accelerator: "CmdOrCtrl+0", click: () => send("view.fit") },
-        { label: "实际像素", accelerator: "CmdOrCtrl+1", click: () => send("view.one") },
+        { label: L.zoomIn, accelerator: "CmdOrCtrl+=", click: () => send("view.zoomIn") },
+        { label: L.zoomOut, accelerator: "CmdOrCtrl+-", click: () => send("view.zoomOut") },
+        { label: L.fit, accelerator: "CmdOrCtrl+0", click: () => send("view.fit") },
+        { label: L.oneToOne, accelerator: "CmdOrCtrl+1", click: () => send("view.one") },
         { type: "separator" },
-        { role: "togglefullscreen", label: "全屏" },
+        { role: "togglefullscreen", label: L.fullscreen },
       ],
     },
     {
-      label: "工具",
-      submenu: TOOLS.map(([kind, label]) => ({
-        label,
+      label: L.tools,
+      submenu: TOOLS.map((kind) => ({
+        label: L[`tool.${kind}`],
         type: "radio",
         checked: s.tool === kind,
         click: () => send(`tool.${kind}`),
@@ -228,21 +243,22 @@ function buildMenu(s) {
     },
     ...devItems,
     {
-      label: "帮助",
+      id: "help",
+      label: L.help,
       submenu: [
         // machine-level only (game data / UTMT / cache / decompiled source): this is not
         // project setup, and the game gets updated while the app does not
-        { label: "本机设置…", click: () => send("help.setup") },
+        { label: L.setup, click: () => send("help.setup") },
         { type: "separator" },
         {
-          label: "关于 Stoneshard Room Editor",
+          label: L.about,
           click: () => {
             dialog.showMessageBox(win, {
               type: "info",
-              title: "关于",
+              title: L.aboutTitle,
               message: `Stoneshard Room Editor v${app.getVersion()}`,
               // from the pushed snapshot: the shell holds no path of its own to go stale
-              detail: `后端：${baseUrl}\n项目：${menuState.project?.path ?? "（未打开项目）"}\n模式：${DEV ? "开发（vite HMR）" : "打包（内嵌后端 + dist）"}`,
+              detail: `${L.aboutBackend}${baseUrl}\n${L.aboutProject}${menuState.project?.path ?? L.aboutNoProject}\n${L.aboutMode}${DEV ? L.aboutModeDev : L.aboutModePack}`,
             });
           },
         },
@@ -302,7 +318,9 @@ function createWindow() {
           ]);
           console.log(`SMOKE PROBE ${probe}`);
           // the native menu is invisible to the page, so nothing else can check it
-          const help = (Menu.getApplicationMenu()?.items ?? []).find((i) => i.label === "帮助");
+          const items = Menu.getApplicationMenu()?.items ?? [];
+          console.log(`SMOKE MENU TOP ${JSON.stringify(items.map((i) => i.label ?? i.type))}`);
+          const help = items.find((i) => i.id === "help");
           console.log(`SMOKE MENU ${JSON.stringify((help?.submenu?.items ?? []).map((i) => i.label ?? i.type))}`);
           // capturePage() returns the last *presented* frame, which for a window that was never
           // shown (show: !SMOKE) can lag arbitrarily far behind the live DOM; CDP's
@@ -310,11 +328,17 @@ function createWindow() {
           let png;
           try {
             win.webContents.debugger.attach("1.3");
-            const shot = await win.webContents.debugger.sendCommand("Page.captureScreenshot", { format: "png" });
+            // the CDP capture can hang forever on a never-shown window (observed once);
+            // bound it so the capturePage fallback below actually runs
+            const shot = await Promise.race([
+              win.webContents.debugger.sendCommand("Page.captureScreenshot", { format: "png" }),
+              new Promise((_, rej) => setTimeout(() => rej(new Error("cdp screenshot timed out")), 8000)),
+            ]);
             win.webContents.debugger.detach();
             png = Buffer.from(shot.data, "base64");
           } catch (e) {
             console.log(`SMOKE cdp: ${e?.message ?? e}`);
+            try { win.webContents.debugger.detach(); } catch { /* never attached */ }
             png = (await win.webContents.capturePage()).toPNG();
           }
           fs.mkdirSync(path.dirname(SMOKE_SHOT), { recursive: true });
@@ -357,10 +381,10 @@ else {
     });
     // native pickers (renderer never gets raw dialog access)
     ipcMain.handle("svre:pick-dir", async (_e, title) => {
-      // createDirectory is what makes this a "new folder" dialog too: 打开项目 and 新建项目
-      // are the same picker with a different title
+      // createDirectory is what makes this a "new folder" dialog too: Open Project and New Project
+      // are the same picker with a different title (the renderer names it in the interface language)
       const r = await dialog.showOpenDialog(win, {
-        title: title || "选择文件夹",
+        title: title || "Choose folder",
         properties: ["openDirectory", "createDirectory"],
       });
       return r.canceled ? null : r.filePaths[0];
@@ -369,10 +393,12 @@ else {
     ipcMain.handle("svre:reveal-path", async (_e, p) => {
       if (typeof p === "string" && p) shell.showItemInFolder(p);
     });
-    ipcMain.handle("svre:pick-file", async () => {
+    // the caller names the file kind (the wizard's "where is the Stoneshard data file"),
+    // so the picker can speak the interface language like everything else
+    ipcMain.handle("svre:pick-file", async (_e, title, filterName) => {
       const r = await dialog.showOpenDialog(win, {
-        title: "选择 Stoneshard 数据文件",
-        filters: [{ name: "Stoneshard 数据文件", extensions: ["win"] }],
+        title: title || "Choose the Stoneshard data file",
+        filters: [{ name: filterName || "Stoneshard data file", extensions: ["win"] }],
         properties: ["openFile"],
       });
       return r.canceled ? null : r.filePaths[0];

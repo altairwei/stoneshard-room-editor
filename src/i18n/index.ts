@@ -5,8 +5,8 @@
 // Keys ARE the zh text. Lookup is lang pack -> zh pack overrides -> the key itself, so an
 // untranslated or unconverted string always falls back to exactly what the UI showed
 // before i18n existed. That single rule is what lets this ship file-at-a-time: zh stays
-// byte-identical, and the e2e suite (which asserts zh under the default lang) is green
-// at every step of the conversion.
+// byte-identical, and the e2e suite (which pins svre.lang=zh per page and asserts the zh
+// UI) is green at every step of the conversion. The default lang itself is en.
 //
 // Interpolation uses `{name}` placeholders in the key, e.g.
 //   t("撤销：{label}", { label })        // the key IS the zh template
@@ -25,7 +25,9 @@ export const LANGS: readonly { code: Lang; label: string }[] = [
 const PACKS: Record<Lang, Record<string, string>> = { zh, en, ru };
 
 // Only meaningfully read in the browser (the server passes an explicit lang to `tr`).
-let lang: Lang = "zh";
+// English is the default -- the audience is international; zh/ru users pick their
+// language once and it persists in localStorage, re-read by initLang().
+let lang: Lang = "en";
 
 export function getLang(): Lang {
   return lang;
@@ -45,15 +47,17 @@ export function setLang(l: Lang) {
 }
 
 export function initLang(): Lang {
-  let l: Lang = "zh";
+  let l: Lang = "en";
   try {
     const stored = localStorage.getItem("svre.lang");
-    if (stored === "en" || stored === "ru") l = stored;
+    if (stored === "zh" || stored === "en" || stored === "ru") l = stored;
   } catch {
     /* private mode */
   }
-  if (document.documentElement.dataset.lang === "en" || document.documentElement.dataset.lang === "ru")
-    l = document.documentElement.dataset.lang as Lang;
+  // the index.html inline script already resolved stored -> dataset before first paint;
+  // accept all three here too, so a stored "zh" is not overridden by the new en default
+  const d = document.documentElement.dataset.lang;
+  if (d === "zh" || d === "en" || d === "ru") l = d;
   setLang(l);
   return l;
 }

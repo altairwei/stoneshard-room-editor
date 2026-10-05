@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -8,14 +8,16 @@
       // paint the persisted UI theme before the bundle lands, so it never flashes;
       // main.ts owns the state from there (#b-theme toggles, persisted as svre.theme).
       // svre.lang follows the same pattern: dataset.lang is read by i18n.initLang() at
-      // boot, then indexed by the catalog as the bundle loads.
+      // boot, then indexed by the catalog as the bundle loads. English is the default
+      // (the audience is international); zh/ru are remembered once picked.
       try {
         var t = localStorage.getItem("svre.theme") === "light" ? "light" : "dark";
-        var l = localStorage.getItem("svre.lang") === "ru" ? "ru" : localStorage.getItem("svre.lang") === "en" ? "en" : "zh";
+        var stored = localStorage.getItem("svre.lang");
+        var l = stored === "zh" || stored === "ru" ? stored : "en";
         document.documentElement.dataset.theme = t;
         document.documentElement.dataset.lang = l;
-        document.documentElement.lang = l === "ru" ? "ru" : l === "en" ? "en" : "zh-CN";
-      } catch { document.documentElement.dataset.theme = "dark"; document.documentElement.dataset.lang = "zh"; }
+        document.documentElement.lang = l === "zh" ? "zh-CN" : l;
+      } catch { document.documentElement.dataset.theme = "dark"; document.documentElement.dataset.lang = "en"; }
     </script>
   </head>
   <body>
@@ -86,8 +88,8 @@
         <button id="b-theme" data-tt="界面主题：白天 / 黑夜（点击切换）" title="界面主题：白天 / 黑夜（点击切换）"><i></i><span data-t="界面主题">界面主题</span></button>
         <div class="vm-sep"></div>
         <div class="vm-row lang-row" id="lang-row">
-          <button class="lang-on" data-lang="zh" title="中文">中文</button>
-          <button data-lang="en" title="English">English</button>
+          <button data-lang="zh" title="中文">中文</button>
+          <button class="lang-on" data-lang="en" title="English">English</button>
           <button data-lang="ru" title="Русский">Русский</button>
         </div>
       </div>

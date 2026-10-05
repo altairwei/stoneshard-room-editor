@@ -77,6 +77,14 @@ def call(method, path, body=None, expect=200):
             return e.code, raw
 
 
+def zh_page(browser, viewport):
+    """browser.new_page + the zh pin: the app now defaults to English, but this suite
+    asserts the zh UI text (its first line of defense when i18n converted the strings)."""
+    pg = browser.new_page(viewport=viewport)
+    pg.add_init_script("try { localStorage.setItem('svre.lang', 'zh') } catch {}")
+    return pg
+
+
 def find_inst(doc, iid):
     for L in doc["room"]["layers"]:
         for i in L["layer_data"].get("instances", []):
@@ -356,7 +364,7 @@ def main():
         print("B. browser / human path")
         with sync_playwright() as p:
             browser = p.chromium.launch()
-            pg = browser.new_page(viewport={"width": 1600, "height": 1000})
+            pg = zh_page(browser, {"width": 1600, "height": 1000})
             errors = []
             pg.on("pageerror", lambda e: errors.append(str(e)))
             pg.on("dialog", lambda d: d.dismiss())
@@ -1354,7 +1362,7 @@ def main():
             fake2.write_bytes(b"tiny")
             with sync_playwright() as p2:
                 b2 = p2.chromium.launch()
-                pg2 = b2.new_page(viewport={"width": 1280, "height": 860})
+                pg2 = zh_page(b2, {"width": 1280, "height": 860})
                 pg2.goto(base3)
                 # no project: the welcome page, NOT the wizard. The editor chrome is gone but
                 # the titlebar (drag region + window buttons) stays.
@@ -1458,7 +1466,7 @@ def main():
 
             with sync_playwright() as p4:
                 b4 = p4.chromium.launch()
-                pg4 = b4.new_page(viewport={"width": 1280, "height": 860})
+                pg4 = zh_page(b4, {"width": 1280, "height": 860})
                 pg4.goto(base4)
                 pg4.wait_for_selector("#setup-dialog[open]", timeout=60000)
                 check(pg4.evaluate("document.getElementById('setup-step-create').hidden") is False,
@@ -1520,7 +1528,7 @@ def main():
             before = (cache4 / "create.json").read_text(encoding="utf-8")
             with sync_playwright() as p5:
                 b5 = p5.chromium.launch()
-                pg5 = b5.new_page(viewport={"width": 1280, "height": 860})
+                pg5 = zh_page(b5, {"width": 1280, "height": 860})
                 pg5.goto(base4)
                 pg5.wait_for_selector("#options", timeout=60000)
                 check(pg5.evaluate("document.getElementById('setup-dialog').open") is False,
@@ -1639,7 +1647,7 @@ def main():
 
             with sync_playwright() as p6:
                 b6 = p6.chromium.launch()
-                pg6 = b6.new_page(viewport={"width": 1280, "height": 860})
+                pg6 = zh_page(b6, {"width": 1280, "height": 860})
                 pg6.goto(base5)
                 pg6.wait_for_selector("#setup-step-win:not([hidden])", timeout=60000)
                 check("还没找到 UndertaleModCli.exe" in pg6.inner_text("#setup-utmt"),
@@ -1868,8 +1876,8 @@ def main():
 
             with sync_playwright() as p7:
                 b7 = p7.chromium.launch()
-                pga = b7.new_page(viewport={"width": 1280, "height": 860})
-                pgb = b7.new_page(viewport={"width": 1280, "height": 860})
+                pga = zh_page(b7, {"width": 1280, "height": 860})
+                pgb = zh_page(b7, {"width": 1280, "height": 860})
                 pga.goto(base6)
                 pgb.goto(base6)
                 pga.wait_for_selector("#welcome:not([hidden])", timeout=60000)
